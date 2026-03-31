@@ -4,19 +4,98 @@ from typing import Any, Mapping, Optional
 
 import torch
 
+from modules.Conan.style_mainline import normalize_style_trace_mode
+from modules.Conan.style_trace_utils import combine_style_traces, resolve_combined_style_trace
+
+
+STYLE_TRACE_RUNTIME_FIELDS = (
+    "ref_upsample",
+    "vq_loss",
+    "ppl",
+    "gloss",
+    "attn",
+)
+
 
 def _style_trace_mode_from_controls(controls) -> str:
-    mode = getattr(controls, "style_trace_mode", "fast")
-    normalized = str(mode or "fast").strip().lower() or "fast"
-    if normalized not in {"none", "fast", "slow"}:
-        return "fast"
-    return normalized
+    return normalize_style_trace_mode(getattr(controls, "style_trace_mode", "fast"), default="fast")
 
 
 def _masked_mean(model, sequence, mask=None):
     if not isinstance(sequence, torch.Tensor):
         return None
     return model._masked_mean(sequence, mask)
+
+
+def _preferred_fast_memory_mode(model, controls) -> str:
+    chosen_memory_mode = model._normalize_memory_mode(
+        getattr(controls, "style_memory_mode", "fast"),
+        default="fast",
+    )
+    if chosen_memory_mode == "slow":
+        return "fast"
+    return chosen_memory_mode
+
+
+def _trace_source_label(*, has_cached_prosody: bool, memory_mode: str):
+    source_prefix = "reference_cache" if has_cached_prosody else "reference_audio"
+    return f"{source_prefix}_{memory_mode}"
+
+
+def _run_style_trace(
+    model,
+    *,
+    query,
+    content,
+    ref_style,
+    infer: bool,
+    global_steps: int,
+    reference_cache: Optional[Mapping[str, Any]],
+    memory_mode: str,
+    style_temperature: float,
+):
+    trace_ret = {"content": content}
+    style_trace = model.get_prosody(
+        query,
+        ref_style,
+        trace_ret,
+        infer=infer,
+        global_steps=global_steps,
+        reference_cache=reference_cache,
+        memory_mode=memory_mode,
+        style_temperature=style_temperature,
+    )
+    return {
+        "trace": style_trace,
+        "mask": trace_ret.get("style_trace_mask"),
+        "memory": trace_ret.get("style_trace_memory"),
+        "memory_mask": trace_ret.get("style_trace_memory_mask"),
+        "smooth": trace_ret.get("style_trace_smooth"),
+        "runtime": {
+            key: trace_ret.get(key)
+            for key in STYLE_TRACE_RUNTIME_FIELDS
+            if trace_ret.get(key) is not None
+        },
+    }
+
+
+def _write_trace_result(ret, trace_result, *, prefix: str):
+    trace = trace_result.get("trace")
+    if not isinstance(trace, torch.Tensor):
+        return
+    ret[prefix] = trace
+    if trace_result.get("mask") is not None:
+        ret[f"{prefix}_mask"] = trace_result["mask"]
+    if trace_result.get("memory") is not None:
+        ret[f"{prefix}_memory"] = trace_result["memory"]
+    if trace_result.get("memory_mask") is not None:
+        ret[f"{prefix}_memory_mask"] = trace_result["memory_mask"]
+    if trace_result.get("smooth") is not None:
+        ret[f"{prefix}_smooth"] = trace_result["smooth"]
+    if trace_result.get("source") is not None:
+        ret[f"{prefix}_source_runtime"] = trace_result["source"]
+    if trace_result.get("memory_mode") is not None:
+        ret[f"{prefix}_memory_mode_used"] = trace_result["memory_mode"]
 
 
 def _blend_global_summary(model, global_style_summary, style_trace, style_trace_mask, *, blend=0.0):
@@ -80,40 +159,95 @@ def build_style_realization_payload(
         payload["style_trace_skip_reason"] = "reference_missing"
         return payload
 
-    chosen_memory_mode = "slow" if style_trace_mode == "slow" else getattr(controls, "style_memory_mode", "fast")
-    chosen_memory_mode = model._normalize_memory_mode(chosen_memory_mode, default="fast")
-    style_trace = model.get_prosody(
-        query,
-        ref_style,
-        ret,
-        infer=infer,
-        global_steps=global_steps,
-        reference_cache=reference_cache,
-        memory_mode=chosen_memory_mode,
-        style_temperature=float(getattr(controls, "style_temperature", 1.0)),
-    )
-    style_decoder_residual = style_trace * style_strength
-    payload["style_trace_available"] = True
-    payload["style_trace_source"] = (
-        f"reference_cache_{chosen_memory_mode}" if has_cached_prosody else f"reference_audio_{chosen_memory_mode}"
-    )
-    ret["style_trace_memory_mode_used"] = chosen_memory_mode
-    ret["style_trace_source_runtime"] = payload["style_trace_source"]
+    style_temperature = float(getattr(controls, "style_temperature", 1.0))
+    fast_trace_result = None
+    slow_trace_result = None
 
-    if style_trace_mode == "slow":
-        ret["slow_style_trace"] = ret.get("style_trace")
-        ret["slow_style_trace_mask"] = ret.get("style_trace_mask")
-        ret["slow_style_trace_memory"] = ret.get("style_trace_memory")
-        ret["slow_style_trace_memory_mask"] = ret.get("style_trace_memory_mask")
-        payload["slow_style_decoder_residual"] = style_decoder_residual
+    if style_trace_mode in {"fast", "dual"}:
+        fast_memory_mode = _preferred_fast_memory_mode(model, controls)
+        fast_trace_result = _run_style_trace(
+            model,
+            query=query,
+            content=ret["content"],
+            ref_style=ref_style,
+            infer=infer,
+            global_steps=global_steps,
+            reference_cache=reference_cache,
+            memory_mode=fast_memory_mode,
+            style_temperature=style_temperature,
+        )
+        fast_trace_result["source"] = _trace_source_label(
+            has_cached_prosody=has_cached_prosody,
+            memory_mode=fast_memory_mode,
+        )
+        fast_trace_result["memory_mode"] = fast_memory_mode
+        _write_trace_result(ret, fast_trace_result, prefix="style_trace")
+        payload["style_decoder_residual"] = fast_trace_result["trace"] * style_strength
+        for key, value in fast_trace_result.get("runtime", {}).items():
+            ret[key] = value
+
+    if style_trace_mode in {"slow", "dual"}:
+        slow_trace_result = _run_style_trace(
+            model,
+            query=query,
+            content=ret["content"],
+            ref_style=ref_style,
+            infer=infer,
+            global_steps=global_steps,
+            reference_cache=reference_cache,
+            memory_mode="slow",
+            style_temperature=style_temperature,
+        )
+        slow_trace_result["source"] = _trace_source_label(
+            has_cached_prosody=has_cached_prosody,
+            memory_mode="slow",
+        )
+        slow_trace_result["memory_mode"] = "slow"
+        _write_trace_result(ret, slow_trace_result, prefix="slow_style_trace")
+        payload["slow_style_decoder_residual"] = slow_trace_result["trace"] * style_strength
+        if style_trace_mode == "slow":
+            for key, value in slow_trace_result.get("runtime", {}).items():
+                ret[key] = value
+
+    payload["style_trace_available"] = bool(
+        isinstance(fast_trace_result, dict) and isinstance(fast_trace_result.get("trace"), torch.Tensor)
+        or isinstance(slow_trace_result, dict) and isinstance(slow_trace_result.get("trace"), torch.Tensor)
+    )
+    if style_trace_mode == "dual":
+        payload["style_trace_source"] = "reference_cache_dual" if has_cached_prosody else "reference_audio_dual"
+        ret["style_trace_memory_mode_used"] = "dual"
+        ret["style_trace_source_runtime"] = payload["style_trace_source"]
+    elif style_trace_mode == "slow":
+        payload["style_trace_source"] = slow_trace_result.get("source", "missing") if isinstance(slow_trace_result, dict) else "missing"
+        ret["style_trace_memory_mode_used"] = "slow"
+        ret["style_trace_source_runtime"] = payload["style_trace_source"]
     else:
-        payload["style_decoder_residual"] = style_decoder_residual
+        payload["style_trace_source"] = fast_trace_result.get("source", "missing") if isinstance(fast_trace_result, dict) else "missing"
+        ret["style_trace_memory_mode_used"] = (
+            fast_trace_result.get("memory_mode", "none") if isinstance(fast_trace_result, dict) else "none"
+        )
+        ret["style_trace_source_runtime"] = payload["style_trace_source"]
+
+    blended_trace, blended_mask = resolve_combined_style_trace(
+        {
+            "style_trace": payload["style_decoder_residual"],
+            "slow_style_trace": payload["slow_style_decoder_residual"],
+            "style_trace_mask": ret.get("style_trace_mask"),
+            "slow_style_trace_mask": ret.get("slow_style_trace_mask"),
+        }
+    )
+    if blended_trace is None:
+        blended_trace = combine_style_traces(
+            payload["style_decoder_residual"],
+            payload["slow_style_decoder_residual"],
+        )
+        blended_mask = ret.get("style_trace_mask", ret.get("slow_style_trace_mask"))
 
     payload["global_style_summary_runtime"] = _blend_global_summary(
         model,
         global_style_summary,
-        style_decoder_residual,
-        ret.get("style_trace_mask"),
+        blended_trace,
+        blended_mask,
         blend=float(getattr(controls, "global_style_trace_blend", 0.0)),
     )
     if isinstance(payload["global_style_summary_runtime"], torch.Tensor):

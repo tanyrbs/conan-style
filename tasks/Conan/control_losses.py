@@ -1,6 +1,8 @@
 import torch
 import torch.nn.functional as F
 
+from modules.Conan.style_trace_utils import resolve_combined_style_trace
+
 
 def _shape_match_time_mask(mask, target):
     if not isinstance(mask, torch.Tensor) or not isinstance(target, torch.Tensor):
@@ -67,9 +69,10 @@ def _masked_sequence_mean(sequence, mask=None):
 
 
 def _style_representation(output):
+    combined_style_trace, combined_style_trace_mask = resolve_combined_style_trace(output)
     return _masked_sequence_mean(
-        output.get("style_trace"),
-        output.get("style_trace_mask"),
+        combined_style_trace,
+        combined_style_trace_mask,
     )
 
 

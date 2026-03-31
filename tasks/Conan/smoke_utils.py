@@ -95,6 +95,8 @@ def ensure_explicit_factorized_references(dataset, samples, indices):
         return cached_alt[ref_idx]
 
     for sample_idx, sample in enumerate(samples):
+        if sample.get("ref_timbre_mel") is None:
+            sample["ref_timbre_mel"] = sample["ref_mel"].clone()
         if sample.get("style_ref_mel") is None:
             sample["style_ref_mel"] = _alt_sample(sample_idx + 1)["ref_mel"].clone()
         if sample.get("dynamic_timbre_ref_mel") is None:

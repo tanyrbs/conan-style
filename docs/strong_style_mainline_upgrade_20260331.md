@@ -121,3 +121,19 @@ Remaining high-value steps:
 2. add stronger boundary-aware local timbre control
 3. upgrade the lightweight decoder adapter toward richer mid/high-layer CSSF-style gating
 4. add external evaluation: speaker / ASR / prosody encoders
+
+## 2026-03-31 follow-up: dual style trace split
+
+This round adds a cleaner dual-path style realization option:
+
+- `style_trace_mode = dual`
+- fast branch = local replay on fast prosody memory
+- slow branch = posture / delivery on slow pooled prosody memory
+- decoder adapter can now consume both branches without collapsing them into one trace
+- `strict_factorized` training batches now require explicit `ref_timbre_mels`
+
+This is still not full CSSF, but it pushes the style mainline closer to:
+
+- slow style as utterance / phrase posture
+- fast style as local expressive replay
+- dynamic timbre as separate local voice-color residual

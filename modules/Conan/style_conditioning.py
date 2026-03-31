@@ -22,6 +22,7 @@ from modules.Conan.dynamic_timbre_control import (
     recenter_dynamic_timbre_to_anchor,
     resolve_dynamic_timbre_control,
 )
+from modules.Conan.style_trace_utils import resolve_combined_style_trace
 from utils.commons.hparams import hparams
 
 
@@ -227,10 +228,15 @@ class ConanStyleConditioningMixin:
             ),
         )
         cache = dict(reference_cache) if isinstance(reference_cache, dict) else dict(reference_cache or {})
+        contract_mode = str(
+            resolved_bundle.get("reference_contract_mode", self._get_hparam("reference_contract_mode", "collapsed_reference"))
+        )
 
         global_timbre_anchor = cache.get("global_timbre_anchor", cache.get("style_embed"))
+        global_timbre_anchor_source = str(cache.get("global_timbre_anchor_source", "reference_cache"))
         if global_timbre_anchor is None and spk_embed is not None:
             global_timbre_anchor = spk_embed
+            global_timbre_anchor_source = "spk_embed"
         if global_timbre_anchor is None:
             ref_timbre = resolved_bundle.get("ref_timbre")
             if ref_timbre is None:
@@ -238,9 +244,11 @@ class ConanStyleConditioningMixin:
                     "prepare_reference_cache requires `spk_embed` or `reference_bundle['ref_timbre']`."
                 )
             global_timbre_anchor = self.encode_spk_embed(ref_timbre.transpose(1, 2)).transpose(1, 2)
+            global_timbre_anchor_source = "ref_timbre"
         global_timbre_anchor = self._normalize_style_embed(global_timbre_anchor)
         cache["style_embed"] = global_timbre_anchor
         cache["global_timbre_anchor"] = global_timbre_anchor
+        cache["global_timbre_anchor_source"] = global_timbre_anchor_source
         cache["global_style_anchor"] = global_timbre_anchor
 
         summary_source = resolved_bundle.get("summary_source")
@@ -295,10 +303,25 @@ class ConanStyleConditioningMixin:
             if global_style_summary is not None:
                 global_style_summary_source = "summary_source_prompt"
         if global_style_summary is None:
-            global_style_summary = global_timbre_anchor
-            global_style_summary_source = "fallback_timbre_anchor"
+            allow_timbre_fallback = bool(
+                self._get_hparam(
+                    "global_style_summary_fallback_to_timbre",
+                    contract_mode != "strict_factorized",
+                )
+            )
+            if allow_timbre_fallback:
+                global_style_summary = global_timbre_anchor
+                global_style_summary_source = "fallback_timbre_anchor"
+            else:
+                raise ValueError(
+                    "strict_factorized reference contract requires a style-backed `global_style_summary`; "
+                    "fallback to global timbre anchor is disabled."
+                )
         cache["global_style_summary"] = self._normalize_style_embed(global_style_summary)
         cache["global_style_summary_source"] = global_style_summary_source
+        cache["global_style_summary_is_fallback"] = bool(
+            global_style_summary_source == "fallback_timbre_anchor"
+        )
 
         validate_reference_cache(cache)
         return cache
@@ -445,7 +468,8 @@ class ConanStyleConditioningMixin:
         style_global = self._summary_vector(
             first_present(ret, "global_style_summary", "style_embed")
         )
-        style_trace = self._masked_mean(ret.get("style_trace"), ret.get("style_trace_mask"))
+        combined_style_trace, combined_style_trace_mask = resolve_combined_style_trace(ret)
+        style_trace = self._masked_mean(combined_style_trace, combined_style_trace_mask)
         dynamic_timbre = self._masked_mean(ret.get("dynamic_timbre"), ret.get("dynamic_timbre_mask"))
 
         if reference_cache is not None:

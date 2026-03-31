@@ -101,8 +101,9 @@ def canonicalize_reference_bundle(
     )
     resolved_ref = first_present(bundle, "ref", default=default_ref)
     explicit_ref = resolved_ref is not None
-    resolved_timbre = first_present(bundle, "ref_timbre", "timbre", default=resolved_ref)
-    explicit_timbre = first_present(bundle, "ref_timbre", "timbre", default=None) is not None or explicit_ref
+    explicit_timbre_value = first_present(bundle, "ref_timbre", "timbre", default=None)
+    explicit_timbre = explicit_timbre_value is not None
+    resolved_timbre = explicit_timbre_value if explicit_timbre_value is not None else resolved_ref
 
     explicit_style_value = first_present(bundle, "ref_style", "style", default=None)
     explicit_dynamic_timbre_value = first_present(bundle, "ref_dynamic_timbre", "dynamic_timbre", default=None)
@@ -112,10 +113,13 @@ def canonicalize_reference_bundle(
     if contract_mode == "strict_factorized":
         if resolved_ref is None:
             raise ValueError("strict_factorized reference contract requires `ref`.")
+        if explicit_timbre_value is None:
+            raise ValueError("strict_factorized reference contract requires explicit `ref_timbre`.")
         if explicit_style_value is None:
             raise ValueError("strict_factorized reference contract requires explicit `ref_style`.")
         if explicit_dynamic_timbre_value is None:
             raise ValueError("strict_factorized reference contract requires explicit `ref_dynamic_timbre`.")
+        resolved_timbre = explicit_timbre_value
         resolved_style = explicit_style_value
         resolved_dynamic_timbre = explicit_dynamic_timbre_value
     else:
@@ -218,7 +222,7 @@ def resolve_reference_bundle(
 def build_reference_bundle_from_batch(sample: Mapping[str, Any], default_ref=None):
     raw_bundle = {
         "ref": first_present(sample, "ref", "ref_mels", default=default_ref),
-        "ref_timbre": first_present(sample, "ref_timbre_mels", "timbre_ref_mels", "ref_mels"),
+        "ref_timbre": first_present(sample, "ref_timbre_mels", "timbre_ref_mels"),
         "ref_style": first_present(sample, "ref_style_mels", "style_ref_mels"),
         "ref_dynamic_timbre": first_present(
             sample,

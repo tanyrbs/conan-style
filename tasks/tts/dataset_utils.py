@@ -287,12 +287,26 @@ class BaseSpeechDataset(BaseDataset):
             return self._trim_ref_spec(fallback_item)
 
         style_id = int(item.get('style_id', -1))
-        if self.hparams.get('dynamic_timbre_ref_same_style', True) and style_id >= 0:
+        if style_id >= 0:
+            cross_style_bucket = [
+                idx for idx in bucket
+                if idx != index and int(self._get_item(idx).get('style_id', -1)) >= 0
+                and int(self._get_item(idx).get('style_id', -1)) != style_id
+            ]
             same_style_bucket = [
                 idx for idx in bucket
                 if idx != index and int(self._get_item(idx).get('style_id', -1)) == style_id
             ]
-            if len(same_style_bucket) > 0:
+            prefer_cross_style = bool(self.hparams.get('dynamic_timbre_ref_prefer_cross_style', True))
+            allow_same_style = bool(self.hparams.get('dynamic_timbre_ref_same_style', False))
+            allow_same_style_fallback = bool(
+                self.hparams.get('dynamic_timbre_ref_allow_same_style_fallback', True)
+            )
+            if prefer_cross_style and len(cross_style_bucket) > 0:
+                bucket = cross_style_bucket
+            elif allow_same_style and len(same_style_bucket) > 0:
+                bucket = same_style_bucket
+            elif allow_same_style_fallback and len(same_style_bucket) > 0 and len(cross_style_bucket) <= 0:
                 bucket = same_style_bucket
         sampled_idx = self._weighted_sample_from_indices(
             bucket,
@@ -358,6 +372,7 @@ class BaseSpeechDataset(BaseDataset):
             'mel': spec,
             'mel_nonpadding': spec.abs().sum(-1) > 0,
             'ref_mel': ref_spec,
+            'ref_timbre_mel': ref_spec.clone(),
         }
 
         # Optional speaker embedding
@@ -430,6 +445,8 @@ class BaseSpeechDataset(BaseDataset):
             'ref_mels': ref_mels,
             'ref_mel_lengths': ref_lens,
         }
+        if all('ref_timbre_mel' in s for s in samples):
+            batch['ref_timbre_mels'] = collate_1d_or_2d([s['ref_timbre_mel'] for s in samples], 0.0)
 
         if hparams.get('use_spk_embed', False):
             batch['spk_embed'] = torch.stack([s['spk_embed'] for s in samples])

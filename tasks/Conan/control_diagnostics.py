@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from modules.Conan.control.common import summary_vector
+from modules.Conan.style_trace_utils import resolve_combined_style_trace
 
 
 TRACKED_LAMBDA_KEYS = (
@@ -167,6 +168,9 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     if not isinstance(stage_outputs, dict):
         return {}
     stats = {}
+    global_timbre_gate_values = []
+    global_timbre_gate_stds = []
+    global_timbre_residual_values = []
     global_gate_values = []
     global_gate_stds = []
     slow_style_gate_values = []
@@ -176,6 +180,18 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     for stage_meta in stage_outputs.values():
         if not isinstance(stage_meta, dict):
             continue
+        branch_stats = _branch_statistics(
+            stage_meta.get("global_timbre_ctx"),
+            stage_meta.get("global_timbre_gate"),
+            "diag_decoder_global_timbre",
+        )
+        if "diag_decoder_global_timbre_gate_mean" in branch_stats:
+            global_timbre_gate_values.append(branch_stats["diag_decoder_global_timbre_gate_mean"])
+        if "diag_decoder_global_timbre_gate_std" in branch_stats:
+            global_timbre_gate_stds.append(branch_stats["diag_decoder_global_timbre_gate_std"])
+        if "diag_decoder_global_timbre_residual_norm" in branch_stats:
+            global_timbre_residual_values.append(branch_stats["diag_decoder_global_timbre_residual_norm"])
+
         branch_stats = _branch_statistics(
             stage_meta.get("global_style_ctx"),
             stage_meta.get("global_style_gate"),
@@ -200,6 +216,12 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
         if "diag_decoder_slow_style_residual_norm" in branch_stats:
             slow_style_residual_values.append(branch_stats["diag_decoder_slow_style_residual_norm"])
 
+    if global_timbre_gate_values:
+        stats["diag_decoder_global_timbre_gate_mean"] = torch.stack(global_timbre_gate_values).mean()
+    if global_timbre_gate_stds:
+        stats["diag_decoder_global_timbre_gate_std"] = torch.stack(global_timbre_gate_stds).mean()
+    if global_timbre_residual_values:
+        stats["diag_decoder_global_timbre_residual_norm"] = torch.stack(global_timbre_residual_values).mean()
     if global_gate_values:
         stats["diag_decoder_global_style_gate_mean"] = torch.stack(global_gate_values).mean()
     if global_gate_stds:
@@ -212,10 +234,19 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
         stats["diag_decoder_global_style_residual_norm"] = torch.stack(global_residual_values).mean()
     if slow_style_residual_values:
         stats["diag_decoder_slow_style_residual_norm"] = torch.stack(slow_style_residual_values).mean()
+    style_total_residual = None
     if "diag_decoder_global_style_residual_norm" in stats and "diag_decoder_slow_style_residual_norm" in stats:
-        stats["diag_decoder_style_total_residual_norm"] = (
+        style_total_residual = (
             stats["diag_decoder_global_style_residual_norm"] + stats["diag_decoder_slow_style_residual_norm"]
         )
+    elif "diag_decoder_global_style_residual_norm" in stats:
+        style_total_residual = stats["diag_decoder_global_style_residual_norm"]
+    elif "diag_decoder_slow_style_residual_norm" in stats:
+        style_total_residual = stats["diag_decoder_slow_style_residual_norm"]
+    if style_total_residual is not None:
+        if "diag_decoder_global_timbre_residual_norm" in stats:
+            style_total_residual = style_total_residual + stats["diag_decoder_global_timbre_residual_norm"]
+        stats["diag_decoder_style_total_residual_norm"] = style_total_residual
     dynamic_norm, _ = _safe_mean_std(
         dynamic_timbre_residual.norm(dim=-1) if isinstance(dynamic_timbre_residual, torch.Tensor) else None
     )
@@ -268,18 +299,22 @@ def collect_control_diagnostics(output, sample, config):
             if std is not None:
                 diagnostics[diag_std_key] = std
 
-        style_trace = output.get("style_trace")
+        style_trace, style_trace_mask = resolve_combined_style_trace(output)
+        slow_style_trace = output.get("slow_style_trace")
         dynamic_timbre = output.get("dynamic_timbre")
-        style_repr = _masked_sequence_mean(style_trace, output.get("style_trace_mask"))
+        style_repr = _masked_sequence_mean(style_trace, style_trace_mask)
         timbre_repr = _masked_sequence_mean(dynamic_timbre, output.get("dynamic_timbre_mask"))
         global_timbre_anchor = summary_vector(output.get("global_timbre_anchor", output.get("style_embed")))
         global_style_summary = summary_vector(
             output.get("global_style_summary_runtime", output.get("global_style_summary", output.get("style_embed")))
         )
 
-        style_valid = _mask_valid_fraction(output.get("style_trace_mask"), style_trace)
+        style_valid = _mask_valid_fraction(style_trace_mask, style_trace)
         if style_valid is not None:
             diagnostics["diag_style_trace_valid_frac"] = style_valid
+        slow_style_valid = _mask_valid_fraction(output.get("slow_style_trace_mask"), slow_style_trace)
+        if slow_style_valid is not None:
+            diagnostics["diag_slow_style_trace_valid_frac"] = slow_style_valid
         timbre_valid = _mask_valid_fraction(output.get("dynamic_timbre_mask"), dynamic_timbre)
         if timbre_valid is not None:
             diagnostics["diag_dynamic_timbre_valid_frac"] = timbre_valid

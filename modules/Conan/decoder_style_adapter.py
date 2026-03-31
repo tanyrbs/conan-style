@@ -5,6 +5,11 @@ from typing import Any, Mapping, Optional
 import torch
 import torch.nn as nn
 
+from modules.Conan.decoder_style_bundle import (
+    canonicalize_decoder_style_bundle,
+    ensure_decoder_style_bundle_respects_timing,
+)
+
 
 def _is_sequence_tensor(value: Any) -> bool:
     return isinstance(value, torch.Tensor) and value.dim() == 3 and value.size(1) > 0
@@ -28,6 +33,9 @@ class ConanDecoderStyleAdapter(nn.Module):
         *,
         gate_hidden: Optional[int] = None,
         stage_splits=None,
+        global_timbre_scale_early: float = 0.18,
+        global_timbre_scale_mid: float = 0.12,
+        global_timbre_scale_late: float = 0.08,
         global_style_scale: float = 0.25,
         slow_style_scale: float = 0.55,
         style_trace_scale: float = 0.9,
@@ -37,17 +45,22 @@ class ConanDecoderStyleAdapter(nn.Module):
         super().__init__()
         self.hidden_size = int(hidden_size)
         self.stage_splits = stage_splits
+        self.global_timbre_scale_early = float(global_timbre_scale_early)
+        self.global_timbre_scale_mid = float(global_timbre_scale_mid)
+        self.global_timbre_scale_late = float(global_timbre_scale_late)
         self.global_style_scale = float(global_style_scale)
         self.slow_style_scale = float(slow_style_scale)
         self.style_trace_scale = float(style_trace_scale)
         self.dynamic_timbre_scale = float(dynamic_timbre_scale)
         gate_hidden = max(1, int(gate_hidden or hidden_size))
 
+        self.global_timbre_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
         self.global_style_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
         self.slow_style_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
         self.style_trace_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
         self.dynamic_timbre_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
 
+        self.global_timbre_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
         self.global_style_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
         self.slow_style_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
         self.style_trace_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
@@ -167,18 +180,30 @@ class ConanDecoderStyleAdapter(nn.Module):
         nonpadding: Optional[torch.Tensor] = None,
     ):
         stage_name = str(stage_name or "late").strip().lower() or "late"
+        style_bundle = canonicalize_decoder_style_bundle(style_bundle)
         if not isinstance(style_bundle, Mapping):
             return hidden_btc, {"stage_name": stage_name, "applied": False}
+        ensure_decoder_style_bundle_respects_timing(style_bundle)
 
         nonpadding_mask = self._normalize_nonpadding(nonpadding, hidden_btc)
+        global_timbre_anchor = self._expand_single(
+            style_bundle.get("global_timbre_anchor_runtime", style_bundle.get("global_timbre")),
+            hidden_btc.size(1),
+        )
         slow_style_trace = style_bundle.get("slow_style_trace")
-        style_trace = style_bundle.get("style_trace")
-        dynamic_timbre = style_bundle.get("dynamic_timbre")
+        style_trace = style_bundle.get("M_style", style_bundle.get("style_trace"))
+        dynamic_timbre = style_bundle.get("M_timbre", style_bundle.get("dynamic_timbre"))
         global_style_summary = self._expand_single(
             style_bundle.get("global_style_summary"),
             hidden_btc.size(1),
         )
 
+        global_timbre_scale = {
+            "early": self.global_timbre_scale_early,
+            "mid": self.global_timbre_scale_mid,
+            "late": self.global_timbre_scale_late,
+        }.get(stage_name, 0.0)
+        apply_global_timbre = global_timbre_scale > 0.0
         apply_global = stage_name == "late"
         apply_slow_style = stage_name in {"mid", "late"}
         apply_style = stage_name == "late"
@@ -186,6 +211,18 @@ class ConanDecoderStyleAdapter(nn.Module):
 
         conditioned = hidden_btc
         metadata = {"stage_name": stage_name, "applied": False}
+
+        if apply_global_timbre and global_timbre_anchor is not None:
+            conditioned, global_timbre_ctx, global_timbre_gate = self._apply_branch(
+                conditioned,
+                global_timbre_anchor,
+                projector=self.global_timbre_proj,
+                gate=self.global_timbre_gate,
+                scale=global_timbre_scale,
+                nonpadding_mask=nonpadding_mask,
+            )
+            metadata["global_timbre_ctx"] = global_timbre_ctx
+            metadata["global_timbre_gate"] = global_timbre_gate
 
         if apply_global and global_style_summary is not None:
             conditioned, global_ctx, global_gate = self._apply_branch(

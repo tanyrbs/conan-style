@@ -20,6 +20,7 @@ VALID_STYLE_TRACE_MODES = (
     "none",
     "fast",
     "slow",
+    "dual",
 )
 
 
@@ -74,6 +75,10 @@ def normalize_style_trace_mode(mode, default: str = "fast") -> str:
         "full": "fast",
         "mainline": "slow",
         "coarse": "slow",
+        "hybrid": "dual",
+        "slow_fast": "dual",
+        "dual_path": "dual",
+        "dual_memory": "dual",
     }
     normalized = alias_map.get(normalized, normalized)
     if normalized not in VALID_STYLE_TRACE_MODES:
@@ -87,6 +92,7 @@ class StyleMainlineControls:
     apply_global_style_anchor: bool = True
     apply_style_trace: bool = True
     apply_dynamic_timbre: bool = True
+    global_timbre_to_pitch: bool = True
     global_style_anchor_strength: float = 1.0
     style_strength: float = 1.0
     dynamic_timbre_strength: float = 1.0
@@ -101,6 +107,7 @@ class StyleMainlineControls:
     dynamic_timbre_boundary_suppress_strength: float = 0.0
     dynamic_timbre_boundary_radius: int = 2
     dynamic_timbre_anchor_preserve_strength: float = 0.0
+    enforce_decoder_no_timing_writeback: bool = True
     mainline_owner: str = STYLE_MAINLINE_OWNER
 
     def as_dict(self):
@@ -145,6 +152,13 @@ def resolve_style_mainline_controls(
         "global_only": "none",
         "dynamic_timbre_only": "none",
     }[mode]
+    default_global_timbre_to_pitch = {
+        "legacy_full": True,
+        "mainline_full": False,
+        "global_style_dynamic_timbre": False,
+        "global_only": False,
+        "dynamic_timbre_only": False,
+    }[mode]
 
     def _value(*keys: str, default=None):
         return _first_present(
@@ -164,6 +178,14 @@ def resolve_style_mainline_controls(
         apply_global_style_anchor=apply_global_style_anchor,
         apply_style_trace=apply_style_trace,
         apply_dynamic_timbre=apply_dynamic_timbre,
+        global_timbre_to_pitch=bool(
+            _value(
+                "global_timbre_to_pitch",
+                "global_style_anchor_to_pitch",
+                "style_anchor_to_pitch",
+                default=default_global_timbre_to_pitch,
+            )
+        ),
         global_style_anchor_strength=_raw_or_float(
             "global_style_anchor_strength",
             "global_timbre_strength",
@@ -198,6 +220,9 @@ def resolve_style_mainline_controls(
         dynamic_timbre_anchor_preserve_strength=float(
             _value("dynamic_timbre_anchor_preserve_strength", default=0.0)
         ),
+        enforce_decoder_no_timing_writeback=bool(
+            _value("enforce_decoder_no_timing_writeback", default=True)
+        ),
     )
 
 
@@ -219,10 +244,15 @@ def build_style_mainline_surface_payload(
         "mainline_owner": controls.mainline_owner,
         "decoder_side_only": True,
         "timing_writeback_allowed": False,
+        "enforce_decoder_no_timing_writeback": bool(controls.enforce_decoder_no_timing_writeback),
+        "planner_writeback_allowed": False,
+        "projector_writeback_allowed": False,
+        "timing_authority": "pitch_content_only",
         "mode": controls.mode,
         "apply_global_style_anchor": bool(controls.apply_global_style_anchor),
         "apply_style_trace": bool(controls.apply_style_trace),
         "apply_dynamic_timbre": bool(controls.apply_dynamic_timbre),
+        "global_timbre_to_pitch": bool(controls.global_timbre_to_pitch),
         "global_style_anchor_strength": _surface_value(controls.global_style_anchor_strength),
         "style_strength": _surface_value(controls.style_strength),
         "dynamic_timbre_strength": _surface_value(controls.dynamic_timbre_strength),

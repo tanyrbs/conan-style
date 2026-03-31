@@ -83,6 +83,30 @@ def _validate_mode_output(mode, output):
         raise AssertionError(f"{mode}: style/timbre query shape mismatch.")
     if not bool(output.get("decoder_style_adapter_enabled", False)):
         raise AssertionError(f"{mode}: decoder_style_adapter_enabled is false.")
+    decoder_style_bundle = output.get("decoder_style_bundle")
+    if not isinstance(decoder_style_bundle, dict):
+        raise AssertionError(f"{mode}: decoder_style_bundle missing.")
+    if not bool(decoder_style_bundle.get("decoder_only", False)):
+        raise AssertionError(f"{mode}: decoder_style_bundle.decoder_only is false.")
+    if bool(decoder_style_bundle.get("planner_writeback_allowed", True)):
+        raise AssertionError(f"{mode}: decoder_style_bundle unexpectedly enables planner writeback.")
+    if bool(decoder_style_bundle.get("projector_writeback_allowed", True)):
+        raise AssertionError(f"{mode}: decoder_style_bundle unexpectedly enables projector writeback.")
+    if str(decoder_style_bundle.get("bundle_variant")) != mode:
+        raise AssertionError(f"{mode}: unexpected decoder bundle variant {decoder_style_bundle.get('bundle_variant')}")
+    if expected["dynamic_timbre"] and not isinstance(decoder_style_bundle.get("M_timbre"), torch.Tensor):
+        raise AssertionError(f"{mode}: M_timbre missing from decoder bundle.")
+    if expected["style_trace"] and not (
+        isinstance(decoder_style_bundle.get("M_style"), torch.Tensor)
+        or isinstance(decoder_style_bundle.get("slow_style_trace"), torch.Tensor)
+    ):
+        raise AssertionError(f"{mode}: style bundle missing M_style/slow_style_trace.")
+    expected_global_timbre_to_pitch = (mode == "legacy_full")
+    if bool(output.get("global_timbre_to_pitch_applied", False)) != expected_global_timbre_to_pitch:
+        raise AssertionError(
+            f"{mode}: global_timbre_to_pitch_applied mismatch, expected {expected_global_timbre_to_pitch}, "
+            f"got {output.get('global_timbre_to_pitch_applied')}"
+        )
 
 
 def run_smoke(args):

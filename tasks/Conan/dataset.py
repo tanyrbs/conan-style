@@ -51,8 +51,11 @@ class ConanDataset(FastSpeechDataset):
             self.hparams.get("reference_contract_mode", "collapsed_reference")
         )
         batch["reference_contract_mode"] = contract_mode
-        batch["ref_timbre_mels"] = batch.get("ref_timbre_mels", batch["ref_mels"])
         if contract_mode == "strict_factorized":
+            if "ref_timbre_mels" not in batch:
+                raise ValueError(
+                    "strict_factorized reference contract requires explicit `ref_timbre_mels` in batch."
+                )
             if "style_ref_mels" not in batch:
                 raise ValueError(
                     "strict_factorized reference contract requires sampled `style_ref_mels` in batch."
@@ -61,6 +64,8 @@ class ConanDataset(FastSpeechDataset):
                 raise ValueError(
                     "strict_factorized reference contract requires sampled `dynamic_timbre_ref_mels` in batch."
                 )
+        else:
+            batch["ref_timbre_mels"] = batch.get("ref_timbre_mels", batch["ref_mels"])
         raw_reference_bundle = {
             "ref": batch["ref_mels"],
             "ref_timbre": batch["ref_timbre_mels"],

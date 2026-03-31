@@ -1,5 +1,6 @@
 STYLE_PROFILE_KEYS = (
     "decoder_style_condition_mode",
+    "global_timbre_to_pitch",
     "global_style_anchor_strength",
     "style_trace_mode",
     "style_memory_mode",
@@ -20,6 +21,7 @@ STYLE_PROFILE_KEYS = (
 STYLE_PROFILES = {
     "balanced": {
         "decoder_style_condition_mode": "legacy_full",
+        "global_timbre_to_pitch": True,
         "global_style_anchor_strength": 1.0,
         "style_trace_mode": "fast",
         "style_memory_mode": "fast",
@@ -37,6 +39,7 @@ STYLE_PROFILES = {
     },
     "strong_style": {
         "decoder_style_condition_mode": "legacy_full",
+        "global_timbre_to_pitch": True,
         "global_style_anchor_strength": 1.0,
         "style_trace_mode": "fast",
         "style_memory_mode": "fast",
@@ -54,6 +57,7 @@ STYLE_PROFILES = {
     },
     "strong_timbre": {
         "decoder_style_condition_mode": "legacy_full",
+        "global_timbre_to_pitch": True,
         "global_style_anchor_strength": 1.15,
         "style_trace_mode": "fast",
         "style_memory_mode": "fast",
@@ -71,6 +75,7 @@ STYLE_PROFILES = {
     },
     "strong_style_timbre": {
         "decoder_style_condition_mode": "legacy_full",
+        "global_timbre_to_pitch": True,
         "global_style_anchor_strength": 1.1,
         "style_trace_mode": "fast",
         "style_memory_mode": "fast",
@@ -88,6 +93,7 @@ STYLE_PROFILES = {
     },
     "extreme": {
         "decoder_style_condition_mode": "legacy_full",
+        "global_timbre_to_pitch": True,
         "global_style_anchor_strength": 1.15,
         "style_trace_mode": "fast",
         "style_memory_mode": "fast",
@@ -105,6 +111,7 @@ STYLE_PROFILES = {
     },
     "mainline_dynamic_timbre": {
         "decoder_style_condition_mode": "global_style_dynamic_timbre",
+        "global_timbre_to_pitch": False,
         "global_style_anchor_strength": 1.1,
         "style_trace_mode": "none",
         "style_memory_mode": "fast",
@@ -122,8 +129,27 @@ STYLE_PROFILES = {
     },
     "mainline_strong_style_timbre": {
         "decoder_style_condition_mode": "mainline_full",
+        "global_timbre_to_pitch": False,
         "global_style_anchor_strength": 1.08,
-        "style_trace_mode": "slow",
+        "style_trace_mode": "dual",
+        "style_memory_mode": "slow",
+        "style_strength": 1.45,
+        "style_temperature": 1.22,
+        "global_style_trace_blend": 0.35,
+        "dynamic_timbre_memory_mode": "fast",
+        "dynamic_timbre_strength": 1.35,
+        "dynamic_timbre_temperature": 1.15,
+        "dynamic_timbre_gate_scale": 1.16,
+        "dynamic_timbre_gate_bias": 0.04,
+        "dynamic_timbre_boundary_suppress_strength": 0.16,
+        "dynamic_timbre_boundary_radius": 2,
+        "dynamic_timbre_anchor_preserve_strength": 0.12,
+    },
+    "mainline_dual_style_timbre": {
+        "decoder_style_condition_mode": "mainline_full",
+        "global_timbre_to_pitch": False,
+        "global_style_anchor_strength": 1.08,
+        "style_trace_mode": "dual",
         "style_memory_mode": "slow",
         "style_strength": 1.45,
         "style_temperature": 1.22,
@@ -139,6 +165,7 @@ STYLE_PROFILES = {
     },
     "dynamic_timbre_only": {
         "decoder_style_condition_mode": "dynamic_timbre_only",
+        "global_timbre_to_pitch": False,
         "global_style_anchor_strength": 0.0,
         "style_trace_mode": "none",
         "style_memory_mode": "fast",

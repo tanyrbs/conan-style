@@ -33,6 +33,11 @@ from modules.Conan.control import (
 from modules.Conan.reference_bundle import resolve_reference_bundle
 from modules.Conan.reference_cache import resolve_reference_cache
 from modules.Conan.decoder_style_adapter import ConanDecoderStyleAdapter
+from modules.Conan.decoder_style_bundle import (
+    DECODER_STYLE_TIMING_AUTHORITY,
+    build_decoder_style_bundle,
+    validate_decoder_style_bundle,
+)
 from modules.Conan.style_mainline import (
     build_style_mainline_memory_payload,
     build_style_mainline_surface_payload,
@@ -207,6 +212,12 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 hidden_size,
                 gate_hidden=hparams.get("decoder_style_adapter_gate_hidden", hidden_size),
                 stage_splits=hparams.get("decoder_style_adapter_stage_splits", None),
+                global_timbre_scale_early=hparams.get(
+                    "decoder_global_timbre_scale_early",
+                    hparams.get("decoder_global_timbre_scale", 0.18),
+                ),
+                global_timbre_scale_mid=hparams.get("decoder_global_timbre_scale_mid", 0.12),
+                global_timbre_scale_late=hparams.get("decoder_global_timbre_scale_late", 0.08),
                 global_style_scale=hparams.get("decoder_style_global_scale", 0.2),
                 slow_style_scale=hparams.get("decoder_slow_style_trace_scale", 0.55),
                 style_trace_scale=hparams.get("decoder_style_trace_scale", 0.75),
@@ -322,6 +333,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         )
         ret["global_style_anchor_strength"] = global_style_anchor_strength.squeeze(-1)
         ret["global_style_anchor_applied"] = bool(style_mainline.apply_global_style_anchor)
+        ret["global_timbre_to_pitch_enabled"] = bool(style_mainline.global_timbre_to_pitch)
         ret["style_mainline_memory"] = build_style_mainline_memory_payload(reference_cache)
 
         condition_embed = self.get_condition_embed(
@@ -337,10 +349,20 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             global_style_anchor_runtime = torch.zeros_like(global_style_anchor_runtime)
         ret["style_embed_runtime"] = global_style_anchor_runtime
         ret["global_style_anchor_runtime"] = global_style_anchor_runtime
-        base_condition_inp = content_embed + condition_embed + global_style_anchor_runtime
-        style_query_inp = self.style_query_proj(base_condition_inp) if self.style_query_proj is not None else base_condition_inp
+        query_condition_inp = content_embed + condition_embed + global_style_anchor_runtime
+        ret["query_condition_inp"] = query_condition_inp
+        base_condition_inp = content_embed + condition_embed
+        if style_mainline.apply_global_style_anchor and style_mainline.global_timbre_to_pitch:
+            base_condition_inp = base_condition_inp + global_style_anchor_runtime
+        ret["global_timbre_to_pitch_applied"] = bool(
+            style_mainline.apply_global_style_anchor and style_mainline.global_timbre_to_pitch
+        )
+        style_query_inp = (
+            self.style_query_proj(query_condition_inp)
+            if self.style_query_proj is not None else query_condition_inp
+        )
         timbre_query_inp = (
-            self.timbre_query_proj(base_condition_inp) if self.timbre_query_proj is not None else base_condition_inp
+            self.timbre_query_proj(query_condition_inp) if self.timbre_query_proj is not None else query_condition_inp
         )
         ret["style_query_inp"] = style_query_inp
         ret["timbre_query_inp"] = timbre_query_inp
@@ -417,16 +439,34 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["slow_style_decoder_residual"] = slow_style_decoder_residual
         ret["dynamic_timbre_decoder_residual"] = dynamic_timbre_decoder_residual
         ret["global_style_summary_runtime"] = global_style_summary_runtime
-        ret["decoder_style_bundle"] = {
-            "global_timbre_anchor": global_timbre_anchor,
-            "global_style_summary": global_style_summary_runtime,
-            "slow_style_trace": slow_style_decoder_residual,
-            "slow_style_trace_mask": ret.get("slow_style_trace_mask", ret.get("style_trace_mask")),
-            "style_trace": style_decoder_residual,
-            "style_trace_mask": ret.get("style_trace_mask"),
-            "dynamic_timbre": dynamic_timbre_decoder_residual,
-            "dynamic_timbre_mask": ret.get("dynamic_timbre_mask"),
-        }
+        ret["decoder_style_bundle"] = build_decoder_style_bundle(
+            global_timbre_anchor=global_timbre_anchor,
+            global_timbre_anchor_runtime=global_style_anchor_runtime,
+            global_timbre_source=reference_cache.get("global_timbre_anchor_source", "reference_cache"),
+            global_style_summary=global_style_summary_runtime,
+            global_style_summary_source=reference_cache.get(
+                "global_style_summary_source",
+                ret.get("style_trace_source_runtime", "reference_cache"),
+            ),
+            slow_style_trace=slow_style_decoder_residual,
+            slow_style_trace_mask=ret.get("slow_style_trace_mask", ret.get("style_trace_mask")),
+            slow_style_source=ret.get("slow_style_trace_source_runtime", ret.get("style_trace_source_runtime", "none")),
+            M_style=style_decoder_residual,
+            M_style_mask=ret.get("style_trace_mask"),
+            M_style_source=ret.get("style_trace_source_runtime", style_trace_source),
+            M_timbre=dynamic_timbre_decoder_residual,
+            M_timbre_mask=ret.get("dynamic_timbre_mask"),
+            M_timbre_source=dynamic_timbre_source,
+            factorization_guaranteed=bool(
+                ret.get("reference_contract", {}).get("factorization_guaranteed", False)
+            ),
+            mainline_owner=style_mainline.mainline_owner,
+            bundle_variant=style_mainline.mode,
+            bundle_source="decoder_style_mainline",
+            timing_authority=DECODER_STYLE_TIMING_AUTHORITY,
+            enforce_no_timing_writeback=style_mainline.enforce_decoder_no_timing_writeback,
+        )
+        validate_decoder_style_bundle(ret["decoder_style_bundle"])
         ret["style_mainline_surface"] = build_style_mainline_surface_payload(
             style_mainline,
             style_trace_available=style_trace_available,
@@ -807,6 +847,10 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             x = self.mel_out(x)
             return x
 
+        decoder_style_bundle = ret.get("decoder_style_bundle")
+        if bool(ret.get("style_mainline", {}).get("enforce_decoder_no_timing_writeback", True)):
+            validate_decoder_style_bundle(decoder_style_bundle)
+
         x_bct = x.transpose(1, 2)
         nonpadding = tgt_nonpadding.transpose(1, 2)
         stage_end_indices = self.decoder_style_adapter.resolve_stage_end_indices(len(self.decoder.res_blocks))
@@ -820,7 +864,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             x_btc, stage_meta = self.decoder_style_adapter.forward_stage(
                 stage_name,
                 x_btc,
-                style_bundle=ret.get("decoder_style_bundle"),
+                style_bundle=decoder_style_bundle,
                 nonpadding=tgt_nonpadding,
             )
             stage_outputs[stage_name] = stage_meta

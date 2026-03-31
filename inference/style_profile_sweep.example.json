@@ -1,0 +1,26 @@
+{
+  "output_dir": "infer_out_profiles/demo",
+  "profiles": [
+    "balanced",
+    "strong_style",
+    "strong_timbre",
+    "strong_style_timbre",
+    "extreme"
+  ],
+  "save_mel_npy": true,
+  "defaults": {
+    "emotion": "angry",
+    "style": "dramatic",
+    "arousal": 0.9,
+    "valence": -0.2
+  },
+  "cases": [
+    {
+      "name": "demo_case",
+      "src_wav": "path/to/source.wav",
+      "ref_wav": "path/to/reference.wav",
+      "ref_style_wav": "path/to/reference_style.wav",
+      "ref_dynamic_timbre_wav": "path/to/reference_dynamic_timbre.wav"
+    }
+  ]
+}

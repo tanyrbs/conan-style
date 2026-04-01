@@ -46,6 +46,9 @@ class ConanDataset(FastSpeechDataset):
             self.hparams.get("reference_contract_mode", "collapsed_reference")
         )
         batch["reference_contract_mode"] = contract_mode
+        batch["allow_split_reference_inputs"] = bool(
+            self.hparams.get("allow_split_reference_inputs", False)
+        )
         batch["ref_timbre_mels"] = batch.get("ref_timbre_mels", batch["ref_mels"])
         raw_reference_bundle = {
             "ref": batch["ref_mels"],

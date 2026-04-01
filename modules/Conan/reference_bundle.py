@@ -184,6 +184,14 @@ def resolve_reference_bundle(
     contract_mode: Optional[str] = None,
 ):
     source = source or {}
+    allow_split_reference_inputs = bool(
+        first_present(
+            source,
+            "allow_split_reference_inputs",
+            "allow_factorized_reference_bundle",
+            default=False,
+        )
+    )
     bundle = first_present(source, "reference_bundle", default=None)
     if isinstance(bundle, Mapping):
         return canonicalize_reference_bundle(
@@ -200,17 +208,17 @@ def resolve_reference_bundle(
                 "ref_timbre",
                 "ref_timbre_mels",
                 "timbre_ref_mels",
-            ),
+            ) if allow_split_reference_inputs else None,
             "ref_style": first_present(
                 source,
                 "ref_style",
                 "ref_style_mels",
-            ),
+            ) if allow_split_reference_inputs else None,
             "ref_dynamic_timbre": first_present(
                 source,
                 "ref_dynamic_timbre",
                 "ref_dynamic_timbre_mels",
-            ),
+            ) if allow_split_reference_inputs else None,
             "ref_emotion": first_present(
                 source,
                 "ref_emotion",
@@ -236,11 +244,19 @@ def resolve_reference_bundle(
 
 
 def build_reference_bundle_from_batch(sample: Mapping[str, Any], default_ref=None):
+    allow_split_reference_inputs = bool(
+        first_present(
+            sample,
+            "allow_split_reference_inputs",
+            "allow_factorized_reference_bundle",
+            default=False,
+        )
+    )
     raw_bundle = {
         "ref": first_present(sample, "ref", "ref_mels", default=default_ref),
-        "ref_timbre": first_present(sample, "ref_timbre_mels", "timbre_ref_mels"),
-        "ref_style": first_present(sample, "ref_style_mels"),
-        "ref_dynamic_timbre": first_present(sample, "ref_dynamic_timbre_mels"),
+        "ref_timbre": first_present(sample, "ref_timbre_mels", "timbre_ref_mels") if allow_split_reference_inputs else None,
+        "ref_style": first_present(sample, "ref_style_mels") if allow_split_reference_inputs else None,
+        "ref_dynamic_timbre": first_present(sample, "ref_dynamic_timbre_mels") if allow_split_reference_inputs else None,
         "ref_emotion": first_present(sample, "ref_emotion_mels", "emotion_ref_mels"),
         "ref_accent": first_present(sample, "ref_accent_mels", "accent_ref_mels"),
         "reference_contract_mode": first_present(sample, "reference_contract_mode"),

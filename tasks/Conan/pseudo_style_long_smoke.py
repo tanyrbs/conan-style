@@ -30,9 +30,9 @@ from utils.commons.hparams import hparams
 DEFAULT_TRACKED_KEYS = (
     "total_loss",
     "style_trace_consistency",
-    "style_timbre_dis",
-    "style_dynamic_timbre_dis",
-    "dynamic_timbre_gate_reg",
+    "output_identity_cosine",
+    "dynamic_timbre_budget",
+    "decoder_late_owner",
     "l1",
     "ssim",
     "fdiff",
@@ -55,9 +55,9 @@ def parse_args():
     parser.add_argument("--items_per_speaker", type=int, default=2)
     parser.add_argument("--output_dir", type=str, default="smoke_runs/pseudo_style_long")
     parser.add_argument("--lambda_style_trace_consistency", type=float, default=0.1)
-    parser.add_argument("--lambda_style_timbre_disentangle", type=float, default=0.05)
-    parser.add_argument("--lambda_style_dynamic_timbre_disentangle", type=float, default=0.0)
-    parser.add_argument("--lambda_dynamic_timbre_gate", type=float, default=0.0)
+    parser.add_argument("--lambda_output_identity_cosine", type=float, default=0.01)
+    parser.add_argument("--lambda_dynamic_timbre_budget", type=float, default=0.01)
+    parser.add_argument("--lambda_decoder_late_owner", type=float, default=0.02)
     parser.add_argument("--lambda_mel_adv", type=float, default=0.0)
     return parser.parse_args()
 
@@ -155,9 +155,9 @@ def run_long_smoke(args):
         binary_data_dir=args.binary_data_dir,
         extra_hparams={
             "lambda_style_trace_consistency": args.lambda_style_trace_consistency,
-            "lambda_style_timbre_disentangle": args.lambda_style_timbre_disentangle,
-            "lambda_style_dynamic_timbre_disentangle": args.lambda_style_dynamic_timbre_disentangle,
-            "lambda_dynamic_timbre_gate": args.lambda_dynamic_timbre_gate,
+            "lambda_output_identity_cosine": args.lambda_output_identity_cosine,
+            "lambda_dynamic_timbre_budget": args.lambda_dynamic_timbre_budget,
+            "lambda_decoder_late_owner": args.lambda_decoder_late_owner,
             "lambda_mel_adv": args.lambda_mel_adv,
         },
     )
@@ -228,9 +228,9 @@ def run_long_smoke(args):
 
             compare_keys = [
                 "style_trace_consistency",
-                "style_timbre_dis",
-                "style_dynamic_timbre_dis",
-                "dynamic_timbre_gate_reg",
+                "output_identity_cosine",
+                "dynamic_timbre_budget",
+                "decoder_late_owner",
                 "l1",
                 "fdiff",
                 "uv",
@@ -268,13 +268,11 @@ def run_long_smoke(args):
         "history_csv": str(history_csv_path),
         "plot_path": str(plot_path) if plot_path is not None else None,
         "resume_validation": resume_validation,
-        "style_losses_active": {
+        "control_losses_active": {
             "lambda_style_trace_consistency": float(hparams.get("lambda_style_trace_consistency", 0.0)),
-            "lambda_style_timbre_disentangle": float(hparams.get("lambda_style_timbre_disentangle", 0.0)),
-            "lambda_style_dynamic_timbre_disentangle": float(
-                hparams.get("lambda_style_dynamic_timbre_disentangle", 0.0)
-            ),
-            "lambda_dynamic_timbre_gate": float(hparams.get("lambda_dynamic_timbre_gate", 0.0)),
+            "lambda_output_identity_cosine": float(hparams.get("lambda_output_identity_cosine", 0.0)),
+            "lambda_dynamic_timbre_budget": float(hparams.get("lambda_dynamic_timbre_budget", 0.0)),
+            "lambda_decoder_late_owner": float(hparams.get("lambda_decoder_late_owner", 0.0)),
         },
         "history": history,
     }

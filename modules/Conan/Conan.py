@@ -397,31 +397,23 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         style_query_global_summary_scale = float(
             kwargs.get(
                 "style_query_global_summary_scale",
-                self.hparams.get("style_query_global_summary_scale", 0.35),
+                self.hparams.get("style_query_global_summary_scale", 0.0),
             )
         )
         style_query_base = base_condition_inp
         if isinstance(global_style_query_prior, torch.Tensor) and style_query_global_summary_scale != 0.0:
             style_query_base = style_query_base + style_query_global_summary_scale * global_style_query_prior
-        timbre_query_base = base_condition_inp
         if self.style_query_norm is not None:
             style_query_base = self.style_query_norm(style_query_base)
-        if self.timbre_query_norm is not None:
-            timbre_query_base = self.timbre_query_norm(timbre_query_base)
         ret["global_style_query_prior"] = global_style_query_prior
         ret["style_query_global_summary_scale"] = style_query_global_summary_scale
         ret["style_query_base"] = style_query_base
-        ret["timbre_query_base"] = timbre_query_base
         ret["query_anchor_split_applied"] = True
         style_query_inp = (
             self.style_query_proj(style_query_base)
             if self.style_query_proj is not None else style_query_base
         )
-        timbre_query_inp = (
-            self.timbre_query_proj(timbre_query_base) if self.timbre_query_proj is not None else timbre_query_base
-        )
         ret["style_query_inp"] = style_query_inp
-        ret["timbre_query_inp"] = timbre_query_inp
         pitch_inp = base_condition_inp
         style_decoder_residual = torch.zeros_like(base_condition_inp)
         slow_style_decoder_residual = torch.zeros_like(base_condition_inp)
@@ -459,13 +451,21 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         style_decoder_residual = style_payload.get("style_decoder_residual", style_decoder_residual)
         slow_style_decoder_residual = style_payload.get("slow_style_decoder_residual", slow_style_decoder_residual)
         global_style_summary_runtime = style_payload.get("global_style_summary_runtime", global_style_summary)
+        global_style_summary_runtime_source = style_payload.get(
+            "global_style_summary_runtime_source",
+            reference_cache.get("global_style_summary_source", "reference_cache")
+            if isinstance(reference_cache, dict)
+            else "reference_cache",
+        )
+        main_style_owner_residual = style_decoder_residual + slow_style_decoder_residual
+        ret["main_style_owner_residual"] = main_style_owner_residual
         dynamic_timbre_coarse_style_context_scale = float(
             kwargs.get(
                 "dynamic_timbre_coarse_style_context_scale",
-                self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.10),
+                self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.0),
             )
         )
-        dynamic_timbre_style_context = style_decoder_residual + 0.5 * slow_style_decoder_residual
+        dynamic_timbre_style_context = main_style_owner_residual
         if isinstance(global_style_query_prior, torch.Tensor) and dynamic_timbre_coarse_style_context_scale != 0.0:
             dynamic_timbre_style_context = (
                 dynamic_timbre_style_context
@@ -486,6 +486,16 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["dynamic_timbre_coarse_style_context_scale"] = dynamic_timbre_coarse_style_context_scale
         ret["dynamic_timbre_style_context_stopgrad"] = dynamic_timbre_style_context_stopgrad
         ret["dynamic_timbre_style_context_owner_safe"] = True
+        timbre_query_base = base_condition_inp + dynamic_timbre_style_context
+        if self.timbre_query_norm is not None:
+            timbre_query_base = self.timbre_query_norm(timbre_query_base)
+        timbre_query_inp = (
+            self.timbre_query_proj(timbre_query_base)
+            if self.timbre_query_proj is not None else timbre_query_base
+        )
+        ret["timbre_query_base"] = timbre_query_base
+        ret["timbre_query_inp"] = timbre_query_inp
+        ret["timbre_query_follows_style_owner"] = True
         if style_payload.get("style_trace_skip_reason") is not None:
             ret["style_trace_skip_reason"] = style_payload.get("style_trace_skip_reason")
         if (
@@ -528,19 +538,17 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["style_trace_applied"] = bool(style_trace_available)
         ret["dynamic_timbre_applied"] = bool(dynamic_timbre_available)
         ret["fast_style_decoder_residual"] = style_decoder_residual
-        ret["style_decoder_residual"] = style_decoder_residual + slow_style_decoder_residual
+        ret["style_decoder_residual"] = main_style_owner_residual
         ret["slow_style_decoder_residual"] = slow_style_decoder_residual
         ret["dynamic_timbre_decoder_residual"] = dynamic_timbre_decoder_residual
         ret["global_style_summary_runtime"] = global_style_summary_runtime
+        ret["global_style_summary_runtime_source"] = global_style_summary_runtime_source
         ret["decoder_style_bundle"] = build_decoder_style_bundle(
             global_timbre_anchor=global_timbre_anchor,
             global_timbre_anchor_runtime=global_timbre_anchor_runtime,
             global_timbre_source=reference_cache.get("global_timbre_anchor_source", "reference_cache"),
             global_style_summary=global_style_summary_runtime,
-            global_style_summary_source=reference_cache.get(
-                "global_style_summary_source",
-                ret.get("style_trace_source_runtime", "reference_cache"),
-            ),
+            global_style_summary_source=global_style_summary_runtime_source,
             slow_style_trace=self._maybe_decoder_sequence(slow_style_decoder_residual),
             slow_style_trace_mask=ret.get("slow_style_trace_mask", ret.get("style_trace_mask")),
             slow_style_source=ret.get("slow_style_trace_source_runtime", ret.get("style_trace_source_runtime", "none")),

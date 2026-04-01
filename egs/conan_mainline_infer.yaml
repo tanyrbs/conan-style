@@ -14,5 +14,9 @@ use_dynamic_timbre: true
 reference_contract_mode: collapsed_reference  # canonical mainline = single-reference weak internal factorization
 global_timbre_to_pitch: false
 style_profile: strong_style
+style_trace_mode: slow
+global_style_trace_blend: 0.0
+style_query_global_summary_scale: 0.0
+dynamic_timbre_coarse_style_context_scale: 0.0
 allow_explicit_dynamic_timbre_strength: false
 allow_split_reference_inputs: false  # split-reference paths stay research-only and do not define the mainline contract

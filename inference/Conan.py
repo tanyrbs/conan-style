@@ -214,12 +214,17 @@ class StreamingVoiceConversion:
 
     def _load_reference_mels(self, inp: Dict):
         ref_wav = inp["ref_wav"]
-        split_reference_inputs = bool(inp.get("allow_split_reference_inputs", False))
+        split_reference_surface_enabled = bool(
+            self.hparams.get("allow_split_reference_inputs", False)
+        )
+        split_reference_inputs = bool(
+            inp.get("allow_split_reference_inputs", split_reference_surface_enabled)
+        ) and split_reference_surface_enabled
         has_distinct_split_refs = self._has_distinct_split_reference_inputs(inp)
         if has_distinct_split_refs and not split_reference_inputs:
             warnings.warn(
-                "Distinct split reference inputs were provided but allow_split_reference_inputs is false; "
-                "the inference path will collapse them back to ref_wav.",
+                "Distinct split reference inputs were provided but the canonical mainline surface keeps "
+                "allow_split_reference_inputs disabled; the inference path will collapse them back to ref_wav.",
                 stacklevel=2,
             )
         ref_mel = torch.from_numpy(self._wav_to_mel(ref_wav)).float().unsqueeze(0).to(self.device)
@@ -319,11 +324,11 @@ class StreamingVoiceConversion:
             "global_style_anchor_strength": float(style_profile.get("global_style_anchor_strength", 1.0)),
             "style_trace_mode": style_profile.get(
                 "style_trace_mode",
-                self.hparams.get("style_trace_mode", "fast"),
+                self.hparams.get("style_trace_mode", "slow"),
             ),
             "style_memory_mode": style_profile.get(
                 "style_memory_mode",
-                self.hparams.get("style_reference_memory_mode", "fast"),
+                self.hparams.get("style_reference_memory_mode", "slow"),
             ),
             "fast_style_strength_scale": float(style_profile.get("fast_style_strength_scale", 1.0)),
             "slow_style_strength_scale": float(style_profile.get("slow_style_strength_scale", 1.0)),
@@ -331,7 +336,7 @@ class StreamingVoiceConversion:
             "global_style_trace_blend": float(style_profile.get("global_style_trace_blend", 0.0)),
             "dynamic_timbre_memory_mode": style_profile.get(
                 "dynamic_timbre_memory_mode",
-                self.hparams.get("dynamic_timbre_reference_memory_mode", "fast"),
+                self.hparams.get("dynamic_timbre_reference_memory_mode", "slow"),
             ),
             "dynamic_timbre_temperature": float(style_profile.get("dynamic_timbre_temperature", 1.0)),
             "dynamic_timbre_style_condition_scale": float(
@@ -349,13 +354,13 @@ class StreamingVoiceConversion:
             "style_query_global_summary_scale": float(
                 style_profile.get(
                     "style_query_global_summary_scale",
-                    self.hparams.get("style_query_global_summary_scale", 0.35),
+                    self.hparams.get("style_query_global_summary_scale", 0.0),
                 )
             ),
             "dynamic_timbre_coarse_style_context_scale": float(
                 style_profile.get(
                     "dynamic_timbre_coarse_style_context_scale",
-                    self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.10),
+                    self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.0),
                 )
             ),
             "dynamic_timbre_style_context_stopgrad": bool(

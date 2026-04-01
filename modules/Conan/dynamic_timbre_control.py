@@ -179,7 +179,7 @@ def apply_runtime_budget_to_dynamic_timbre(
     style_residual: Optional[torch.Tensor] = None,
     slow_style_residual: Optional[torch.Tensor] = None,
     padding_mask: Optional[torch.Tensor] = None,
-    budget_ratio: float = 0.75,
+    budget_ratio: float = 0.55,
     budget_margin: float = 0.02,
     slow_style_weight: float = 1.0,
 ):

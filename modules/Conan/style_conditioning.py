@@ -66,7 +66,7 @@ class ConanStyleConditioningMixin:
         style_residual=None,
         slow_style_residual=None,
         padding_mask=None,
-        budget_ratio=0.75,
+        budget_ratio=0.55,
         budget_margin=0.02,
         slow_style_weight=1.0,
     ):

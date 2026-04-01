@@ -18,7 +18,7 @@ STYLE_TRACE_RUNTIME_FIELDS = (
 
 
 def _style_trace_mode_from_controls(controls) -> str:
-    return normalize_style_trace_mode(getattr(controls, "style_trace_mode", "fast"), default="fast")
+    return normalize_style_trace_mode(getattr(controls, "style_trace_mode", "slow"), default="slow")
 
 
 def _masked_mean(model, sequence, mask=None):
@@ -98,18 +98,17 @@ def _write_trace_result(ret, trace_result, *, prefix: str):
         ret[f"{prefix}_memory_mode_used"] = trace_result["memory_mode"]
 
 
-def _blend_global_summary(model, global_style_summary, style_trace, style_trace_mask, *, blend=0.0):
+def _resolve_global_summary_runtime(model, global_style_summary, style_trace, style_trace_mask, *, blend=0.0):
     blend = float(blend)
-    if blend <= 0.0:
-        return global_style_summary
     style_trace_summary = _masked_mean(model, style_trace, style_trace_mask)
     if style_trace_summary is None:
-        return global_style_summary
+        return global_style_summary, "reference_summary"
     if isinstance(global_style_summary, torch.Tensor):
         base = global_style_summary[:, 0, :] if global_style_summary.dim() == 3 else global_style_summary
-        fused = base * (1.0 - blend) + style_trace_summary * blend
-        return model._normalize_style_embed(fused)
-    return model._normalize_style_embed(style_trace_summary)
+        if blend > 0.0:
+            fused = base * (1.0 - blend) + style_trace_summary * blend
+            return model._normalize_style_embed(fused), "style_trace_blended_with_reference"
+    return model._normalize_style_embed(style_trace_summary), "style_trace_pooled"
 
 
 def _branch_strength(style_strength, branch_scale: float):
@@ -142,6 +141,7 @@ def build_style_realization_payload(
         "slow_style_decoder_residual": zero_residual,
         "global_style_summary_runtime": global_style_summary,
         "style_trace_skip_reason": None,
+        "global_style_summary_runtime_source": "reference_summary",
     }
 
     ret["style_trace_runtime_mode"] = style_trace_mode
@@ -278,7 +278,7 @@ def build_style_realization_payload(
         )
         blended_mask = ret.get("style_trace_mask", ret.get("slow_style_trace_mask"))
 
-    payload["global_style_summary_runtime"] = _blend_global_summary(
+    payload["global_style_summary_runtime"], payload["global_style_summary_runtime_source"] = _resolve_global_summary_runtime(
         model,
         global_style_summary,
         blended_trace,
@@ -287,6 +287,7 @@ def build_style_realization_payload(
     )
     if isinstance(payload["global_style_summary_runtime"], torch.Tensor):
         ret["global_style_summary_runtime"] = payload["global_style_summary_runtime"]
+    ret["global_style_summary_runtime_source"] = payload["global_style_summary_runtime_source"]
     return payload
 
 

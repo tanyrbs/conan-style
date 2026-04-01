@@ -47,7 +47,7 @@ def normalize_decoder_style_condition_mode(mode, default: str = "mainline_full")
         "global_style_trace_dynamic_timbre": "mainline_full",
         "global_style_plus_trace_dynamic_timbre": "mainline_full",
         "gstdt": "mainline_full",
-        "mainline": "global_style_dynamic_timbre",
+        "mainline": "mainline_full",
         "bridge": "global_style_dynamic_timbre",
         "gsdt": "global_style_dynamic_timbre",
         "global_dynamic_timbre": "global_style_dynamic_timbre",
@@ -85,8 +85,8 @@ def derive_dynamic_timbre_strength(
     return max(min_value, min(max_value, float(derived)))
 
 
-def normalize_style_trace_mode(mode, default: str = "fast") -> str:
-    normalized_default = str(default or "fast").strip().lower() or "fast"
+def normalize_style_trace_mode(mode, default: str = "slow") -> str:
+    normalized_default = str(default or "slow").strip().lower() or "slow"
     normalized = str(mode or normalized_default).strip().lower() or normalized_default
     alias_map = {
         "off": "none",
@@ -96,7 +96,7 @@ def normalize_style_trace_mode(mode, default: str = "fast") -> str:
         "on": normalized_default,
         "true": normalized_default,
         "local": "fast",
-        "full": "fast",
+        "full": normalized_default,
         "mainline": "slow",
         "coarse": "slow",
         "hybrid": "dual",
@@ -124,8 +124,8 @@ class StyleMainlineControls:
     dynamic_timbre_strength: float = 1.0
     dynamic_timbre_strength_source: str = "derived_from_style_strength"
     style_trace_mode: str = "slow"
-    style_memory_mode: str = "fast"
-    dynamic_timbre_memory_mode: str = "fast"
+    style_memory_mode: str = "slow"
+    dynamic_timbre_memory_mode: str = "slow"
     style_temperature: float = 1.0
     global_style_trace_blend: float = 0.0
     dynamic_timbre_temperature: float = 1.0
@@ -259,12 +259,12 @@ def resolve_style_mainline_controls(
         dynamic_timbre_strength=dynamic_timbre_strength_value,
         dynamic_timbre_strength_source=str(dynamic_timbre_strength_source),
         style_trace_mode=resolved_style_trace_mode,
-        style_memory_mode=str(_value("style_memory_mode", "style_reference_memory_mode", default="fast")),
+        style_memory_mode=str(_value("style_memory_mode", "style_reference_memory_mode", default="slow")),
         dynamic_timbre_memory_mode=str(
             _value(
                 "dynamic_timbre_memory_mode",
                 "dynamic_timbre_reference_memory_mode",
-                default="fast",
+                default="slow",
             )
         ),
         style_temperature=float(_value("style_temperature", default=1.0)),

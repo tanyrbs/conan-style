@@ -478,7 +478,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             if isinstance(dynamic_timbre_decoder_residual, torch.Tensor):
                 timbre_budget = _sequence_abs_mean(dynamic_timbre_decoder_residual)
         if isinstance(style_budget, torch.Tensor) and isinstance(timbre_budget, torch.Tensor):
-            budget_ratio = float(config.get("dynamic_timbre_budget_ratio", 0.75))
+            budget_ratio = float(config.get("dynamic_timbre_budget_ratio", 0.55))
             budget_margin = float(config.get("dynamic_timbre_budget_margin", 0.02))
             style_budget_reference = style_budget.detach()
             voiced_weight = None
@@ -534,7 +534,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             late_timbre_energy = _tensor_abs_mean(late_stage.get("dynamic_timbre_delta"))
             late_anchor_energy = _tensor_abs_mean(late_stage.get("global_timbre_delta"))
             if late_owner_lambda > 0 and isinstance(late_style_energy, torch.Tensor) and isinstance(late_timbre_energy, torch.Tensor):
-                owner_ratio = float(config.get("decoder_late_timbre_owner_ratio", 0.75))
+                owner_ratio = float(config.get("decoder_late_timbre_owner_ratio", 0.55))
                 losses["decoder_late_owner"] = (
                     F.relu(late_timbre_energy - owner_ratio * late_style_energy) * late_owner_lambda
                 )

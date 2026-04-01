@@ -40,6 +40,9 @@ class ConanDecoderStyleAdapter(nn.Module):
         slow_style_scale: float = 0.55,
         style_trace_scale: float = 0.9,
         dynamic_timbre_scale: float = 0.9,
+        dynamic_timbre_scale_mid: Optional[float] = None,
+        dynamic_timbre_scale_late: Optional[float] = None,
+        dynamic_timbre_late_no_style_scale: float = 0.25,
         gate_bias: float = -2.0,
     ) -> None:
         super().__init__()
@@ -52,6 +55,15 @@ class ConanDecoderStyleAdapter(nn.Module):
         self.slow_style_scale = float(slow_style_scale)
         self.style_trace_scale = float(style_trace_scale)
         self.dynamic_timbre_scale = float(dynamic_timbre_scale)
+        self.dynamic_timbre_scale_mid = float(
+            dynamic_timbre_scale if dynamic_timbre_scale_mid is None else dynamic_timbre_scale_mid
+        )
+        self.dynamic_timbre_scale_late = float(
+            (self.dynamic_timbre_scale_mid * 0.6)
+            if dynamic_timbre_scale_late is None
+            else dynamic_timbre_scale_late
+        )
+        self.dynamic_timbre_late_no_style_scale = float(dynamic_timbre_late_no_style_scale)
         gate_hidden = max(1, int(gate_hidden or hidden_size))
 
         self.global_timbre_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
@@ -228,10 +240,26 @@ class ConanDecoderStyleAdapter(nn.Module):
         apply_global = stage_name == "late"
         apply_slow_style = stage_name in {"mid", "late"}
         apply_style = stage_name == "late"
-        apply_timbre = stage_name in {"mid", "late"}
+        style_owner_present = bool(
+            global_style_summary is not None
+            or _is_sequence_tensor(slow_style_trace)
+            or _is_sequence_tensor(style_trace)
+        )
+        dynamic_timbre_scale = {
+            "mid": self.dynamic_timbre_scale_mid,
+            "late": self.dynamic_timbre_scale_late,
+        }.get(stage_name, 0.0)
+        if stage_name == "late" and not style_owner_present:
+            dynamic_timbre_scale = dynamic_timbre_scale * self.dynamic_timbre_late_no_style_scale
+        apply_timbre = dynamic_timbre_scale > 0.0
 
         conditioned = hidden_btc
-        metadata = {"stage_name": stage_name, "applied": False}
+        metadata = {
+            "stage_name": stage_name,
+            "applied": False,
+            "style_owner_present": bool(style_owner_present),
+            "dynamic_timbre_scale_used": float(dynamic_timbre_scale),
+        }
 
         if apply_global_timbre and global_timbre_anchor is not None:
             conditioned, global_timbre_ctx, global_timbre_gate = self._apply_branch(
@@ -287,7 +315,7 @@ class ConanDecoderStyleAdapter(nn.Module):
                 dynamic_timbre,
                 projector=self.dynamic_timbre_proj,
                 gate=self.dynamic_timbre_gate,
-                scale=self.dynamic_timbre_scale,
+                scale=dynamic_timbre_scale,
                 nonpadding_mask=nonpadding_mask,
             )
             metadata["dynamic_timbre_ctx"] = timbre_ctx

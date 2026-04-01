@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Mapping, Optional
 
 import torch
@@ -100,7 +100,7 @@ class DecoderStyleBundle:
     M_timbre_source: str = "none"
 
     def as_dict(self):
-        return asdict(self)
+        return {field.name: getattr(self, field.name) for field in fields(self)}
 
 
 def ensure_decoder_style_bundle_respects_timing(

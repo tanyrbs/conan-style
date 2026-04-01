@@ -17,7 +17,9 @@ from tasks.Conan.smoke_utils import (
     build_pseudo_style_batch,
     build_pseudo_style_dataset,
     compare_model_state_dicts,
+    default_smoke_binary_data_dir,
     is_finite_scalar,
+    resolve_smoke_batch_shape,
     scalarize_value,
     scalarize_logs,
     select_speaker_batch_indices,
@@ -41,7 +43,12 @@ DEFAULT_TRACKED_KEYS = (
 def parse_args():
     parser = argparse.ArgumentParser(description="Run longer pseudo-style smoke with checkpoint resume validation.")
     parser.add_argument("--config", type=str, default="egs/conan_emformer.yaml")
-    parser.add_argument("--binary_data_dir", type=str, required=True)
+    parser.add_argument(
+        "--binary_data_dir",
+        type=str,
+        default=default_smoke_binary_data_dir(),
+        help="Binary dataset dir. Defaults to the first available built-in smoke dataset.",
+    )
     parser.add_argument("--num_steps", type=int, default=6)
     parser.add_argument("--checkpoint_step", type=int, default=3)
     parser.add_argument("--speakers_per_batch", type=int, default=2)
@@ -133,6 +140,13 @@ def _plot_history(history, output_dir):
 
 
 def run_long_smoke(args):
+    if not args.binary_data_dir:
+        raise ValueError("No pseudo-style smoke binary_data_dir was provided and no default smoke dataset was found.")
+    if int(args.num_steps) < 2:
+        raise ValueError("num_steps must be >= 2 for checkpoint resume validation.")
+    if int(args.checkpoint_step) < 1 or int(args.checkpoint_step) >= int(args.num_steps):
+        raise ValueError("checkpoint_step must satisfy 1 <= checkpoint_step < num_steps.")
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -148,10 +162,15 @@ def run_long_smoke(args):
         },
     )
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    batch_shape = resolve_smoke_batch_shape(
+        dataset,
+        speakers_per_batch=int(args.speakers_per_batch),
+        items_per_speaker=int(args.items_per_speaker),
+    )
     task = build_conan_training_task(device)
     optimizer, _ = task.build_optimizer(task.model)
 
-    checkpoint_step = max(1, min(int(args.checkpoint_step), int(args.num_steps) - 1))
+    checkpoint_step = int(args.checkpoint_step)
     checkpoint_path = output_dir / "resume_ckpt.pt"
     history = []
     resume_validation = {}
@@ -160,8 +179,8 @@ def run_long_smoke(args):
         indices = select_speaker_batch_indices(
             dataset,
             step_idx,
-            speakers_per_batch=int(args.speakers_per_batch),
-            items_per_speaker=int(args.items_per_speaker),
+            speakers_per_batch=batch_shape["speakers_per_batch"],
+            items_per_speaker=batch_shape["items_per_speaker"],
         )
         batch = build_pseudo_style_batch(dataset, indices, device)
         history.append(_run_generator_step(task, optimizer, batch, step_idx, indices))
@@ -184,8 +203,8 @@ def run_long_smoke(args):
             next_indices = select_speaker_batch_indices(
                 dataset,
                 step_idx + 1,
-                speakers_per_batch=int(args.speakers_per_batch),
-                items_per_speaker=int(args.items_per_speaker),
+                speakers_per_batch=batch_shape["speakers_per_batch"],
+                items_per_speaker=batch_shape["items_per_speaker"],
             )
             next_batch = build_pseudo_style_batch(dataset, next_indices, device)
 
@@ -244,6 +263,7 @@ def run_long_smoke(args):
         "num_styles": int(num_styles),
         "num_steps": int(args.num_steps),
         "checkpoint_step": int(checkpoint_step),
+        "batch_shape": batch_shape,
         "history_json": str(history_json_path),
         "history_csv": str(history_csv_path),
         "plot_path": str(plot_path) if plot_path is not None else None,

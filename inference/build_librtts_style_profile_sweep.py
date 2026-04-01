@@ -14,7 +14,9 @@ from inference.libritts_sweep_builder import (
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Build a style profile sweep config from a LibriTTS root.")
+    parser = argparse.ArgumentParser(
+        description="Build a single-reference style-profile sweep config from a LibriTTS root."
+    )
     parser.add_argument(
         "--dataset_root",
         type=str,

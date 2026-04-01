@@ -14,7 +14,9 @@ from tasks.Conan.smoke_utils import (
     build_conan_training_task,
     build_pseudo_style_batch,
     build_pseudo_style_dataset,
+    default_smoke_binary_data_dir,
     is_finite_scalar,
+    resolve_smoke_batch_shape,
     scalarize_logs,
     scalarize_value,
     select_speaker_batch_indices,
@@ -22,18 +24,23 @@ from tasks.Conan.smoke_utils import (
 
 
 EXPECTED_MODE_FLAGS = {
-    "legacy_full": {"style_trace": True, "dynamic_timbre": False, "global_anchor": True},
-    "mainline_full": {"style_trace": True, "dynamic_timbre": False, "global_anchor": True},
-    "global_style_dynamic_timbre": {"style_trace": False, "dynamic_timbre": False, "global_anchor": True},
+    "legacy_full": {"style_trace": True, "dynamic_timbre": True, "global_anchor": True},
+    "mainline_full": {"style_trace": True, "dynamic_timbre": True, "global_anchor": True},
+    "global_style_dynamic_timbre": {"style_trace": False, "dynamic_timbre": True, "global_anchor": True},
     "global_only": {"style_trace": False, "dynamic_timbre": False, "global_anchor": True},
-    "dynamic_timbre_only": {"style_trace": False, "dynamic_timbre": False, "global_anchor": False},
+    "dynamic_timbre_only": {"style_trace": False, "dynamic_timbre": True, "global_anchor": False},
 }
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Validate Conan strong-style mainline contract and query split.")
     parser.add_argument("--config", type=str, default="egs/conan_emformer.yaml")
-    parser.add_argument("--binary_data_dir", type=str, required=True)
+    parser.add_argument(
+        "--binary_data_dir",
+        type=str,
+        default=default_smoke_binary_data_dir(),
+        help="Binary dataset dir. Defaults to the first available built-in smoke dataset.",
+    )
     parser.add_argument(
         "--modes",
         type=str,
@@ -46,11 +53,11 @@ def parse_args():
 
 
 def _sum_loss(losses):
-    return sum(
-        value
-        for value in losses.values()
-        if isinstance(value, torch.Tensor) and value.requires_grad
-    )
+    total = None
+    for value in losses.values():
+        if isinstance(value, torch.Tensor) and value.requires_grad:
+            total = value if total is None else (total + value)
+    return total
 
 
 def _validate_mode_output(mode, output):
@@ -100,7 +107,7 @@ def _validate_mode_output(mode, output):
         or isinstance(decoder_style_bundle.get("slow_style_trace"), torch.Tensor)
     ):
         raise AssertionError(f"{mode}: style bundle missing M_style/slow_style_trace.")
-    expected_global_timbre_to_pitch = (mode == "legacy_full")
+    expected_global_timbre_to_pitch = False
     if bool(output.get("global_timbre_to_pitch_applied", False)) != expected_global_timbre_to_pitch:
         raise AssertionError(
             f"{mode}: global_timbre_to_pitch_applied mismatch, expected {expected_global_timbre_to_pitch}, "
@@ -110,8 +117,13 @@ def _validate_mode_output(mode, output):
 
 def run_smoke(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    if not args.binary_data_dir:
+        raise ValueError(
+            "No smoke binary_data_dir was provided and no default smoke dataset was found."
+        )
     modes = [item.strip() for item in str(args.modes).split(",") if item.strip()]
     results = []
+    batch_shape_info = None
     for mode in modes:
         dataset, _ = build_pseudo_style_dataset(
             config_path=args.config,
@@ -122,19 +134,27 @@ def run_smoke(args):
                 "lambda_mel_adv": 0.0,
             },
         )
+        if batch_shape_info is None:
+            batch_shape_info = resolve_smoke_batch_shape(
+                dataset,
+                speakers_per_batch=int(args.speakers_per_batch),
+                items_per_speaker=int(args.items_per_speaker),
+            )
         task = build_conan_training_task(device)
         optimizer, _ = task.build_optimizer(task.model)
         indices = select_speaker_batch_indices(
             dataset,
             0,
-            speakers_per_batch=int(args.speakers_per_batch),
-            items_per_speaker=int(args.items_per_speaker),
+            speakers_per_batch=batch_shape_info["speakers_per_batch"],
+            items_per_speaker=batch_shape_info["items_per_speaker"],
         )
         batch = build_pseudo_style_batch(dataset, indices, device, ensure_factorized_refs=False)
         optimizer.zero_grad(set_to_none=True)
         losses, output = task.run_model(batch, infer=False)
         total_loss = _sum_loss(losses)
-        if total_loss is None or not is_finite_scalar(total_loss):
+        if total_loss is None:
+            raise RuntimeError(f"{mode}: no differentiable losses were produced.")
+        if not is_finite_scalar(total_loss):
             raise RuntimeError(f"{mode}: non-finite total loss {total_loss}")
         total_loss.backward()
         task.on_before_optimization(0)
@@ -161,6 +181,7 @@ def run_smoke(args):
                 "dynamic_timbre_decoder_residual_l1": scalarize_value(
                     output["dynamic_timbre_decoder_residual"].abs().mean()
                 ),
+                "batch_shape": batch_shape_info,
                 "losses": scalar_losses,
             }
         )
@@ -169,6 +190,7 @@ def run_smoke(args):
         "device": device,
         "config": args.config,
         "binary_data_dir": args.binary_data_dir,
+        "batch_shape": batch_shape_info,
         "results": results,
     }
     output_path = Path(args.output_path)

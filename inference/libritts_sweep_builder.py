@@ -41,8 +41,6 @@ def build_cross_speaker_cases(speaker_to_wavs, *, num_cases=8):
                 "name": f"libritts_{case_idx:03d}_{src_speaker}_to_{ref_speaker}",
                 "src_wav": src_wav,
                 "ref_wav": ref_wav,
-                "ref_style_wav": ref_wav,
-                "ref_dynamic_timbre_wav": ref_wav,
             }
         )
     return cases

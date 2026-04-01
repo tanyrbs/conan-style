@@ -601,6 +601,8 @@ class ConanStyleConditioningMixin:
         reference_cache=None,
         memory_mode="fast",
         timbre_temperature=1.0,
+        style_context=None,
+        style_condition_scale=0.5,
         gate_scale=1.0,
         gate_bias=0.0,
         boundary_suppress_strength=0.0,
@@ -669,7 +671,16 @@ class ConanStyleConditioningMixin:
             padding_mask=src_key_padding_mask,
             preserve_strength=control.anchor_preserve_strength,
         )
-        gate = self.timbre_gate(torch.cat([encoder_out, aligned, global_timbre_anchor], dim=-1))
+        style_context_available = (
+            isinstance(style_context, torch.Tensor)
+            and tuple(style_context.shape) == tuple(aligned.shape)
+        )
+        if style_context_available:
+            style_context = style_context.masked_fill(src_key_padding_mask.unsqueeze(-1), 0.0)
+            encoder_gate_input = encoder_out + float(style_condition_scale) * style_context
+        else:
+            encoder_gate_input = encoder_out
+        gate = self.timbre_gate(torch.cat([encoder_gate_input, aligned, global_timbre_anchor], dim=-1))
         ret["dynamic_timbre_gate_raw"] = gate.squeeze(-1)
         gate = gate * float(gate_scale) + float(gate_bias)
         gate = gate.clamp(0.0, 1.0)
@@ -698,6 +709,9 @@ class ConanStyleConditioningMixin:
             boundary_scale.squeeze(-1) if isinstance(boundary_scale, torch.Tensor) else None
         )
         ret["dynamic_timbre_anchor_shift"] = anchor_shift.squeeze(1) if isinstance(anchor_shift, torch.Tensor) else None
+        ret["dynamic_timbre_style_context"] = style_context if style_context_available else None
+        ret["dynamic_timbre_style_condition_scale"] = float(style_condition_scale)
+        ret["dynamic_timbre_style_conditioned"] = bool(style_context_available and float(style_condition_scale) != 0.0)
         ret["dynamic_timbre_control"] = control.as_dict()
         ret["tv_timbre_smooth"] = self._sequence_smoothness(aligned, src_key_padding_mask)
         ret["tv_timbre_anchor"] = F.l1_loss(

@@ -1,8 +1,7 @@
 {
   "profiles": [
-    "mainline_dynamic_timbre",
-    "strong_style_timbre",
-    "mainline_strong_style_timbre"
+    "strong_style",
+    "extreme"
   ],
   "save_mel_npy": true,
   "output_dir": "infer_out_profiles/factorized_swap_stylepush",
@@ -11,9 +10,8 @@
     {
       "name": "swap_001_style_dynamic_1462_170138_000001_000004_t1673_s174_d1919",
       "profiles": [
-        "mainline_dynamic_timbre",
-        "strong_style_timbre",
-        "mainline_strong_style_timbre"
+        "strong_style",
+        "extreme"
       ],
       "src_wav": "G:\\streamVC\\LibriTTS_local\\LibriTTS\\dev-clean\\1462\\170138\\1462_170138_000001_000004.wav",
       "ref_wav": "G:\\streamVC\\LibriTTS_local\\LibriTTS\\dev-clean\\1673\\143396\\1673_143396_000014_000002.wav",
@@ -26,7 +24,8 @@
       "timbre_speaker": "1673",
       "style_speaker": "174",
       "dynamic_timbre_speaker": "1919",
-      "reference_contract_mode": "strict_factorized"
+      "reference_contract_mode": "collapsed_reference",
+      "allow_split_reference_inputs": true
     }
   ]
 }

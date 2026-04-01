@@ -98,8 +98,9 @@ def build_condition_balanced_dataloader(
     include_unlabeled=True,
     use_ddp=False,
 ):
-    devices_cnt = torch.cuda.device_count()
-    if devices_cnt == 0:
+    if use_ddp and dist.is_available() and dist.is_initialized():
+        devices_cnt = max(1, int(dist.get_world_size()))
+    else:
         devices_cnt = 1
     if required_batch_size_multiple == -1:
         required_batch_size_multiple = devices_cnt

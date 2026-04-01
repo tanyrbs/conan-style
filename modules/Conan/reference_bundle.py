@@ -1,3 +1,4 @@
+import warnings
 from typing import Any, Dict, Mapping, Optional
 
 
@@ -12,9 +13,23 @@ REFERENCE_BUNDLE_KEYS = (
 
 STYLE_RUNTIME_KEYS = (
     "decoder_style_condition_mode",
+    "global_timbre_to_pitch",
     "global_style_anchor_strength",
+    "style_trace_mode",
     "style_memory_mode",
+    "fast_style_strength_scale",
+    "slow_style_strength_scale",
     "style_temperature",
+    "global_style_trace_blend",
+    "dynamic_timbre_strength",
+    "dynamic_timbre_memory_mode",
+    "dynamic_timbre_style_condition_scale",
+    "dynamic_timbre_temperature",
+    "dynamic_timbre_gate_scale",
+    "dynamic_timbre_gate_bias",
+    "dynamic_timbre_boundary_suppress_strength",
+    "dynamic_timbre_boundary_radius",
+    "dynamic_timbre_anchor_preserve_strength",
 )
 
 REFERENCE_CONTRACT_MODES = (
@@ -42,6 +57,11 @@ def normalize_reference_contract_mode(mode, default: str = "collapsed_reference"
     }
     normalized = alias_map.get(normalized, normalized)
     if normalized not in REFERENCE_CONTRACT_MODES:
+        warnings.warn(
+            f"Unknown reference_contract_mode '{mode}'. Falling back to '{normalized_default}'. "
+            f"Supported modes: {', '.join(REFERENCE_CONTRACT_MODES)}.",
+            stacklevel=2,
+        )
         return normalized_default
     return normalized
 
@@ -250,6 +270,12 @@ def build_control_kwargs(source: Mapping[str, Any], style_strength_default=1.0):
             "style_strengths",
             default=style_strength_default,
         ),
+        "dynamic_timbre_strength": first_present(
+            source,
+            "dynamic_timbre_strength",
+            "dynamic_timbre_strengths",
+            default=1.0,
+        ),
         "emotion_strength": first_present(
             source,
             "emotion_strength",
@@ -273,18 +299,52 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
             "style_condition_mode",
             "style_mainline_mode",
         ),
+        "global_timbre_to_pitch": first_present(
+            source,
+            "global_timbre_to_pitch",
+            "global_style_anchor_to_pitch",
+            "style_anchor_to_pitch",
+        ),
         "global_style_anchor_strength": first_present(
             source,
             "global_style_anchor_strength",
             "global_timbre_strength",
             "style_anchor_strength",
         ),
+        "style_trace_mode": first_present(source, "style_trace_mode"),
         "style_memory_mode": first_present(
             source,
             "style_memory_mode",
             "style_reference_memory_mode",
         ),
+        "fast_style_strength_scale": first_present(source, "fast_style_strength_scale"),
+        "slow_style_strength_scale": first_present(source, "slow_style_strength_scale"),
         "style_temperature": first_present(source, "style_temperature"),
+        "global_style_trace_blend": first_present(source, "global_style_trace_blend"),
+        "dynamic_timbre_memory_mode": first_present(
+            source,
+            "dynamic_timbre_memory_mode",
+            "dynamic_timbre_reference_memory_mode",
+        ),
+        "dynamic_timbre_style_condition_scale": first_present(
+            source,
+            "dynamic_timbre_style_condition_scale",
+        ),
+        "dynamic_timbre_temperature": first_present(source, "dynamic_timbre_temperature"),
+        "dynamic_timbre_gate_scale": first_present(source, "dynamic_timbre_gate_scale"),
+        "dynamic_timbre_gate_bias": first_present(source, "dynamic_timbre_gate_bias"),
+        "dynamic_timbre_boundary_suppress_strength": first_present(
+            source,
+            "dynamic_timbre_boundary_suppress_strength",
+        ),
+        "dynamic_timbre_boundary_radius": first_present(
+            source,
+            "dynamic_timbre_boundary_radius",
+        ),
+        "dynamic_timbre_anchor_preserve_strength": first_present(
+            source,
+            "dynamic_timbre_anchor_preserve_strength",
+        ),
     }
 
 

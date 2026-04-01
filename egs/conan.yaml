@@ -176,9 +176,12 @@ decoder_global_timbre_scale: 0.18
 decoder_global_timbre_scale_mid: 0.12
 decoder_global_timbre_scale_late: 0.08
 decoder_style_global_scale: 0.2
-decoder_slow_style_trace_scale: 0.55
-decoder_style_trace_scale: 0.9
-decoder_dynamic_timbre_scale: 0.0
+decoder_slow_style_trace_scale: 0.70
+decoder_style_trace_scale: 1.00
+decoder_dynamic_timbre_scale: 0.20
+decoder_dynamic_timbre_scale_mid: 0.20
+decoder_dynamic_timbre_scale_late: 0.12
+decoder_dynamic_timbre_late_no_style_scale: 0.25
 decoder_style_adapter_gate_bias: -1.0
 decoder_style_adapter_gate_bias_start: -1.0
 decoder_style_adapter_gate_bias_end: 0.0
@@ -188,12 +191,17 @@ decoder_style_adapter_gate_bias_warmup: 80000
 use_reference_bundle: true
 use_reference_cache: true
 prompt_ref_fallback_to_style: false
-use_dynamic_timbre: false
+use_dynamic_timbre: true
 enable_emotion_condition: false
 enable_accent_condition: false
 ref_group_size: 4
 reference_prosody_slow_pool: 4
 reference_timbre_slow_pool: 2
+dynamic_timbre_reference_memory_mode: slow
+dynamic_timbre_style_condition_scale: 0.50
+dynamic_timbre_boundary_suppress_strength: 0.50
+dynamic_timbre_boundary_radius: 2
+dynamic_timbre_anchor_preserve_strength: 0.20
 # (single-reference) style/dynamic_timbre ref sampling disabled
 use_fixed_timbre_reference: true
 # (single-reference) style/dynamic_timbre ref sampling params removed
@@ -208,6 +216,18 @@ lambda_style_timbre_disentangle: 0.03
 lambda_style_query_var: 0.01
 lambda_global_style_summary_align: 0.05
 lambda_slow_style_summary_align: 0.05
+lambda_tv_timbre_smooth: 0.02
+lambda_tv_timbre_anchor: 0.02
+lambda_timbre_anchor_cosine: 0.02
+lambda_style_dynamic_timbre_disentangle: 0.02
+lambda_dynamic_timbre_gate: 0.01
+lambda_dynamic_timbre_budget: 0.01
+dynamic_timbre_gate_target: 0.35
+dynamic_timbre_budget_ratio: 0.75
+timbre_reg_start_steps: 15000
+timbre_reg_warmup_steps: 20000
+timbre_reg_init_scale: 0.0
+timbre_reg_final_scale: 1.0
 control_regularization_schedule:
   type: linear
   lambda_style_trace_consistency: {start: 10000, warmup: 15000, initial: 0.0, target: 0.1}
@@ -215,5 +235,11 @@ control_regularization_schedule:
   lambda_style_query_var: {start: 12000, warmup: 12000, initial: 0.0, target: 0.01}
   lambda_global_style_summary_align: {start: 10000, warmup: 12000, initial: 0.0, target: 0.05}
   lambda_slow_style_summary_align: {start: 10000, warmup: 12000, initial: 0.0, target: 0.05}
+  lambda_timbre_anchor_cosine: {start: 15000, warmup: 15000, initial: 0.0, target: 0.02}
+  lambda_style_dynamic_timbre_disentangle: {start: 18000, warmup: 15000, initial: 0.0, target: 0.02}
+  lambda_dynamic_timbre_gate: {start: 15000, warmup: 12000, initial: 0.0, target: 0.01}
+  lambda_dynamic_timbre_budget: {start: 15000, warmup: 12000, initial: 0.0, target: 0.01}
+  lambda_tv_timbre_smooth: {start: 15000, warmup: 12000, initial: 0.0, target: 0.02}
+  lambda_tv_timbre_anchor: {start: 15000, warmup: 12000, initial: 0.0, target: 0.02}
 log_control_diagnostics: true
 control_diagnostics_track_lambdas: true

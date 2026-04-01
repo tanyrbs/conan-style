@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Research-only factorized swap config builder."""
+
 import argparse
 import sys
 from pathlib import Path
@@ -14,7 +16,9 @@ from inference.factorized_swap_builder import (
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Build a LibriTTS factorized swap matrix config.")
+    parser = argparse.ArgumentParser(
+        description="Build a research-only LibriTTS factorized swap matrix config."
+    )
     parser.add_argument("--dataset_root", type=str, required=True)
     parser.add_argument("--splits", type=str, default="dev-clean")
     parser.add_argument("--num_groups", type=int, default=4)
@@ -31,7 +35,7 @@ def parse_args():
     parser.add_argument(
         "--profiles",
         type=str,
-        default="balanced,strong_style_timbre,mainline_dynamic_timbre",
+        default="strong_style,extreme",
     )
     return parser.parse_args()
 

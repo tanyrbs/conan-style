@@ -2,6 +2,7 @@ import csv
 import json
 import os
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -97,6 +98,7 @@ class AudioFeatureCache:
     def __init__(self, hparams):
         self.hparams = hparams
         self.cache = {}
+        self._pitch_warning_emitted = False
 
     def get(self, wav_path):
         wav_path = str(wav_path)
@@ -115,14 +117,26 @@ class AudioFeatureCache:
             mel = np.clip(spec["mel"], self.hparams["mel_vmin"], self.hparams["mel_vmax"]).astype(np.float32)
             wav = np.asarray(spec["wav"], dtype=np.float32)
             energy = get_energy_librosa(wav, mel.shape[0], self.hparams).astype(np.float32)
-            f0 = extract_pitch(
-                self.hparams["pitch_extractor"],
-                wav,
-                self.hparams["hop_size"],
-                self.hparams["audio_sample_rate"],
-                f0_min=self.hparams["f0_min"],
-                f0_max=self.hparams["f0_max"],
-            ).astype(np.float32)
+            pitch_available = True
+            try:
+                f0 = extract_pitch(
+                    self.hparams["pitch_extractor"],
+                    wav,
+                    self.hparams["hop_size"],
+                    self.hparams["audio_sample_rate"],
+                    f0_min=self.hparams["f0_min"],
+                    f0_max=self.hparams["f0_max"],
+                ).astype(np.float32)
+            except Exception as e:
+                pitch_available = False
+                if not self._pitch_warning_emitted:
+                    warnings.warn(
+                        f"Pitch extraction failed in profile sweep evaluation ({e}); "
+                        "F0-derived metrics will be zeroed for this run.",
+                        stacklevel=2,
+                    )
+                    self._pitch_warning_emitted = True
+                f0 = np.zeros((mel.shape[0],), dtype=np.float32)
             if len(f0) < mel.shape[0]:
                 f0 = np.pad(f0, [[0, mel.shape[0] - len(f0)]], mode="constant")
             else:
@@ -139,6 +153,7 @@ class AudioFeatureCache:
                 "mel_std": mel.std(axis=0),
                 "energy_mean": float(np.mean(energy[: mel.shape[0]])),
                 "energy_std": float(np.std(energy[: mel.shape[0]])),
+                "pitch_available": bool(pitch_available),
                 **_voiced_stats(f0[: mel.shape[0]]),
             }
         return self.cache[wav_path]

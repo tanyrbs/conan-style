@@ -7,7 +7,12 @@ STYLE_REGULARIZATION_LAMBDAS = (
 )
 
 TIMBRE_REGULARIZATION_LAMBDAS = (
-    # left empty for single-reference mode
+    "lambda_tv_timbre_smooth",
+    "lambda_tv_timbre_anchor",
+    "lambda_timbre_anchor_cosine",
+    "lambda_style_dynamic_timbre_disentangle",
+    "lambda_dynamic_timbre_gate",
+    "lambda_dynamic_timbre_budget",
 )
 
 DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
@@ -17,6 +22,12 @@ DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
     "lambda_style_query_var",
     "lambda_slow_style_summary_align",
     "lambda_global_style_summary_align",
+    "lambda_tv_timbre_smooth",
+    "lambda_tv_timbre_anchor",
+    "lambda_timbre_anchor_cosine",
+    "lambda_style_dynamic_timbre_disentangle",
+    "lambda_dynamic_timbre_gate",
+    "lambda_dynamic_timbre_budget",
 )
 
 

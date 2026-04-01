@@ -1,3 +1,11 @@
+"""Single-reference style-profile sweep utilities.
+
+This runner is intended for the current product-style Conan surface:
+`src_wav + ref_wav + optional style_profile`.
+
+Factorized multi-reference sweeps should live in separate research tooling.
+"""
+
 import csv
 import json
 import os
@@ -18,6 +26,14 @@ CASE_META_KEYS = {
     "profiles",
     "profile_overrides",
 }
+
+SPLIT_REFERENCE_KEYS = (
+    "ref_timbre_wav",
+    "ref_style_wav",
+    "ref_dynamic_timbre_wav",
+    "ref_emotion_wav",
+    "ref_accent_wav",
+)
 
 
 def slugify_filename(text, default="case"):
@@ -63,9 +79,16 @@ class StyleProfileSweepRunner:
 
     def _resolve_profiles_for_case(self, case):
         profiles = case.get("profiles") or self.config.get("profiles") or available_style_profiles()
+        known_profiles = set(available_style_profiles())
         profiles = [str(p) for p in profiles]
+        unknown_profiles = [p for p in profiles if p not in known_profiles]
+        if unknown_profiles:
+            raise ValueError(
+                f"Unknown style profiles in sweep config: {unknown_profiles}. "
+                f"Available profiles: {sorted(known_profiles)}."
+            )
         if len(profiles) <= 0:
-            profiles = ["balanced"]
+            profiles = ["strong_style"]
         return profiles
 
     def _case_name(self, case, case_idx):
@@ -86,11 +109,23 @@ class StyleProfileSweepRunner:
             case.get("profile_overrides", {}).get(profile_name, {}),
         )
         base_input = merge_dict(base_input, profile_overrides)
+        ref_wav = base_input.get("ref_wav")
+        if any(base_input.get(key) not in (None, "", ref_wav) for key in SPLIT_REFERENCE_KEYS):
+            base_input.setdefault("allow_split_reference_inputs", True)
         base_input["style_profile"] = profile_name
         return base_input
 
-    def _save_profile_outputs(self, case_dir, profile_name, wav, mel, resolved_profile, model_input):
-        profile_slug = slugify_filename(profile_name, default="balanced")
+    def _save_profile_outputs(
+        self,
+        case_dir,
+        profile_name,
+        wav,
+        mel,
+        resolved_profile,
+        model_input,
+        infer_metadata=None,
+    ):
+        profile_slug = slugify_filename(profile_name, default="strong_style")
         wav_path = case_dir / f"{profile_slug}.wav"
         save_wav(wav, str(wav_path), self.hparams["audio_sample_rate"])
 
@@ -106,6 +141,7 @@ class StyleProfileSweepRunner:
                     "style_profile": profile_name,
                     "resolved_profile": resolved_profile,
                     "model_input": model_input,
+                    "infer_metadata": infer_metadata,
                     "wav_path": wav_path.name,
                     "mel_path": mel_path.name if mel_path is not None else None,
                 },
@@ -125,7 +161,7 @@ class StyleProfileSweepRunner:
             infer_input = self._build_profile_input(case, profile_name)
             resolved_profile = resolve_style_profile(
                 infer_input,
-                preset=self.hparams.get("style_profile", "balanced"),
+                preset=self.hparams.get("style_profile", "strong_style"),
             )
             started = time.time()
             try:
@@ -137,6 +173,7 @@ class StyleProfileSweepRunner:
                     mel_pred,
                     resolved_profile,
                     infer_input,
+                    getattr(self.engine, "last_infer_metadata", None),
                 )
                 entries.append(
                     {

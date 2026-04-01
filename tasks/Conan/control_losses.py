@@ -328,3 +328,15 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if gate_mean is not None:
             gate_target = float(config.get("dynamic_timbre_gate_target", 0.6))
             losses["dynamic_timbre_gate_reg"] = (gate_mean - gate_target).abs() * dynamic_timbre_gate_lambda
+
+    dynamic_timbre_budget_lambda = float(config.get("lambda_dynamic_timbre_budget", 0.0))
+    if dynamic_timbre_budget_lambda > 0:
+        style_decoder_residual = output.get("style_decoder_residual")
+        dynamic_timbre_decoder_residual = output.get("dynamic_timbre_decoder_residual")
+        if isinstance(style_decoder_residual, torch.Tensor) and isinstance(dynamic_timbre_decoder_residual, torch.Tensor):
+            style_budget = style_decoder_residual.abs().mean()
+            timbre_budget = dynamic_timbre_decoder_residual.abs().mean()
+            budget_ratio = float(config.get("dynamic_timbre_budget_ratio", 0.75))
+            losses["dynamic_timbre_budget"] = (
+                F.relu(timbre_budget - budget_ratio * style_budget) * dynamic_timbre_budget_lambda
+            )

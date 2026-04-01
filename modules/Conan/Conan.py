@@ -222,6 +222,12 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 slow_style_scale=hparams.get("decoder_slow_style_trace_scale", 0.55),
                 style_trace_scale=hparams.get("decoder_style_trace_scale", 0.75),
                 dynamic_timbre_scale=hparams.get("decoder_dynamic_timbre_scale", 0.85),
+                dynamic_timbre_scale_mid=hparams.get("decoder_dynamic_timbre_scale_mid", None),
+                dynamic_timbre_scale_late=hparams.get("decoder_dynamic_timbre_scale_late", None),
+                dynamic_timbre_late_no_style_scale=hparams.get(
+                    "decoder_dynamic_timbre_late_no_style_scale",
+                    0.25,
+                ),
                 gate_bias=hparams.get("decoder_style_adapter_gate_bias", -1.0),
             )
         else:
@@ -327,6 +333,9 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["style_temperature"] = float(style_mainline.style_temperature)
         ret["global_style_trace_blend_runtime"] = float(style_mainline.global_style_trace_blend)
         ret["dynamic_timbre_temperature"] = float(style_mainline.dynamic_timbre_temperature)
+        ret["dynamic_timbre_style_condition_scale_runtime"] = float(
+            style_mainline.dynamic_timbre_style_condition_scale
+        )
         ret["dynamic_timbre_gate_scale_runtime"] = float(style_mainline.dynamic_timbre_gate_scale)
         ret["dynamic_timbre_gate_bias_runtime"] = float(style_mainline.dynamic_timbre_gate_bias)
         ret["dynamic_timbre_boundary_suppress_strength_runtime"] = float(
@@ -412,6 +421,8 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         style_decoder_residual = style_payload.get("style_decoder_residual", style_decoder_residual)
         slow_style_decoder_residual = style_payload.get("slow_style_decoder_residual", slow_style_decoder_residual)
         global_style_summary_runtime = style_payload.get("global_style_summary_runtime", global_style_summary)
+        dynamic_timbre_style_context = style_decoder_residual + 0.5 * slow_style_decoder_residual
+        ret["dynamic_timbre_style_context"] = dynamic_timbre_style_context
         if style_payload.get("style_trace_skip_reason") is not None:
             ret["style_trace_skip_reason"] = style_payload.get("style_trace_skip_reason")
         if (
@@ -428,6 +439,8 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 reference_cache=reference_cache,
                 memory_mode=style_mainline.dynamic_timbre_memory_mode,
                 timbre_temperature=style_mainline.dynamic_timbre_temperature,
+                style_context=dynamic_timbre_style_context,
+                style_condition_scale=style_mainline.dynamic_timbre_style_condition_scale,
                 gate_scale=style_mainline.dynamic_timbre_gate_scale,
                 gate_bias=style_mainline.dynamic_timbre_gate_bias,
                 boundary_suppress_strength=style_mainline.dynamic_timbre_boundary_suppress_strength,

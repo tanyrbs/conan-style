@@ -21,6 +21,20 @@ DEFAULT_SMOKE_HPARAMS = {
 }
 
 
+def default_smoke_binary_data_dir():
+    candidates = (
+        Path("data/binary/libritts_single_smoke"),
+        Path("data/binary/libritts_single_small3"),
+        Path("data/binary/libritts_single_small2"),
+        Path("data/binary/libritts_single_small"),
+        Path("data/binary/libritts_single"),
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def dataset_num_styles(binary_data_dir):
     spk_id_path = Path(binary_data_dir) / "train_spk_ids.npy"
     if not spk_id_path.exists():
@@ -82,6 +96,35 @@ def select_speaker_batch_indices(dataset, step_idx, *, speakers_per_batch=2, ite
     return indices
 
 
+def resolve_smoke_batch_shape(dataset, *, speakers_per_batch=2, items_per_speaker=2):
+    requested_speakers = max(1, int(speakers_per_batch))
+    requested_items = max(1, int(items_per_speaker))
+    bucket_sizes = [len(bucket) for bucket in dataset.spk2indices.values() if len(bucket) > 0]
+    if len(bucket_sizes) <= 0:
+        raise ValueError("Smoke dataset has no speaker buckets.")
+
+    best = None
+    for items in range(requested_items, 0, -1):
+        available_speakers = sum(1 for size in bucket_sizes if size >= items)
+        if available_speakers <= 0:
+            continue
+        candidate = (min(requested_speakers, available_speakers), items, available_speakers)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+
+    if best is None:
+        raise ValueError("Unable to resolve a valid smoke batch shape from the dataset.")
+
+    used_speakers, used_items, available_speakers = best
+    return {
+        "requested_speakers_per_batch": requested_speakers,
+        "requested_items_per_speaker": requested_items,
+        "speakers_per_batch": int(used_speakers),
+        "items_per_speaker": int(used_items),
+        "available_speakers_for_items": int(available_speakers),
+    }
+
+
 def build_pseudo_style_batch(dataset, indices, device, *, ensure_factorized_refs=False):
     samples = [dataset[idx] for idx in indices]
     batch = dataset.collater(samples)
@@ -130,11 +173,17 @@ def build_conan_training_task(device, *, global_step=None):
 
 
 def compare_model_state_dicts(model_a, model_b):
+    state_a = model_a.state_dict()
+    state_b = model_b.state_dict()
+    keys_a = list(state_a.keys())
+    keys_b = list(state_b.keys())
+    if keys_a != keys_b:
+        raise ValueError(
+            f"State dict key mismatch: len_a={len(keys_a)}, len_b={len(keys_b)}, "
+            f"first_diff={next(((a, b) for a, b in zip(keys_a, keys_b) if a != b), None)}"
+        )
     max_abs_diff = 0.0
-    for (name_a, value_a), (name_b, value_b) in zip(
-        model_a.state_dict().items(),
-        model_b.state_dict().items(),
-    ):
+    for (name_a, value_a), (name_b, value_b) in zip(state_a.items(), state_b.items()):
         if name_a != name_b:
             raise ValueError(f"State dict key mismatch: {name_a} vs {name_b}")
         if value_a.shape != value_b.shape:

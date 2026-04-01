@@ -12,7 +12,9 @@ from utils.commons.hparams import hparams, set_hparams
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run offline strong-style/strong-timbre profile sweep.")
+    parser = argparse.ArgumentParser(
+        description="Run a single-reference Conan style-profile sweep (mainline product surface)."
+    )
     parser.add_argument(
         "--config",
         type=str,

@@ -104,6 +104,7 @@ class StyleMainlineControls:
     style_temperature: float = 1.0
     global_style_trace_blend: float = 0.0
     dynamic_timbre_temperature: float = 1.0
+    dynamic_timbre_style_condition_scale: float = 0.5
     dynamic_timbre_gate_scale: float = 1.0
     dynamic_timbre_gate_bias: float = 0.0
     dynamic_timbre_boundary_suppress_strength: float = 0.0
@@ -175,6 +176,13 @@ def resolve_style_mainline_controls(
             return float(value)
         return value
 
+    resolved_style_trace_mode = normalize_style_trace_mode(
+        _value("style_trace_mode", default=default_style_trace_mode),
+        default=default_style_trace_mode,
+    )
+    if not apply_style_trace:
+        resolved_style_trace_mode = "none"
+
     return StyleMainlineControls(
         mode=mode,
         apply_global_style_anchor=apply_global_style_anchor,
@@ -204,10 +212,7 @@ def resolve_style_mainline_controls(
         dynamic_timbre_strength=_raw_or_float(
             "dynamic_timbre_strength", "dynamic_timbre_strengths", default=1.0
         ),
-        style_trace_mode=normalize_style_trace_mode(
-            _value("style_trace_mode", default=default_style_trace_mode),
-            default=default_style_trace_mode,
-        ),
+        style_trace_mode=resolved_style_trace_mode,
         style_memory_mode=str(_value("style_memory_mode", "style_reference_memory_mode", default="fast")),
         dynamic_timbre_memory_mode=str(
             _value(
@@ -219,6 +224,9 @@ def resolve_style_mainline_controls(
         style_temperature=float(_value("style_temperature", default=1.0)),
         global_style_trace_blend=float(_value("global_style_trace_blend", default=0.0)),
         dynamic_timbre_temperature=float(_value("dynamic_timbre_temperature", default=1.0)),
+        dynamic_timbre_style_condition_scale=float(
+            _value("dynamic_timbre_style_condition_scale", default=0.5)
+        ),
         dynamic_timbre_gate_scale=float(_value("dynamic_timbre_gate_scale", default=1.0)),
         dynamic_timbre_gate_bias=float(_value("dynamic_timbre_gate_bias", default=0.0)),
         dynamic_timbre_boundary_suppress_strength=float(
@@ -272,6 +280,9 @@ def build_style_mainline_surface_payload(
         "style_temperature": float(controls.style_temperature),
         "global_style_trace_blend": float(controls.global_style_trace_blend),
         "dynamic_timbre_temperature": float(controls.dynamic_timbre_temperature),
+        "dynamic_timbre_style_condition_scale": float(
+            controls.dynamic_timbre_style_condition_scale
+        ),
         "dynamic_timbre_gate_scale": float(controls.dynamic_timbre_gate_scale),
         "dynamic_timbre_gate_bias": float(controls.dynamic_timbre_gate_bias),
         "dynamic_timbre_boundary_suppress_strength": float(

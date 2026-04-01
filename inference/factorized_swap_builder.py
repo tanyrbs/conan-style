@@ -1,3 +1,5 @@
+"""Research-only utilities for factorized multi-reference swap ablations."""
+
 import json
 from pathlib import Path
 
@@ -42,7 +44,7 @@ def build_factorized_swap_cases(
     speakers = sorted([spk for spk, wavs in speaker_to_wavs.items() if len(wavs) > 0])
     if len(speakers) < 4:
         raise ValueError("Need at least four speakers with wavs to build factorized swap cases.")
-    profiles = list(profiles or ["balanced", "strong_style_timbre", "mainline_dynamic_timbre"])
+    profiles = list(profiles or ["strong_style", "extreme"])
 
     cases = []
     for group_idx in range(int(num_groups)):
@@ -77,13 +79,15 @@ def build_factorized_swap_cases(
                     "ref_timbre_wav": ref_timbre_wav,
                     "ref_style_wav": ref_style_wav,
                     "ref_dynamic_timbre_wav": ref_dynamic_timbre_wav,
+                    "allow_split_reference_inputs": True,
                     "swap_matrix_group": group_idx,
                     "swap_variant": variant_name,
                     "src_speaker": src_spk,
                     "timbre_speaker": timbre_spk,
                     "style_speaker": style_spk,
                     "dynamic_timbre_speaker": dyn_spk,
-                    "reference_contract_mode": "strict_factorized",
+                    "reference_contract_mode": "collapsed_reference",
+                    "factorized_references_requested": True,
                 }
             )
     return cases

@@ -1,139 +1,114 @@
-# Strong Style Mainline Upgrade Notes
+# Conan Strong-Style (Single-Reference) Mainline
 
-Updated: 2026-03-31
+Updated: 2026-04-01
 
-## What changed in `Conan-master`
+## Summary
 
-This round pushes the repo away from:
+This repo is now aligned to a **single-reference, strong-style transfer** objective:
 
-- one-reference silent collapse
-- style-first query pollution
-- pre-pitch style/timbre write-in
+- **External contract:** one reference audio in, one `style_strength` knob out.
+- **Internal structure:** minimal 2.5-factor split for stability and clarity:
+  - **z_spk**: global timbre anchor (speaker identity)
+  - **g_style**: utterance-level style summary
+  - **M_style**: local style memory for decoder-side realization
 
-and closer to:
+We intentionally **do not** expose multi-reference, combinatorial control.  
+This is a **product-first** configuration: *strong timbre + strong style + listenability*.
 
-- explicit reference contract
-- split `q_style / q_timbre`
-- decoder-side realization
-- `global_timbre_anchor` / `global_style_summary` separation
+## What changed
 
-## Main structural upgrades
+### 1) Reference contract is single-reference only
 
-### 1. Reference contract is now explicit
+The contract is always `collapsed_reference`.  
+Any `ref_timbre/ref_style/ref_dynamic_timbre` is treated as **internal-only** or
+falls back to `ref` if missing.
 
-Two modes are supported:
+This removes the “strict factorized” pathway and avoids user-facing complexity.
 
-- `collapsed_reference`
-- `strict_factorized`
+### 2) Decoder-side style is the mainline
 
-`strict_factorized` now requires explicit `ref_style` and `ref_dynamic_timbre`. The batch/reference bundle now carries:
+The style path is realized *only* on the decoder side:
 
-- `reference_contract_mode`
-- `reference_contract`
-- `factorization_guaranteed`
+- `g_style` contributes to decoder conditioning
+- `M_style` provides local expressive replay
+- no timing writeback
 
-This prevents silent "three branches in name, one reference in reality".
+This keeps pitch/timing stable and makes strong style more predictable.
 
-### 2. Style no longer pollutes dynamic timbre query
+### 3) Dynamic timbre is no longer a main path
 
-The model now builds:
+`dynamic_timbre` is disabled by default.  
+It may be re-enabled later as a **pure inference smoothing tool** (e.g., boundary-only).
 
-- `style_query_inp`
-- `timbre_query_inp`
+### 4) External control is simplified
 
-from the shared content/condition trunk, instead of letting `dynamic_timbre` read a state already contaminated by style residuals.
+We keep a single public knob:
 
-### 3. Global timbre anchor and global style summary are now separated
+- `style_strength`
 
-The repo no longer treats one tensor as both:
+All other internal controls are not exposed by default.  
+Emotion/accent condition paths are **disabled by default** and can be re-enabled later if needed.
 
-- utterance timbre anchor
-- utterance style summary
+`style_id` supervision is removed by default (single-knob interface only).
 
-The maintained reference cache now carries:
+## Presets
 
-- `global_timbre_anchor`
-- `global_style_summary`
+Only strong-style presets are kept for simplicity:
 
-`style_embed` is retained only as a compatibility alias of the timbre anchor.
+- `strong_style` (default)
+- `extreme`
 
-### 4. Style/timbre moved into a decoder-side adapter
+## Gate warmup
 
-The strong-style branches are no longer written into the pitch branch first.
+To encourage early stability and later stronger style:
 
-Current path:
+- `decoder_style_adapter_gate_bias_start: -1.0`
+- `decoder_style_adapter_gate_bias_end: 0.0`
+- `decoder_style_adapter_gate_bias_warmup: 80000`
 
-`base_condition_inp -> pitch branch`
+## Config cleanup
 
-`base_condition_inp -> q_style / q_timbre`
+Single-reference configs have been simplified:
 
-`aligned style/timbre -> decoder_style_adapter -> causal decoder hidden`
+- removed dynamic timbre training knobs
+- removed emotion/accent control heads
+- removed style_id supervision
 
-The new adapter is lightweight but already stage-aware:
+## Recommended training loss (practical version)
 
-- `mid`: dynamic timbre
-- `late`: global style summary + style trace + dynamic timbre
+We focus on listenability and transfer strength rather than strict disentanglement:
 
-### 5. Mainline surface metadata was added
+```
+L =
+  L_mel + L_mrstft
+  + λ_gan L_gan + λ_fm L_fm
+  + λ_c   L_content
+  + λ_spk L_spk
+  + λ_style (L_style_global + L_style_stats)
+  + λ_stream L_stream
+```
 
-The model now exports a compact runtime surface:
+Key points:
+- **L_content**: content preservation via HuBERT/ASR/CTC.
+- **L_spk**: speaker similarity via speaker encoder cosine/AAM.
+- **L_style_global**: global style embedding match.
+- **L_style_stats**: prosody statistics (F0/energy/pace/voiced ratio).
+- **L_stream**: chunk continuity for streaming stability.
 
-- `decoder_style_condition_mode`
-- `global_style_anchor_strength`
-- `style_trace_applied`
-- `dynamic_timbre_applied`
-- `decoder_side_only = true`
-- `timing_writeback_allowed = false`
+## Training schedule (2-stage)
 
-### 6. Scheduled lambdas with base zero are no longer silently ignored
+1) **Stage 1:** stabilize timbre + naturalness  
+   - keep `λ_style` low
+   - ensure intelligibility + identity
 
-If a scheduled control lambda has base value `0.0`, it must now provide explicit `target` or `value`.
+2) **Stage 2:** style-heavy finetune  
+   - increase expressive samples
+   - freeze parts of content encoder / vocoder
+   - allow decoder adapter + style encoders to learn stronger expression
 
-This fixes the old "warm up a zero, end at zero" failure mode.
+## Design intent
 
-## Why this direction
+> **External single reference. Internal weak factorization. Strong decoder-side injection.**
 
-This upgrade is aligned with the cleaner local Conan style route:
-
-- explicit contract first
-- factor roles before regularizing them
-- move style realization later
-- keep timing ownership separate from style ownership
-
-## Literature direction used for this round
-
-- TVTSyn — https://arxiv.org/abs/2409.00623
-- PromptVC — https://arxiv.org/abs/2309.15778
-- StableVC — https://arxiv.org/abs/2412.04724
-- PFlow-VC — https://arxiv.org/abs/2406.00865
-- StyleStream — https://arxiv.org/abs/2507.05860
-- Takin-VC — https://arxiv.org/abs/2411.13676
-- Seed-VC — https://arxiv.org/abs/2411.09943
-- Vevo — https://arxiv.org/abs/2410.10657
-
-## Still not finished
-
-The repo is still not a full fixed-clock CSSF system.
-
-Remaining high-value steps:
-
-1. split slow style memory vs fast local style replay more clearly
-2. add stronger boundary-aware local timbre control
-3. upgrade the lightweight decoder adapter toward richer mid/high-layer CSSF-style gating
-4. add external evaluation: speaker / ASR / prosody encoders
-
-## 2026-03-31 follow-up: dual style trace split
-
-This round adds a cleaner dual-path style realization option:
-
-- `style_trace_mode = dual`
-- fast branch = local replay on fast prosody memory
-- slow branch = posture / delivery on slow pooled prosody memory
-- decoder adapter can now consume both branches without collapsing them into one trace
-- `strict_factorized` training batches now require explicit `ref_timbre_mels`
-
-This is still not full CSSF, but it pushes the style mainline closer to:
-
-- slow style as utterance / phrase posture
-- fast style as local expressive replay
-- dynamic timbre as separate local voice-color residual
+This is not a research-style combinatorial VC system.  
+It is a **production-style “strong style, strong timbre” Conan**.

@@ -27,8 +27,6 @@ from utils.commons.hparams import hparams
 
 DEFAULT_TRACKED_KEYS = (
     "total_loss",
-    "style_cls",
-    "style_contrastive",
     "style_trace_consistency",
     "style_timbre_dis",
     "style_dynamic_timbre_dis",
@@ -49,12 +47,10 @@ def parse_args():
     parser.add_argument("--speakers_per_batch", type=int, default=2)
     parser.add_argument("--items_per_speaker", type=int, default=2)
     parser.add_argument("--output_dir", type=str, default="smoke_runs/pseudo_style_long")
-    parser.add_argument("--lambda_style_cls", type=float, default=1.0)
-    parser.add_argument("--lambda_style_contrastive", type=float, default=0.5)
     parser.add_argument("--lambda_style_trace_consistency", type=float, default=0.1)
     parser.add_argument("--lambda_style_timbre_disentangle", type=float, default=0.05)
-    parser.add_argument("--lambda_style_dynamic_timbre_disentangle", type=float, default=0.05)
-    parser.add_argument("--lambda_dynamic_timbre_gate", type=float, default=0.02)
+    parser.add_argument("--lambda_style_dynamic_timbre_disentangle", type=float, default=0.0)
+    parser.add_argument("--lambda_dynamic_timbre_gate", type=float, default=0.0)
     parser.add_argument("--lambda_mel_adv", type=float, default=0.0)
     return parser.parse_args()
 
@@ -94,7 +90,7 @@ def _run_generator_step(task, optimizer, batch, step_idx, indices):
     return {
         "step": int(step_idx),
         "indices": [int(idx) for idx in indices],
-        "pseudo_style_ids": [int(idx) for idx in batch["style_ids"].detach().cpu().tolist()],
+        "pseudo_style_ids": [],
         "total_loss": scalarize_value(total_loss),
         **{key: scalar_logs.get(key) for key in DEFAULT_TRACKED_KEYS if key != "total_loss"},
     }
@@ -144,8 +140,6 @@ def run_long_smoke(args):
         config_path=args.config,
         binary_data_dir=args.binary_data_dir,
         extra_hparams={
-            "lambda_style_cls": args.lambda_style_cls,
-            "lambda_style_contrastive": args.lambda_style_contrastive,
             "lambda_style_trace_consistency": args.lambda_style_trace_consistency,
             "lambda_style_timbre_disentangle": args.lambda_style_timbre_disentangle,
             "lambda_style_dynamic_timbre_disentangle": args.lambda_style_dynamic_timbre_disentangle,
@@ -214,8 +208,6 @@ def run_long_smoke(args):
             )
 
             compare_keys = [
-                "style_cls",
-                "style_contrastive",
                 "style_trace_consistency",
                 "style_timbre_dis",
                 "style_dynamic_timbre_dis",
@@ -240,7 +232,6 @@ def run_long_smoke(args):
                 "snapshot_loss_abs_diff": abs(float(current_loss) - float(resumed_loss)),
                 "snapshot_log_abs_diff": log_diffs,
                 "resumed_step_total_loss": scalarize_value(resumed_step_log["total_loss"]),
-                "resumed_step_style_cls": resumed_step_log.get("style_cls"),
                 "resume_next_indices": [int(idx) for idx in next_indices],
             }
 
@@ -258,8 +249,6 @@ def run_long_smoke(args):
         "plot_path": str(plot_path) if plot_path is not None else None,
         "resume_validation": resume_validation,
         "style_losses_active": {
-            "lambda_style_cls": float(hparams.get("lambda_style_cls", 0.0)),
-            "lambda_style_contrastive": float(hparams.get("lambda_style_contrastive", 0.0)),
             "lambda_style_trace_consistency": float(hparams.get("lambda_style_trace_consistency", 0.0)),
             "lambda_style_timbre_disentangle": float(hparams.get("lambda_style_timbre_disentangle", 0.0)),
             "lambda_style_dynamic_timbre_disentangle": float(

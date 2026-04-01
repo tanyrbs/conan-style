@@ -1,35 +1,21 @@
 STYLE_REGULARIZATION_LAMBDAS = (
     "lambda_style_trace_smooth",
-    "lambda_style_contrastive",
     "lambda_style_trace_consistency",
     "lambda_style_timbre_disentangle",
-    "lambda_style_dynamic_timbre_disentangle",
+    "lambda_style_query_var",
+    "lambda_slow_style_summary_align",
 )
 
 TIMBRE_REGULARIZATION_LAMBDAS = (
-    "lambda_tv_timbre_smooth",
-    "lambda_tv_timbre_anchor",
-    "lambda_timbre_anchor_cosine",
-    "lambda_dynamic_timbre_gate",
+    # left empty for single-reference mode
 )
 
 DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
     "lambda_style_trace_smooth",
-    "lambda_tv_timbre_smooth",
-    "lambda_tv_timbre_anchor",
-    "lambda_tv_gloss",
-    "lambda_timbre_vq",
-    "lambda_emotion_style_disentangle",
-    "lambda_accent_style_disentangle",
-    "lambda_emotion_accent_disentangle",
-    "lambda_emotion_gate",
-    "lambda_accent_gate",
-    "lambda_style_contrastive",
     "lambda_style_trace_consistency",
-    "lambda_timbre_anchor_cosine",
     "lambda_style_timbre_disentangle",
-    "lambda_style_dynamic_timbre_disentangle",
-    "lambda_dynamic_timbre_gate",
+    "lambda_style_query_var",
+    "lambda_slow_style_summary_align",
     "lambda_global_style_summary_align",
 )
 

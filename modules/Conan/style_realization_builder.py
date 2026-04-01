@@ -112,6 +112,13 @@ def _blend_global_summary(model, global_style_summary, style_trace, style_trace_
     return model._normalize_style_embed(style_trace_summary)
 
 
+def _branch_strength(style_strength, branch_scale: float):
+    branch_scale = float(branch_scale)
+    if isinstance(style_strength, torch.Tensor):
+        return style_strength * branch_scale
+    return float(style_strength) * branch_scale
+
+
 def build_style_realization_payload(
     model,
     *,
@@ -160,6 +167,20 @@ def build_style_realization_payload(
         return payload
 
     style_temperature = float(getattr(controls, "style_temperature", 1.0))
+    fast_style_strength = _branch_strength(
+        style_strength,
+        getattr(controls, "fast_style_strength_scale", 1.0),
+    )
+    slow_style_strength = _branch_strength(
+        style_strength,
+        getattr(controls, "slow_style_strength_scale", 1.0),
+    )
+    ret["fast_style_strength_scale_runtime"] = float(
+        getattr(controls, "fast_style_strength_scale", 1.0)
+    )
+    ret["slow_style_strength_scale_runtime"] = float(
+        getattr(controls, "slow_style_strength_scale", 1.0)
+    )
     fast_trace_result = None
     slow_trace_result = None
 
@@ -182,9 +203,16 @@ def build_style_realization_payload(
         )
         fast_trace_result["memory_mode"] = fast_memory_mode
         _write_trace_result(ret, fast_trace_result, prefix="style_trace")
-        payload["style_decoder_residual"] = fast_trace_result["trace"] * style_strength
+        payload["style_decoder_residual"] = fast_trace_result["trace"] * fast_style_strength
         for key, value in fast_trace_result.get("runtime", {}).items():
             ret[key] = value
+        style_trace_summary = _masked_mean(
+            model,
+            fast_trace_result["trace"],
+            fast_trace_result.get("mask"),
+        )
+        if style_trace_summary is not None:
+            ret["style_trace_summary"] = style_trace_summary
 
     if style_trace_mode in {"slow", "dual"}:
         slow_trace_result = _run_style_trace(
@@ -204,10 +232,17 @@ def build_style_realization_payload(
         )
         slow_trace_result["memory_mode"] = "slow"
         _write_trace_result(ret, slow_trace_result, prefix="slow_style_trace")
-        payload["slow_style_decoder_residual"] = slow_trace_result["trace"] * style_strength
+        payload["slow_style_decoder_residual"] = slow_trace_result["trace"] * slow_style_strength
         if style_trace_mode == "slow":
             for key, value in slow_trace_result.get("runtime", {}).items():
                 ret[key] = value
+        slow_style_summary = _masked_mean(
+            model,
+            slow_trace_result["trace"],
+            slow_trace_result.get("mask"),
+        )
+        if slow_style_summary is not None:
+            ret["slow_style_trace_summary"] = slow_style_summary
 
     payload["style_trace_available"] = bool(
         isinstance(fast_trace_result, dict) and isinstance(fast_trace_result.get("trace"), torch.Tensor)

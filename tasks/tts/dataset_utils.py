@@ -235,88 +235,6 @@ class BaseSpeechDataset(BaseDataset):
             return 0.0
         return 0.0
 
-    def _style_reference_score(self, candidate_item):
-        style_strength = float(candidate_item.get('style_strength', 1.0))
-        length = float(len(candidate_item.get('mel', [])))
-        target_frames = max(1.0, float(self.hparams.get('style_ref_target_frames', self.hparams.get('max_frames', 1))))
-        style_bias = float(self.hparams.get('style_ref_strength_bias', 0.6))
-        length_bias = float(self.hparams.get('style_ref_length_bias', 0.2))
-        length_score = min(length / target_frames, 2.0)
-        return 1.0 + style_bias * max(style_strength, 0.0) + length_bias * max(length_score, 0.0)
-
-    def _dynamic_timbre_reference_score(self, candidate_item):
-        timbre_strength = float(
-            candidate_item.get(
-                'dynamic_timbre_strength',
-                candidate_item.get('style_strength', 1.0),
-            )
-        )
-        energy_var = self._sample_energy_variation(candidate_item)
-        strength_bias = float(self.hparams.get('dynamic_timbre_ref_strength_bias', 0.5))
-        energy_bias = float(self.hparams.get('dynamic_timbre_ref_energy_bias', 0.35))
-        return 1.0 + strength_bias * max(timbre_strength, 0.0) + energy_bias * max(energy_var, 0.0)
-
-    def _sample_style_reference(self, item, index, fallback_item):
-        style_id = int(item.get('style_id', -1))
-        if style_id < 0:
-            return self._trim_ref_spec(fallback_item)
-        self._build_condition_map('style')
-        bucket = list(self.cond2indices.get('style', {}).get(style_id, []))
-        if len(bucket) <= 0:
-            return self._trim_ref_spec(fallback_item)
-
-        source_spk_id = int(item.get('spk_id', -1))
-        if self.hparams.get('style_ref_prefer_cross_speaker', True):
-            cross_speaker = [idx for idx in bucket if idx != index and int(self._get_item(idx).get('spk_id', -1)) != source_spk_id]
-            if len(cross_speaker) > 0:
-                bucket = cross_speaker
-        sampled_idx = self._weighted_sample_from_indices(
-            bucket,
-            exclude_idx=index,
-            score_fn=self._style_reference_score,
-        )
-        if sampled_idx is None:
-            return self._trim_ref_spec(fallback_item)
-        return self._trim_ref_spec(self._get_item(sampled_idx))
-
-    def _sample_dynamic_timbre_reference(self, item, index, fallback_item):
-        self._build_speaker_map()
-        spk_id = int(item.get('spk_id', -1))
-        bucket = list(self.spk2indices.get(spk_id, []))
-        if len(bucket) <= 0:
-            return self._trim_ref_spec(fallback_item)
-
-        style_id = int(item.get('style_id', -1))
-        if style_id >= 0:
-            cross_style_bucket = [
-                idx for idx in bucket
-                if idx != index and int(self._get_item(idx).get('style_id', -1)) >= 0
-                and int(self._get_item(idx).get('style_id', -1)) != style_id
-            ]
-            same_style_bucket = [
-                idx for idx in bucket
-                if idx != index and int(self._get_item(idx).get('style_id', -1)) == style_id
-            ]
-            prefer_cross_style = bool(self.hparams.get('dynamic_timbre_ref_prefer_cross_style', True))
-            allow_same_style = bool(self.hparams.get('dynamic_timbre_ref_same_style', False))
-            allow_same_style_fallback = bool(
-                self.hparams.get('dynamic_timbre_ref_allow_same_style_fallback', True)
-            )
-            if prefer_cross_style and len(cross_style_bucket) > 0:
-                bucket = cross_style_bucket
-            elif allow_same_style and len(same_style_bucket) > 0:
-                bucket = same_style_bucket
-            elif allow_same_style_fallback and len(same_style_bucket) > 0 and len(cross_style_bucket) <= 0:
-                bucket = same_style_bucket
-        sampled_idx = self._weighted_sample_from_indices(
-            bucket,
-            exclude_idx=index,
-            score_fn=self._dynamic_timbre_reference_score,
-        )
-        if sampled_idx is None:
-            return self._trim_ref_spec(fallback_item)
-        return self._trim_ref_spec(self._get_item(sampled_idx))
-
     def _sample_reference_by_condition(self, field, condition_id, exclude_idx, fallback_item):
         self._build_condition_map(field)
         bucket = self.cond2indices.get(field, {}).get(int(condition_id), [])
@@ -388,32 +306,18 @@ class BaseSpeechDataset(BaseDataset):
         if hparams.get('use_spk_id', False):
             sample['spk_id'] = spk_id
 
-        for field in ('emotion', 'style', 'accent'):
+        for field in ('emotion', 'accent'):
             condition_id = int(item.get(f'{field}_id', -1))
             if condition_id >= 0:
                 sample[f'{field}_id'] = condition_id
                 sample[f'{field}_label'] = str(item.get(field, item.get(f'{field}_name', '')))
                 if hparams.get(f'sample_{field}_reference', False):
-                    if field == 'style':
-                        sample[f'{field}_ref_mel'] = self._sample_style_reference(
-                            item=item,
-                            index=index,
-                            fallback_item=ref_item,
-                        )
-                    else:
-                        sample[f'{field}_ref_mel'] = self._sample_reference_by_condition(
-                            field=field,
-                            condition_id=condition_id,
-                            exclude_idx=index,
-                            fallback_item=ref_item,
-                        )
-
-        if hparams.get('sample_dynamic_timbre_reference', False):
-            sample['dynamic_timbre_ref_mel'] = self._sample_dynamic_timbre_reference(
-                item=item,
-                index=index,
-                fallback_item=ref_item,
-            )
+                    sample[f'{field}_ref_mel'] = self._sample_reference_by_condition(
+                        field=field,
+                        condition_id=condition_id,
+                        exclude_idx=index,
+                        fallback_item=ref_item,
+                    )
 
         for field in ('arousal', 'valence'):
             if field in item:
@@ -452,17 +356,13 @@ class BaseSpeechDataset(BaseDataset):
             batch['spk_embed'] = torch.stack([s['spk_embed'] for s in samples])
         if hparams.get('use_spk_id', False):
             batch['spk_ids'] = torch.tensor([s['spk_id'] for s in samples], dtype=torch.long)
-        for field in ('emotion', 'style', 'accent'):
+        for field in ('emotion', 'accent'):
             id_key = f'{field}_id'
             if all(id_key in s for s in samples):
                 batch[f'{field}_ids'] = torch.tensor([s[id_key] for s in samples], dtype=torch.long)
             ref_key = f'{field}_ref_mel'
             if all(ref_key in s for s in samples):
                 batch[f'{field}_ref_mels'] = collate_1d_or_2d([s[ref_key] for s in samples], 0.0)
-        if all('dynamic_timbre_ref_mel' in s for s in samples):
-            batch['dynamic_timbre_ref_mels'] = collate_1d_or_2d(
-                [s['dynamic_timbre_ref_mel'] for s in samples], 0.0
-            )
         for field in ('arousal', 'valence'):
             if all(field in s for s in samples):
                 batch[field] = torch.tensor([s[field] for s in samples], dtype=torch.float32)

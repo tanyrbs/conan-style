@@ -82,35 +82,9 @@ def select_speaker_batch_indices(dataset, step_idx, *, speakers_per_batch=2, ite
     return indices
 
 
-def ensure_explicit_factorized_references(dataset, samples, indices):
-    total = len(samples)
-    if total <= 0:
-        return samples
-    cached_alt = {}
-
-    def _alt_sample(index_offset):
-        ref_idx = int(indices[index_offset % total])
-        if ref_idx not in cached_alt:
-            cached_alt[ref_idx] = dataset[ref_idx]
-        return cached_alt[ref_idx]
-
-    for sample_idx, sample in enumerate(samples):
-        if sample.get("ref_timbre_mel") is None:
-            sample["ref_timbre_mel"] = sample["ref_mel"].clone()
-        if sample.get("style_ref_mel") is None:
-            sample["style_ref_mel"] = _alt_sample(sample_idx + 1)["ref_mel"].clone()
-        if sample.get("dynamic_timbre_ref_mel") is None:
-            sample["dynamic_timbre_ref_mel"] = _alt_sample(sample_idx + 2)["ref_mel"].clone()
-    return samples
-
-
 def build_pseudo_style_batch(dataset, indices, device, *, ensure_factorized_refs=False):
     samples = [dataset[idx] for idx in indices]
-    contract_mode = str(getattr(dataset, "hparams", {}).get("reference_contract_mode", "collapsed_reference"))
-    if ensure_factorized_refs or contract_mode == "strict_factorized":
-        samples = ensure_explicit_factorized_references(dataset, samples, indices)
     batch = dataset.collater(samples)
-    batch["style_ids"] = batch["spk_ids"].clone()
     if device == "cuda":
         batch = move_to_cuda(batch)
     return batch

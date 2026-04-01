@@ -95,6 +95,8 @@ class StyleMainlineControls:
     global_timbre_to_pitch: bool = True
     global_style_anchor_strength: float = 1.0
     style_strength: float = 1.0
+    fast_style_strength_scale: float = 1.0
+    slow_style_strength_scale: float = 1.0
     dynamic_timbre_strength: float = 1.0
     style_trace_mode: str = "fast"
     style_memory_mode: str = "fast"
@@ -193,6 +195,12 @@ def resolve_style_mainline_controls(
             default=1.0,
         ),
         style_strength=_raw_or_float("style_strength", "style_strengths", default=1.0),
+        fast_style_strength_scale=float(
+            _value("fast_style_strength_scale", "fast_style_scale", default=1.0)
+        ),
+        slow_style_strength_scale=float(
+            _value("slow_style_strength_scale", "slow_style_scale", default=1.0)
+        ),
         dynamic_timbre_strength=_raw_or_float(
             "dynamic_timbre_strength", "dynamic_timbre_strengths", default=1.0
         ),
@@ -255,6 +263,8 @@ def build_style_mainline_surface_payload(
         "global_timbre_to_pitch": bool(controls.global_timbre_to_pitch),
         "global_style_anchor_strength": _surface_value(controls.global_style_anchor_strength),
         "style_strength": _surface_value(controls.style_strength),
+        "fast_style_strength_scale": float(controls.fast_style_strength_scale),
+        "slow_style_strength_scale": float(controls.slow_style_strength_scale),
         "dynamic_timbre_strength": _surface_value(controls.dynamic_timbre_strength),
         "style_trace_mode": str(controls.style_trace_mode),
         "style_memory_mode": str(controls.style_memory_mode),
@@ -283,7 +293,7 @@ def build_style_mainline_memory_payload(reference_cache: Optional[Mapping[str, A
     return {
         "surface": STYLE_MAINLINE_MEMORY,
         "mainline_owner": STYLE_MAINLINE_OWNER,
-        "global_timbre_anchor_available": cache.get("global_timbre_anchor", cache.get("global_style_anchor")) is not None,
+        "global_timbre_anchor_available": cache.get("global_timbre_anchor") is not None,
         "global_style_summary_available": cache.get("global_style_summary") is not None,
         "prosody_memory_available": cache.get("prosody_memory") is not None,
         "prosody_memory_slow_available": cache.get("prosody_memory_slow") is not None,

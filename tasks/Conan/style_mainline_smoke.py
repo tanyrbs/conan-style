@@ -22,11 +22,11 @@ from tasks.Conan.smoke_utils import (
 
 
 EXPECTED_MODE_FLAGS = {
-    "legacy_full": {"style_trace": True, "dynamic_timbre": True, "global_anchor": True},
-    "mainline_full": {"style_trace": True, "dynamic_timbre": True, "global_anchor": True},
-    "global_style_dynamic_timbre": {"style_trace": False, "dynamic_timbre": True, "global_anchor": True},
+    "legacy_full": {"style_trace": True, "dynamic_timbre": False, "global_anchor": True},
+    "mainline_full": {"style_trace": True, "dynamic_timbre": False, "global_anchor": True},
+    "global_style_dynamic_timbre": {"style_trace": False, "dynamic_timbre": False, "global_anchor": True},
     "global_only": {"style_trace": False, "dynamic_timbre": False, "global_anchor": True},
-    "dynamic_timbre_only": {"style_trace": False, "dynamic_timbre": True, "global_anchor": False},
+    "dynamic_timbre_only": {"style_trace": False, "dynamic_timbre": False, "global_anchor": False},
 }
 
 
@@ -70,11 +70,10 @@ def _validate_mode_output(mode, output):
             f"{mode}: global_style_anchor_applied mismatch, expected {expected['global_anchor']}, "
             f"got {output.get('global_style_anchor_applied')}"
         )
-    reference_contract = output.get("reference_contract", {})
-    if not bool(reference_contract.get("factorization_guaranteed", False)):
-        raise AssertionError(f"{mode}: strict factorized reference contract was not guaranteed.")
-    if str(output.get("reference_contract_mode")) != "strict_factorized":
-        raise AssertionError(f"{mode}: unexpected reference_contract_mode={output.get('reference_contract_mode')}")
+    if str(output.get("reference_contract_mode")) != "collapsed_reference":
+        raise AssertionError(
+            f"{mode}: unexpected reference_contract_mode={output.get('reference_contract_mode')}"
+        )
     if not isinstance(output.get("style_query_inp"), torch.Tensor):
         raise AssertionError(f"{mode}: style_query_inp missing.")
     if not isinstance(output.get("timbre_query_inp"), torch.Tensor):
@@ -118,7 +117,7 @@ def run_smoke(args):
             config_path=args.config,
             binary_data_dir=args.binary_data_dir,
             extra_hparams={
-                "reference_contract_mode": "strict_factorized",
+                "reference_contract_mode": "collapsed_reference",
                 "decoder_style_condition_mode": mode,
                 "lambda_mel_adv": 0.0,
             },
@@ -131,7 +130,7 @@ def run_smoke(args):
             speakers_per_batch=int(args.speakers_per_batch),
             items_per_speaker=int(args.items_per_speaker),
         )
-        batch = build_pseudo_style_batch(dataset, indices, device, ensure_factorized_refs=True)
+        batch = build_pseudo_style_batch(dataset, indices, device, ensure_factorized_refs=False)
         optimizer.zero_grad(set_to_none=True)
         losses, output = task.run_model(batch, infer=False)
         total_loss = _sum_loss(losses)

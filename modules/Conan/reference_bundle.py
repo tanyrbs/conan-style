@@ -15,15 +15,10 @@ STYLE_RUNTIME_KEYS = (
     "global_style_anchor_strength",
     "style_memory_mode",
     "style_temperature",
-    "dynamic_timbre_memory_mode",
-    "dynamic_timbre_temperature",
-    "dynamic_timbre_gate_scale",
-    "dynamic_timbre_gate_bias",
 )
 
 REFERENCE_CONTRACT_MODES = (
     "collapsed_reference",
-    "strict_factorized",
 )
 
 
@@ -42,9 +37,8 @@ def normalize_reference_contract_mode(mode, default: str = "collapsed_reference"
     alias_map = {
         "collapsed": "collapsed_reference",
         "single_reference": "collapsed_reference",
-        "strict": "strict_factorized",
-        "factorized": "strict_factorized",
-        "strict_factorized_reference": "strict_factorized",
+        "single": "collapsed_reference",
+        "one_reference": "collapsed_reference",
     }
     normalized = alias_map.get(normalized, normalized)
     if normalized not in REFERENCE_CONTRACT_MODES:
@@ -67,13 +61,7 @@ def _build_reference_contract_metadata(
         collapsed_fields.append("ref_style")
     if not explicit_dynamic_timbre:
         collapsed_fields.append("ref_dynamic_timbre")
-    factorization_guaranteed = (
-        contract_mode == "strict_factorized"
-        and explicit_ref
-        and explicit_timbre
-        and explicit_style
-        and explicit_dynamic_timbre
-    )
+    factorization_guaranteed = False
     return {
         "mode": contract_mode,
         "explicit_ref": bool(explicit_ref),
@@ -110,25 +98,12 @@ def canonicalize_reference_bundle(
     explicit_style = explicit_style_value is not None
     explicit_dynamic_timbre = explicit_dynamic_timbre_value is not None
 
-    if contract_mode == "strict_factorized":
-        if resolved_ref is None:
-            raise ValueError("strict_factorized reference contract requires `ref`.")
-        if explicit_timbre_value is None:
-            raise ValueError("strict_factorized reference contract requires explicit `ref_timbre`.")
-        if explicit_style_value is None:
-            raise ValueError("strict_factorized reference contract requires explicit `ref_style`.")
-        if explicit_dynamic_timbre_value is None:
-            raise ValueError("strict_factorized reference contract requires explicit `ref_dynamic_timbre`.")
-        resolved_timbre = explicit_timbre_value
-        resolved_style = explicit_style_value
-        resolved_dynamic_timbre = explicit_dynamic_timbre_value
-    else:
-        resolved_style = explicit_style_value if explicit_style_value is not None else resolved_timbre
-        resolved_dynamic_timbre = (
-            explicit_dynamic_timbre_value
-            if explicit_dynamic_timbre_value is not None
-            else resolved_style
-        )
+    resolved_style = explicit_style_value if explicit_style_value is not None else resolved_timbre
+    resolved_dynamic_timbre = (
+        explicit_dynamic_timbre_value
+        if explicit_dynamic_timbre_value is not None
+        else resolved_style
+    )
 
     prompt_default = resolved_style if prompt_fallback_to_style else None
     resolved_emotion = first_present(bundle, "ref_emotion", "emotion", default=prompt_default)
@@ -187,13 +162,11 @@ def resolve_reference_bundle(
                 source,
                 "ref_style",
                 "ref_style_mels",
-                "style_ref_mels",
             ),
             "ref_dynamic_timbre": first_present(
                 source,
                 "ref_dynamic_timbre",
                 "ref_dynamic_timbre_mels",
-                "dynamic_timbre_ref_mels",
             ),
             "ref_emotion": first_present(
                 source,
@@ -223,12 +196,8 @@ def build_reference_bundle_from_batch(sample: Mapping[str, Any], default_ref=Non
     raw_bundle = {
         "ref": first_present(sample, "ref", "ref_mels", default=default_ref),
         "ref_timbre": first_present(sample, "ref_timbre_mels", "timbre_ref_mels"),
-        "ref_style": first_present(sample, "ref_style_mels", "style_ref_mels"),
-        "ref_dynamic_timbre": first_present(
-            sample,
-            "ref_dynamic_timbre_mels",
-            "dynamic_timbre_ref_mels",
-        ),
+        "ref_style": first_present(sample, "ref_style_mels"),
+        "ref_dynamic_timbre": first_present(sample, "ref_dynamic_timbre_mels"),
         "ref_emotion": first_present(sample, "ref_emotion_mels", "emotion_ref_mels"),
         "ref_accent": first_present(sample, "ref_accent_mels", "accent_ref_mels"),
         "reference_contract_mode": first_present(sample, "reference_contract_mode"),
@@ -271,7 +240,6 @@ def build_reference_bundle_from_inputs(
 def build_control_kwargs(source: Mapping[str, Any], style_strength_default=1.0):
     return {
         "emotion_id": first_present(source, "emotion_id", "emotion_ids"),
-        "style_id": first_present(source, "style_id", "style_ids"),
         "accent_id": first_present(source, "accent_id", "accent_ids"),
         "arousal": first_present(source, "arousal"),
         "valence": first_present(source, "valence"),
@@ -293,12 +261,6 @@ def build_control_kwargs(source: Mapping[str, Any], style_strength_default=1.0):
             "accent_strength",
             "accent_strengths",
             default=1.0,
-        ),
-        "dynamic_timbre_strength": first_present(
-            source,
-            "dynamic_timbre_strength",
-            "dynamic_timbre_strengths",
-            default=style_strength_default,
         ),
     }
 
@@ -323,14 +285,6 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
             "style_reference_memory_mode",
         ),
         "style_temperature": first_present(source, "style_temperature"),
-        "dynamic_timbre_memory_mode": first_present(
-            source,
-            "dynamic_timbre_memory_mode",
-            "dynamic_timbre_reference_memory_mode",
-        ),
-        "dynamic_timbre_temperature": first_present(source, "dynamic_timbre_temperature"),
-        "dynamic_timbre_gate_scale": first_present(source, "dynamic_timbre_gate_scale"),
-        "dynamic_timbre_gate_bias": first_present(source, "dynamic_timbre_gate_bias"),
     }
 
 

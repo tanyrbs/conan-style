@@ -67,6 +67,8 @@ class ConanDecoderStyleAdapter(nn.Module):
         self.dynamic_timbre_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
 
         self.stage_norm = nn.LayerNorm(hidden_size)
+        self._gate_bias = float(gate_bias)
+        self._gate_bias_version = 0
 
     @staticmethod
     def _build_gate(in_dim: int, hidden_dim: int, bias: float):
@@ -79,6 +81,25 @@ class ConanDecoderStyleAdapter(nn.Module):
         nn.init.zeros_(gate[2].weight)
         nn.init.constant_(gate[2].bias, float(bias))
         return gate
+
+    def set_gate_bias(self, bias: float):
+        bias = float(bias)
+        if self._gate_bias == bias:
+            return
+        for gate in (
+            self.global_timbre_gate,
+            self.global_style_gate,
+            self.slow_style_gate,
+            self.style_trace_gate,
+            self.dynamic_timbre_gate,
+        ):
+            if isinstance(gate, nn.Sequential) and len(gate) >= 3:
+                nn.init.constant_(gate[2].bias, bias)
+        self._gate_bias = bias
+        self._gate_bias_version += 1
+
+    def gate_bias_state(self):
+        return {"gate_bias": self._gate_bias, "gate_bias_version": self._gate_bias_version}
 
     def resolve_stage_end_indices(self, num_blocks: int) -> dict[int, str]:
         num_blocks = max(1, int(num_blocks))

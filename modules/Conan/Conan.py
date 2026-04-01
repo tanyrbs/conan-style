@@ -142,10 +142,10 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             self.embed_positions = None
 
         self.num_emotions = int(hparams.get("num_emotions", 0))
-        self.num_styles = int(hparams.get("num_styles", 0))
+        self.num_styles = 0
         self.num_accents = int(hparams.get("num_accents", 0))
         self.emotion_embed = Embedding(max(self.num_emotions, 1), hidden_size, 0) if self.num_emotions > 0 else None
-        self.style_embed_table = Embedding(max(self.num_styles, 1), hidden_size, 0) if self.num_styles > 0 else None
+        self.style_embed_table = None
         self.accent_embed = Embedding(max(self.num_accents, 1), hidden_size, 0) if self.num_accents > 0 else None
         self.arousal_proj = nn.Linear(1, hidden_size) if hparams.get("use_arousal", True) else None
         self.valence_proj = nn.Linear(1, hidden_size) if hparams.get("use_valence", True) else None
@@ -222,10 +222,19 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 slow_style_scale=hparams.get("decoder_slow_style_trace_scale", 0.55),
                 style_trace_scale=hparams.get("decoder_style_trace_scale", 0.75),
                 dynamic_timbre_scale=hparams.get("decoder_dynamic_timbre_scale", 0.85),
-                gate_bias=hparams.get("decoder_style_adapter_gate_bias", -2.0),
+                gate_bias=hparams.get("decoder_style_adapter_gate_bias", -1.0),
             )
         else:
             self.decoder_style_adapter = None
+        self.decoder_style_adapter_gate_bias_start = float(
+            hparams.get("decoder_style_adapter_gate_bias_start", hparams.get("decoder_style_adapter_gate_bias", -1.0))
+        )
+        self.decoder_style_adapter_gate_bias_end = float(
+            hparams.get("decoder_style_adapter_gate_bias_end", 0.0)
+        )
+        self.decoder_style_adapter_gate_bias_warmup = int(
+            hparams.get("decoder_style_adapter_gate_bias_warmup", 0)
+        )
 
         # self.time_ratio = hparams['sample_rate'] / hparams['hop_size'] / 50.0
         if hparams["f0_gen"] == "flow":
@@ -300,10 +309,12 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ref_timbre = reference_bundle["ref_timbre"]
         ref_style = reference_bundle["ref_style"]
         ref_dynamic_timbre = reference_bundle["ref_dynamic_timbre"]
-        style_embed = reference_cache["style_embed"]
-        ret["style_embed"] = style_embed
-        global_timbre_anchor = reference_cache.get("global_timbre_anchor", style_embed)
-        global_style_summary = reference_cache.get("global_style_summary", global_timbre_anchor)
+        global_timbre_anchor = reference_cache.get("global_timbre_anchor")
+        if global_timbre_anchor is None:
+            raise ValueError("reference_cache must provide `global_timbre_anchor`.")
+        global_style_summary = reference_cache.get("global_style_summary")
+        if global_style_summary is None:
+            raise ValueError("reference_cache must provide `global_style_summary`.")
         ret["global_timbre_anchor"] = global_timbre_anchor
         ret["global_style_summary"] = global_style_summary
         ret["global_style_summary_source"] = reference_cache.get("global_style_summary_source", None)
@@ -325,7 +336,6 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["dynamic_timbre_anchor_preserve_strength_runtime"] = float(
             style_mainline.dynamic_timbre_anchor_preserve_strength
         )
-        ret["global_style_anchor"] = global_timbre_anchor
         global_style_anchor_strength = self._resolve_strength(
             style_mainline.global_style_anchor_strength,
             batch_size=content.size(0),
@@ -347,8 +357,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         global_style_anchor_runtime = global_timbre_anchor * global_style_anchor_strength
         if not style_mainline.apply_global_style_anchor:
             global_style_anchor_runtime = torch.zeros_like(global_style_anchor_runtime)
-        ret["style_embed_runtime"] = global_style_anchor_runtime
-        ret["global_style_anchor_runtime"] = global_style_anchor_runtime
+        ret["global_timbre_anchor_runtime"] = global_style_anchor_runtime
         query_condition_inp = content_embed + condition_embed + global_style_anchor_runtime
         ret["query_condition_inp"] = query_condition_inp
         base_condition_inp = content_embed + condition_embed
@@ -487,6 +496,14 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         energy_embed = self.forward_energy(pitch_inp, kwargs.get("energy", None), ret) \
             if self.use_energy_embed else 0.0
         ret["decoder_style_adapter_enabled"] = bool(self.decoder_style_adapter is not None)
+        if self.decoder_style_adapter is not None and self.decoder_style_adapter_gate_bias_warmup > 0:
+            ratio = min(1.0, float(global_steps) / float(self.decoder_style_adapter_gate_bias_warmup))
+            gate_bias = (
+                self.decoder_style_adapter_gate_bias_start
+                + (self.decoder_style_adapter_gate_bias_end - self.decoder_style_adapter_gate_bias_start) * ratio
+            )
+            self.decoder_style_adapter.set_gate_bias(gate_bias)
+            ret["decoder_style_adapter_gate_bias_runtime"] = gate_bias
         ret["decoder_inp"] = decoder_inp = pitch_inp + pitch_embed_out + energy_embed
         ret["mel_out"] = self.forward_decoder(decoder_inp, tgt_nonpadding, ret, infer=infer, **kwargs)
         ret["tgt_nonpadding"] = tgt_nonpadding

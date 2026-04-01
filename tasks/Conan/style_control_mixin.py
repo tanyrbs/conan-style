@@ -46,7 +46,6 @@ class ConanStyleControlMixin:
             sample,
             specs=(
                 ("emotion_cls", "emotion_logits", "emotion_ids", hparams.get("lambda_emotion_cls", 0.0)),
-                ("style_cls", "style_logits", "style_ids", hparams.get("lambda_style_cls", 0.0)),
                 ("accent_cls", "accent_logits", "accent_ids", hparams.get("lambda_accent_cls", 0.0)),
                 (
                     "emotion_prompt_cls",

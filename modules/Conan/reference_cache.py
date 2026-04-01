@@ -141,12 +141,10 @@ def canonicalize_reference_cache(reference_cache: Optional[Mapping[str, Any]] = 
         return None
     normalized: Dict[str, Any] = dict(reference_cache)
     global_timbre_anchor = _normalize_global_anchor(
-        first_present(normalized, "global_timbre_anchor", "global_style_anchor", "style_embed")
+        first_present(normalized, "global_timbre_anchor")
     )
     if global_timbre_anchor is not None:
         normalized["global_timbre_anchor"] = global_timbre_anchor
-        normalized["global_style_anchor"] = global_timbre_anchor
-        normalized["style_embed"] = global_timbre_anchor
     global_style_summary = _normalize_global_anchor(
         first_present(normalized, "global_style_summary")
     )
@@ -171,7 +169,7 @@ def validate_reference_cache(reference_cache: Optional[Mapping[str, Any]]):
     if reference_cache is None:
         return
     normalized = canonicalize_reference_cache(reference_cache)
-    for key in ("global_timbre_anchor", "global_style_anchor", "global_style_summary"):
+    for key in ("global_timbre_anchor", "global_style_summary"):
         global_anchor = normalized.get(key)
         if global_anchor is not None:
             if not isinstance(global_anchor, torch.Tensor) or global_anchor.dim() != 3:

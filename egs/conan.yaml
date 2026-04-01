@@ -160,17 +160,16 @@ silent_token: 57
 content_embedding_dim: 102
 content_vocab_size: 102
 content_padding_idx: 101
-reference_contract_mode: strict_factorized
+reference_contract_mode: collapsed_reference
 decoder_style_condition_mode: mainline_full
 style_trace_mode: dual
 style_reference_memory_mode: slow
+fast_style_strength_scale: 1.15
+slow_style_strength_scale: 1.30
 global_style_trace_blend: 0.25
 global_timbre_to_pitch: false
 global_style_summary_fallback_to_timbre: false
 global_style_anchor_strength: 1.0
-dynamic_timbre_boundary_suppress_strength: 0.14
-dynamic_timbre_boundary_radius: 2
-dynamic_timbre_anchor_preserve_strength: 0.12
 use_decoder_style_adapter: true
 decoder_style_adapter_gate_hidden: 256
 decoder_global_timbre_scale: 0.18
@@ -179,102 +178,42 @@ decoder_global_timbre_scale_late: 0.08
 decoder_style_global_scale: 0.2
 decoder_slow_style_trace_scale: 0.55
 decoder_style_trace_scale: 0.9
-decoder_dynamic_timbre_scale: 0.85
-decoder_style_adapter_gate_bias: -2.0
+decoder_dynamic_timbre_scale: 0.0
+decoder_style_adapter_gate_bias: -1.0
+decoder_style_adapter_gate_bias_start: -1.0
+decoder_style_adapter_gate_bias_end: 0.0
+decoder_style_adapter_gate_bias_warmup: 80000
 
 # Strong-style / strong-emotion v1
 use_reference_bundle: true
 use_reference_cache: true
 prompt_ref_fallback_to_style: false
-use_dynamic_timbre: true
-tv_timbre_use_vq: false
-tv_timbre_nVQ: 64
-tv_timbre_layers: 1
-tv_timbre_gate_hidden: 256
-tv_timbre_vq_start: 20500
+use_dynamic_timbre: false
+enable_emotion_condition: false
+enable_accent_condition: false
 ref_group_size: 4
 reference_prosody_slow_pool: 4
 reference_timbre_slow_pool: 2
-sample_style_reference: true
-sample_dynamic_timbre_reference: true
-sample_emotion_reference: true
-sample_accent_reference: false
+# (single-reference) style/dynamic_timbre ref sampling disabled
 use_fixed_timbre_reference: true
-style_balanced_batching: true
-style_balanced_field: style
-style_balanced_group_size: 2
-style_balanced_window_batches: 6
-style_ref_prefer_cross_speaker: true
-style_ref_strength_bias: 0.6
-style_ref_length_bias: 0.2
-dynamic_timbre_ref_same_style: false
-dynamic_timbre_ref_prefer_cross_style: true
-dynamic_timbre_ref_allow_same_style_fallback: true
-dynamic_timbre_ref_strength_bias: 0.5
-dynamic_timbre_ref_energy_bias: 0.35
-style_reference_memory_mode: fast
-dynamic_timbre_reference_memory_mode: fast
+# (single-reference) style/dynamic_timbre ref sampling params removed
 use_energy_embed: false
 lambda_energy: 0.0
 
 # Optional supervised control heads
-num_emotions: 0
 num_styles: 0
-num_accents: 0
-use_arousal: true
-use_valence: true
-predict_arousal: true
-predict_valence: true
-predict_prompt_emotion: true
-predict_prompt_accent: true
-predict_prompt_arousal: true
-predict_prompt_valence: true
-emotion_condition_use_gate: true
-accent_condition_use_gate: true
-emotion_condition_gate_hidden: 256
-accent_condition_gate_hidden: 256
-lambda_emotion_cls: 0.0
-lambda_style_cls: 0.0
-lambda_accent_cls: 0.0
-lambda_arousal_reg: 0.0
-lambda_valence_reg: 0.0
-lambda_emotion_prompt_cls: 0.0
-lambda_accent_prompt_cls: 0.0
-lambda_emotion_prompt_arousal: 0.0
-lambda_emotion_prompt_valence: 0.0
 lambda_style_trace_smooth: 0.0
-lambda_tv_timbre_smooth: 0.02
-lambda_tv_timbre_anchor: 0.01
-lambda_tv_gloss: 0.0
-lambda_timbre_vq: 0.0
-lambda_style_contrastive: 0.15
-lambda_global_style_contrastive: 0.1
-style_contrastive_margin: 0.2
-global_style_contrastive_margin: 0.2
 lambda_style_trace_consistency: 0.1
-lambda_timbre_anchor_cosine: 0.02
 lambda_style_timbre_disentangle: 0.03
-lambda_style_dynamic_timbre_disentangle: 0.05
-lambda_dynamic_timbre_gate: 0.02
+lambda_style_query_var: 0.01
 lambda_global_style_summary_align: 0.05
-lambda_emotion_style_disentangle: 0.0
-lambda_accent_style_disentangle: 0.0
-lambda_emotion_accent_disentangle: 0.0
-lambda_emotion_gate: 0.0
-lambda_accent_gate: 0.0
-dynamic_timbre_gate_target: 0.6
-emotion_gate_target: 0.85
-accent_gate_target: 0.75
+lambda_slow_style_summary_align: 0.05
 control_regularization_schedule:
   type: linear
-  lambda_style_contrastive: {start: 5000, warmup: 10000}
-  lambda_global_style_contrastive: {start: 5000, warmup: 10000, initial: 0.0, target: 0.1}
-  lambda_tv_timbre_smooth: {start: 5000, warmup: 10000}
-  lambda_tv_timbre_anchor: {start: 5000, warmup: 10000}
   lambda_style_trace_consistency: {start: 10000, warmup: 15000, initial: 0.0, target: 0.1}
   lambda_style_timbre_disentangle: {start: 15000, warmup: 15000, initial: 0.0, target: 0.03}
-  lambda_style_dynamic_timbre_disentangle: {start: 15000, warmup: 15000, initial: 0.0, target: 0.05}
-  lambda_dynamic_timbre_gate: {start: 10000, warmup: 10000, initial: 0.0, target: 0.02}
+  lambda_style_query_var: {start: 12000, warmup: 12000, initial: 0.0, target: 0.01}
   lambda_global_style_summary_align: {start: 10000, warmup: 12000, initial: 0.0, target: 0.05}
+  lambda_slow_style_summary_align: {start: 10000, warmup: 12000, initial: 0.0, target: 0.05}
 log_control_diagnostics: true
 control_diagnostics_track_lambdas: true

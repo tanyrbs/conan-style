@@ -174,6 +174,10 @@ def validate_decoder_style_bundle(bundle: Optional[Mapping[str, Any]] = None):
     normalized = canonicalize_decoder_style_bundle(bundle)
     if normalized is None:
         return
+    if bool(normalized.get("planner_writeback_allowed", False)):
+        raise ValueError("decoder_style_bundle must keep `planner_writeback_allowed=False`.")
+    if bool(normalized.get("projector_writeback_allowed", False)):
+        raise ValueError("decoder_style_bundle must keep `projector_writeback_allowed=False`.")
     for key in ("global_timbre_anchor", "global_timbre_anchor_runtime", "global_style_summary"):
         value = normalized.get(key)
         if value is not None and (not isinstance(value, torch.Tensor) or value.dim() != 3):

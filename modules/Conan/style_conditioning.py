@@ -232,7 +232,7 @@ class ConanStyleConditioningMixin:
             resolved_bundle.get("reference_contract_mode", self._get_hparam("reference_contract_mode", "collapsed_reference"))
         )
 
-        global_timbre_anchor = cache.get("global_timbre_anchor", cache.get("style_embed"))
+        global_timbre_anchor = cache.get("global_timbre_anchor")
         global_timbre_anchor_source = str(cache.get("global_timbre_anchor_source", "reference_cache"))
         if global_timbre_anchor is None and spk_embed is not None:
             global_timbre_anchor = spk_embed
@@ -246,10 +246,8 @@ class ConanStyleConditioningMixin:
             global_timbre_anchor = self.encode_spk_embed(ref_timbre.transpose(1, 2)).transpose(1, 2)
             global_timbre_anchor_source = "ref_timbre"
         global_timbre_anchor = self._normalize_style_embed(global_timbre_anchor)
-        cache["style_embed"] = global_timbre_anchor
         cache["global_timbre_anchor"] = global_timbre_anchor
         cache["global_timbre_anchor_source"] = global_timbre_anchor_source
-        cache["global_style_anchor"] = global_timbre_anchor
 
         summary_source = resolved_bundle.get("summary_source")
         if summary_source is not None:
@@ -304,17 +302,14 @@ class ConanStyleConditioningMixin:
                 global_style_summary_source = "summary_source_prompt"
         if global_style_summary is None:
             allow_timbre_fallback = bool(
-                self._get_hparam(
-                    "global_style_summary_fallback_to_timbre",
-                    contract_mode != "strict_factorized",
-                )
+                self._get_hparam("global_style_summary_fallback_to_timbre", True)
             )
             if allow_timbre_fallback:
                 global_style_summary = global_timbre_anchor
                 global_style_summary_source = "fallback_timbre_anchor"
             else:
                 raise ValueError(
-                    "strict_factorized reference contract requires a style-backed `global_style_summary`; "
+                    "single-reference mode requires a style-backed `global_style_summary`; "
                     "fallback to global timbre anchor is disabled."
                 )
         cache["global_style_summary"] = self._normalize_style_embed(global_style_summary)
@@ -336,6 +331,8 @@ class ConanStyleConditioningMixin:
         batch_size = reference.size(0)
         device = reference.device
         condition_embed = torch.zeros_like(reference)
+        enable_emotion = bool(self._get_hparam("enable_emotion_condition", False)) and self.emotion_embed is not None
+        enable_accent = bool(self._get_hparam("enable_accent_condition", False)) and self.accent_embed is not None
 
         emotion_strength = self._resolve_strength(
             kwargs.get("emotion_strength", kwargs.get("emotion_strengths", 1.0)),
@@ -356,76 +353,83 @@ class ConanStyleConditioningMixin:
             device=device,
         )
 
-        condition_embed = condition_embed + self._lookup_condition_embedding(
-            kwargs.get("emotion_id", kwargs.get("emotion_ids")),
-            self.emotion_embed,
-            emotion_strength,
-            reference,
-        )
-        condition_embed = condition_embed + self._lookup_condition_embedding(
-            kwargs.get("style_id", kwargs.get("style_ids")),
-            self.style_embed_table,
-            style_strength,
-            reference,
-        )
-        condition_embed = condition_embed + self._lookup_condition_embedding(
-            kwargs.get("accent_id", kwargs.get("accent_ids")),
-            self.accent_embed,
-            accent_strength,
-            reference,
-        )
-
-        emotion_prompt = first_present(reference_cache, "emotion_prompt") if reference_cache is not None else None
-        if emotion_prompt is None:
-            emotion_prompt = self._encode_reference_prompt(
-                ref_emotion if ref_emotion is not None else kwargs.get("ref_emotion", None),
-                prompt_type="prosody",
-                axis="emotion",
+        if enable_emotion:
+            condition_embed = condition_embed + self._lookup_condition_embedding(
+                kwargs.get("emotion_id", kwargs.get("emotion_ids")),
+                self.emotion_embed,
+                emotion_strength,
+                reference,
             )
-        if emotion_prompt is not None:
-            emotion_prompt = self._summary_vector(emotion_prompt)
-            ret["emotion_prompt"] = emotion_prompt
-            if getattr(self, "prompt_control", None) is not None:
-                emotion_condition, emotion_gate, emotion_prompt = self.prompt_control.fuse(
-                    "emotion",
-                    reference,
-                    emotion_prompt,
-                    emotion_strength,
-                    projected=True,
+        if self.style_embed_table is not None:
+            condition_embed = condition_embed + self._lookup_condition_embedding(
+                kwargs.get("style_id", kwargs.get("style_ids")),
+                self.style_embed_table,
+                style_strength,
+                reference,
+            )
+        if enable_accent:
+            condition_embed = condition_embed + self._lookup_condition_embedding(
+                kwargs.get("accent_id", kwargs.get("accent_ids")),
+                self.accent_embed,
+                accent_strength,
+                reference,
+            )
+
+        emotion_prompt = None
+        if enable_emotion:
+            emotion_prompt = first_present(reference_cache, "emotion_prompt") if reference_cache is not None else None
+            if emotion_prompt is None:
+                emotion_prompt = self._encode_reference_prompt(
+                    ref_emotion if ref_emotion is not None else kwargs.get("ref_emotion", None),
+                    prompt_type="prosody",
+                    axis="emotion",
                 )
+            if emotion_prompt is not None:
+                emotion_prompt = self._summary_vector(emotion_prompt)
                 ret["emotion_prompt"] = emotion_prompt
-                ret["emotion_condition"] = emotion_condition
-                ret["emotion_gate"] = emotion_gate
-                condition_embed = condition_embed + emotion_condition
-            else:
-                condition_embed = condition_embed + emotion_prompt[:, None, :] * emotion_strength
+                if getattr(self, "prompt_control", None) is not None:
+                    emotion_condition, emotion_gate, emotion_prompt = self.prompt_control.fuse(
+                        "emotion",
+                        reference,
+                        emotion_prompt,
+                        emotion_strength,
+                        projected=True,
+                    )
+                    ret["emotion_prompt"] = emotion_prompt
+                    ret["emotion_condition"] = emotion_condition
+                    ret["emotion_gate"] = emotion_gate
+                    condition_embed = condition_embed + emotion_condition
+                else:
+                    condition_embed = condition_embed + emotion_prompt[:, None, :] * emotion_strength
 
-        accent_prompt = first_present(reference_cache, "accent_prompt") if reference_cache is not None else None
-        if accent_prompt is None:
-            accent_prompt = self._encode_reference_prompt(
-                ref_accent if ref_accent is not None else kwargs.get("ref_accent", None),
-                prompt_type="timbre",
-                axis="accent",
-            )
-        if accent_prompt is not None:
-            accent_prompt = self._summary_vector(accent_prompt)
-            ret["accent_prompt"] = accent_prompt
-            if getattr(self, "prompt_control", None) is not None:
-                accent_condition, accent_gate, accent_prompt = self.prompt_control.fuse(
-                    "accent",
-                    reference,
-                    accent_prompt,
-                    accent_strength,
-                    projected=True,
+        accent_prompt = None
+        if enable_accent:
+            accent_prompt = first_present(reference_cache, "accent_prompt") if reference_cache is not None else None
+            if accent_prompt is None:
+                accent_prompt = self._encode_reference_prompt(
+                    ref_accent if ref_accent is not None else kwargs.get("ref_accent", None),
+                    prompt_type="timbre",
+                    axis="accent",
                 )
+            if accent_prompt is not None:
+                accent_prompt = self._summary_vector(accent_prompt)
                 ret["accent_prompt"] = accent_prompt
-                ret["accent_condition"] = accent_condition
-                ret["accent_gate"] = accent_gate
-                condition_embed = condition_embed + accent_condition
-            else:
-                condition_embed = condition_embed + accent_prompt[:, None, :] * accent_strength
+                if getattr(self, "prompt_control", None) is not None:
+                    accent_condition, accent_gate, accent_prompt = self.prompt_control.fuse(
+                        "accent",
+                        reference,
+                        accent_prompt,
+                        accent_strength,
+                        projected=True,
+                    )
+                    ret["accent_prompt"] = accent_prompt
+                    ret["accent_condition"] = accent_condition
+                    ret["accent_gate"] = accent_gate
+                    condition_embed = condition_embed + accent_condition
+                else:
+                    condition_embed = condition_embed + accent_prompt[:, None, :] * accent_strength
 
-        if getattr(self, "prompt_attribute_heads", None) is not None:
+        if getattr(self, "prompt_attribute_heads", None) is not None and (enable_emotion or enable_accent):
             ret.update(
                 self.prompt_attribute_heads(
                     emotion_prompt=emotion_prompt,
@@ -466,7 +470,7 @@ class ConanStyleConditioningMixin:
 
     def build_reference_summary(self, ret, summary_source=None, reference_cache=None):
         style_global = self._summary_vector(
-            first_present(ret, "global_style_summary", "style_embed")
+            first_present(ret, "global_style_summary")
         )
         combined_style_trace, combined_style_trace_mask = resolve_combined_style_trace(ret)
         style_trace = self._masked_mean(combined_style_trace, combined_style_trace_mask)
@@ -477,9 +481,6 @@ class ConanStyleConditioningMixin:
                 first_present(
                     reference_cache,
                     "global_style_summary",
-                    "global_timbre_anchor",
-                    "global_style_anchor",
-                    "style_embed",
                 )
             )
             if cached_global is not None:
@@ -649,11 +650,11 @@ class ConanStyleConditioningMixin:
             forcing=False,
         )
         aligned = output.transpose(0, 1)
-        global_timbre_anchor = first_present(ret, "global_timbre_anchor", "style_embed")
+        global_timbre_anchor = first_present(ret, "global_timbre_anchor")
         if isinstance(global_timbre_anchor, torch.Tensor) and global_timbre_anchor.dim() == 3:
             global_timbre_anchor = global_timbre_anchor.expand(-1, aligned.size(1), -1)
         else:
-            global_timbre_anchor = ret["style_embed"].expand(-1, aligned.size(1), -1)
+            raise ValueError("global_timbre_anchor is required for dynamic timbre alignment.")
         control = resolve_dynamic_timbre_control(
             {
                 "dynamic_timbre_boundary_suppress_strength": boundary_suppress_strength,
@@ -701,7 +702,7 @@ class ConanStyleConditioningMixin:
         ret["tv_timbre_smooth"] = self._sequence_smoothness(aligned, src_key_padding_mask)
         ret["tv_timbre_anchor"] = F.l1_loss(
             self._masked_mean(aligned, src_key_padding_mask),
-            first_present(ret, "global_timbre_anchor", "style_embed").squeeze(1),
+            first_present(ret, "global_timbre_anchor").squeeze(1),
         )
         return aligned
 

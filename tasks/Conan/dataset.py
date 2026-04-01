@@ -24,7 +24,6 @@ class ConanDataset(FastSpeechDataset):
 
         sample["content"] = torch.LongTensor(item["hubert"])
         sample["emotion_id"] = _scalar_long(item.get("emotion_id", -1), default=-1)
-        sample["style_id"] = _scalar_long(item.get("style_id", -1), default=-1)
         sample["accent_id"] = _scalar_long(item.get("accent_id", -1), default=-1)
         sample["arousal"] = _scalar_float(item.get("arousal", 0.0), default=0.0)
         sample["valence"] = _scalar_float(item.get("valence", 0.0), default=0.0)
@@ -37,10 +36,6 @@ class ConanDataset(FastSpeechDataset):
         sample["style_strength"] = _scalar_float(item.get("style_strength", 1.0), default=1.0)
         sample["emotion_strength"] = _scalar_float(item.get("emotion_strength", 1.0), default=1.0)
         sample["accent_strength"] = _scalar_float(item.get("accent_strength", 1.0), default=1.0)
-        sample["dynamic_timbre_strength"] = _scalar_float(
-            item.get("dynamic_timbre_strength", item.get("style_strength", 1.0)),
-            default=1.0,
-        )
         return sample
 
     def collater(self, samples):
@@ -51,26 +46,14 @@ class ConanDataset(FastSpeechDataset):
             self.hparams.get("reference_contract_mode", "collapsed_reference")
         )
         batch["reference_contract_mode"] = contract_mode
-        if contract_mode == "strict_factorized":
-            if "ref_timbre_mels" not in batch:
-                raise ValueError(
-                    "strict_factorized reference contract requires explicit `ref_timbre_mels` in batch."
-                )
-            if "style_ref_mels" not in batch:
-                raise ValueError(
-                    "strict_factorized reference contract requires sampled `style_ref_mels` in batch."
-                )
-            if "dynamic_timbre_ref_mels" not in batch:
-                raise ValueError(
-                    "strict_factorized reference contract requires sampled `dynamic_timbre_ref_mels` in batch."
-                )
-        else:
-            batch["ref_timbre_mels"] = batch.get("ref_timbre_mels", batch["ref_mels"])
+        batch["ref_timbre_mels"] = batch.get("ref_timbre_mels", batch["ref_mels"])
+        batch["style_ref_mels"] = batch["ref_mels"]
+        batch["dynamic_timbre_ref_mels"] = batch["ref_mels"]
         raw_reference_bundle = {
             "ref": batch["ref_mels"],
             "ref_timbre": batch["ref_timbre_mels"],
-            "ref_style": batch.get("style_ref_mels", None),
-            "ref_dynamic_timbre": batch.get("dynamic_timbre_ref_mels", None),
+            "ref_style": batch["ref_mels"],
+            "ref_dynamic_timbre": batch["ref_mels"],
             "ref_emotion": batch.get("emotion_ref_mels", None),
             "ref_accent": batch.get("accent_ref_mels", None),
             "reference_contract_mode": contract_mode,
@@ -80,8 +63,8 @@ class ConanDataset(FastSpeechDataset):
             default_ref=batch["ref_mels"],
             contract_mode=contract_mode,
         )
-        batch["ref_style_mels"] = normalized_reference_bundle["ref_style"]
-        batch["ref_dynamic_timbre_mels"] = normalized_reference_bundle["ref_dynamic_timbre"]
+        batch["ref_style_mels"] = batch["ref_mels"]
+        batch["ref_dynamic_timbre_mels"] = batch["ref_mels"]
         if "emotion_ref_mels" in batch:
             batch["ref_emotion_mels"] = batch["emotion_ref_mels"]
         if "accent_ref_mels" in batch:
@@ -92,7 +75,6 @@ class ConanDataset(FastSpeechDataset):
             [sample["content"] for sample in samples], content_padding_idx
         ).long()
         batch["emotion_ids"] = torch.stack([sample["emotion_id"] for sample in samples]).long()
-        batch["style_ids"] = torch.stack([sample["style_id"] for sample in samples]).long()
         batch["accent_ids"] = torch.stack([sample["accent_id"] for sample in samples]).long()
         batch["arousal"] = torch.stack([sample["arousal"] for sample in samples]).float()
         batch["valence"] = torch.stack([sample["valence"] for sample in samples]).float()
@@ -100,7 +82,4 @@ class ConanDataset(FastSpeechDataset):
         batch["style_strengths"] = torch.stack([sample["style_strength"] for sample in samples]).float()
         batch["emotion_strengths"] = torch.stack([sample["emotion_strength"] for sample in samples]).float()
         batch["accent_strengths"] = torch.stack([sample["accent_strength"] for sample in samples]).float()
-        batch["dynamic_timbre_strengths"] = torch.stack(
-            [sample["dynamic_timbre_strength"] for sample in samples]
-        ).float()
         return batch

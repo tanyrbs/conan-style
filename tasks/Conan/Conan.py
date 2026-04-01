@@ -33,7 +33,6 @@ class ConanEmbTask(AuxDecoderMIDITask):
             output = self.model.encode_spk_embed(ref.transpose(1, 2)).squeeze(2)
         return {}, {
             "global_timbre_anchor": output,
-            "style_embed": output,
         }
 
 

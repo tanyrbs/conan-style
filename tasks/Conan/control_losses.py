@@ -44,6 +44,17 @@ def _cosine_distance(a, b):
     return 1.0 - F.cosine_similarity(a, b, dim=-1, eps=1e-6).mean()
 
 
+def _variance_floor_penalty(value, *, target=0.05):
+    value = _summary_vector(value)
+    if value is None or value.dim() != 2:
+        return None
+    std = value.float().std(dim=0, unbiased=False)
+    if std.numel() <= 0:
+        return None
+    target = float(target)
+    return F.relu(std.new_full(std.shape, target) - std).mean()
+
+
 def _normalize_sequence_mask(mask, sequence):
     if not isinstance(mask, torch.Tensor) or not isinstance(sequence, torch.Tensor):
         return None
@@ -84,41 +95,20 @@ def _timbre_representation(output):
 
 
 def _global_timbre_anchor(output):
-    return _summary_vector(output.get("global_timbre_anchor", output.get("style_embed")))
+    return _summary_vector(output.get("global_timbre_anchor"))
 
 
 def _global_style_summary(output):
     return _summary_vector(
-        output.get("global_style_summary_runtime", output.get("global_style_summary", output.get("style_embed")))
+        output.get("global_style_summary_runtime", output.get("global_style_summary"))
     )
 
 
-def _supervised_contrastive_margin_loss(embeddings, labels, *, margin=0.2):
-    embeddings = _summary_vector(embeddings)
-    if embeddings is None or not isinstance(labels, torch.Tensor):
-        return None
-    if embeddings.dim() != 2 or labels.dim() != 1 or embeddings.size(0) != labels.size(0):
-        return None
-    valid = labels >= 0
-    if valid.sum() <= 1:
-        return None
-    embeddings = F.normalize(embeddings[valid], dim=-1, eps=1e-6)
-    labels = labels[valid]
-    sim = embeddings @ embeddings.transpose(0, 1)
-    eye = torch.eye(sim.size(0), device=sim.device, dtype=torch.bool)
-
-    losses = []
-    for idx in range(sim.size(0)):
-        pos_mask = (labels == labels[idx]) & (~eye[idx])
-        neg_mask = labels != labels[idx]
-        if pos_mask.sum() <= 0 or neg_mask.sum() <= 0:
-            continue
-        pos_score = sim[idx][pos_mask].mean()
-        neg_score = sim[idx][neg_mask].mean()
-        losses.append(F.relu(float(margin) - pos_score + neg_score))
-    if len(losses) <= 0:
-        return None
-    return torch.stack(losses).mean()
+def _slow_style_representation(output):
+    return _masked_sequence_mean(
+        output.get("slow_style_trace"),
+        output.get("slow_style_trace_mask"),
+    )
 
 
 def _gate_mean(gate, mask=None):
@@ -196,7 +186,7 @@ def add_optional_passthrough_losses(losses, output, *, specs):
 
 
 def add_prompt_regularization_losses(losses, output, config):
-    global_timbre_anchor = output.get("global_timbre_anchor", output.get("style_embed"))
+    global_timbre_anchor = output.get("global_timbre_anchor")
     disentangle_specs = (
         (
             "emotion_style_dis",
@@ -248,6 +238,7 @@ def add_prompt_regularization_losses(losses, output, config):
 
 def add_style_timbre_regularization_losses(losses, output, sample, config):
     style_repr = _style_representation(output)
+    slow_style_repr = _slow_style_representation(output)
     style_memory_repr = _masked_sequence_mean(
         output.get("style_trace_memory"),
         output.get("style_trace_memory_mask"),
@@ -255,26 +246,14 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
     timbre_repr = _timbre_representation(output)
     global_timbre_anchor = _global_timbre_anchor(output)
     global_style_summary = _global_style_summary(output)
-
-    style_contrastive_lambda = float(config.get("lambda_style_contrastive", 0.0))
-    if style_contrastive_lambda > 0 and style_repr is not None:
-        contrastive_loss = _supervised_contrastive_margin_loss(
-            style_repr,
-            sample.get("style_ids"),
-            margin=float(config.get("style_contrastive_margin", 0.2)),
-        )
-        if contrastive_loss is not None:
-            losses["style_contrastive"] = contrastive_loss * style_contrastive_lambda
-
-    global_style_contrastive_lambda = float(config.get("lambda_global_style_contrastive", 0.0))
-    if global_style_contrastive_lambda > 0 and global_style_summary is not None:
-        contrastive_loss = _supervised_contrastive_margin_loss(
-            global_style_summary,
-            sample.get("style_ids"),
-            margin=float(config.get("global_style_contrastive_margin", 0.2)),
-        )
-        if contrastive_loss is not None:
-            losses["global_style_contrastive"] = contrastive_loss * global_style_contrastive_lambda
+    style_query_repr = _masked_sequence_mean(
+        output.get("style_query_inp"),
+        output.get("style_trace_mask"),
+    )
+    timbre_query_repr = _masked_sequence_mean(
+        output.get("timbre_query_inp"),
+        output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+    )
 
     style_trace_consistency_lambda = float(config.get("lambda_style_trace_consistency", 0.0))
     if style_trace_consistency_lambda > 0:
@@ -306,6 +285,38 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if style_dynamic_timbre_dis is not None:
             losses["style_dynamic_timbre_dis"] = (
                 style_dynamic_timbre_dis * style_dynamic_timbre_dis_lambda
+            )
+
+    query_dis_lambda = float(config.get("lambda_style_timbre_query_disentangle", 0.0))
+    if query_dis_lambda > 0:
+        query_dis = _mean_abs_cosine(style_query_repr, timbre_query_repr)
+        if query_dis is not None:
+            losses["style_timbre_query_dis"] = query_dis * query_dis_lambda
+
+    style_query_var_lambda = float(config.get("lambda_style_query_var", 0.0))
+    if style_query_var_lambda > 0:
+        style_query_var = _variance_floor_penalty(
+            style_query_repr,
+            target=float(config.get("style_query_var_target", 0.05)),
+        )
+        if style_query_var is not None:
+            losses["style_query_var"] = style_query_var * style_query_var_lambda
+
+    timbre_query_var_lambda = float(config.get("lambda_timbre_query_var", 0.0))
+    if timbre_query_var_lambda > 0:
+        timbre_query_var = _variance_floor_penalty(
+            timbre_query_repr,
+            target=float(config.get("timbre_query_var_target", 0.05)),
+        )
+        if timbre_query_var is not None:
+            losses["timbre_query_var"] = timbre_query_var * timbre_query_var_lambda
+
+    slow_style_summary_align_lambda = float(config.get("lambda_slow_style_summary_align", 0.0))
+    if slow_style_summary_align_lambda > 0:
+        slow_style_summary_align = _cosine_distance(slow_style_repr, global_style_summary)
+        if slow_style_summary_align is not None:
+            losses["slow_style_summary_align"] = (
+                slow_style_summary_align * slow_style_summary_align_lambda
             )
 
     dynamic_timbre_gate_lambda = float(config.get("lambda_dynamic_timbre_gate", 0.0))

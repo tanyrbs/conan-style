@@ -47,8 +47,6 @@ class ConanDataset(FastSpeechDataset):
         )
         batch["reference_contract_mode"] = contract_mode
         batch["ref_timbre_mels"] = batch.get("ref_timbre_mels", batch["ref_mels"])
-        batch["style_ref_mels"] = batch["ref_mels"]
-        batch["dynamic_timbre_ref_mels"] = batch["ref_mels"]
         raw_reference_bundle = {
             "ref": batch["ref_mels"],
             "ref_emotion": batch.get("emotion_ref_mels", None),
@@ -60,8 +58,12 @@ class ConanDataset(FastSpeechDataset):
             default_ref=batch["ref_mels"],
             contract_mode=contract_mode,
         )
-        batch["ref_style_mels"] = batch["ref_mels"]
-        batch["ref_dynamic_timbre_mels"] = batch["ref_mels"]
+        batch["reference_contract"] = normalized_reference_bundle.get("reference_contract", {})
+        if bool(self.hparams.get("emit_collapsed_reference_aliases", False)):
+            batch["style_ref_mels"] = batch["ref_mels"]
+            batch["dynamic_timbre_ref_mels"] = batch["ref_mels"]
+            batch["ref_style_mels"] = batch["ref_mels"]
+            batch["ref_dynamic_timbre_mels"] = batch["ref_mels"]
         if "emotion_ref_mels" in batch:
             batch["ref_emotion_mels"] = batch["emotion_ref_mels"]
         if "accent_ref_mels" in batch:

@@ -43,14 +43,31 @@ def load_model(config_path, checkpoint_path):
 total_time = 0
 
 
+def _resolve_vocoder_left_context_frames(config):
+    for key in (
+        'vocoder_left_context_frames',
+        'streaming_vocoder_left_context_frames',
+        'vocoder_stream_context',
+    ):
+        value = config.get(key, None)
+        if value is None:
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 48
+
+
 @register_vocoder('HifiGAN_NSF')
 class HifiGAN(BaseVocoder):
     def __init__(self):
         base_dir = hparams['vocoder_ckpt']
         config_path = f'{base_dir}/config.yaml'
         if os.path.exists(config_path):
+            ckpt_pattern = rf'{re.escape(base_dir)}/model_ckpt_steps_(\d+)\.ckpt'
             ckpt = sorted(glob.glob(f'{base_dir}/model_ckpt_steps_*.ckpt'), key=
-            lambda x: int(re.findall(f'{base_dir}/model_ckpt_steps_(\d+).ckpt', x)[0]))[-1]
+            lambda x: int(re.findall(ckpt_pattern, x)[0]))[-1]
             print('| load HifiGAN: ', ckpt)
             self.model, self.config, self.device = load_model(config_path=config_path, checkpoint_path=ckpt)
         else:
@@ -59,7 +76,7 @@ class HifiGAN(BaseVocoder):
             if os.path.exists(config_path):
                 self.model, self.config, self.device = load_model(config_path=config_path, checkpoint_path=ckpt)
                 
-        self.stream_context = hparams['vocoder_stream_context']
+        self.stream_context = _resolve_vocoder_left_context_frames(hparams)
         self.reset_stream()
 
     def reset_stream(self):

@@ -45,18 +45,46 @@ class StreamingVoiceConversion:
     So the current implementation is suitable for streaming-oriented evaluation,
     but it is not yet a fully stateful end-to-end incremental decoder/vocoder stack.
     """
-    tokens_per_chunk: int = 4  # 4 HuBERT tokens ≈ 80 ms
+    tokens_per_chunk: int = 4  # 4 HuBERT tokens ? 80 ms
+
+    @staticmethod
+    def _resolve_vocoder_left_context_frames(source: Dict):
+        for key in (
+            "vocoder_left_context_frames",
+            "streaming_vocoder_left_context_frames",
+            "vocoder_stream_context",
+        ):
+            value = source.get(key, None)
+            if value is None:
+                continue
+            try:
+                return max(0, int(value)), key
+            except (TypeError, ValueError):
+                continue
+        return 48, "default"
     
     def __init__(self, hp: Dict):
         if hp is None:
             raise ValueError("StreamingVoiceConversion requires a resolved hparams dictionary.")
         resolved_hp = dict(hp)
+        vocoder_left_context_frames, vocoder_left_context_source = self._resolve_vocoder_left_context_frames(
+            resolved_hp
+        )
+        resolved_hp["vocoder_left_context_frames"] = int(vocoder_left_context_frames)
+        # Keep the global hparams bridge for legacy modules (notably the vocoder),
+        # but make the front-end itself read from an instance-local resolved copy.
         hparams.clear()
         hparams.update(resolved_hp)
-        self.hparams = hparams
+        self.hparams = resolved_hp
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.streaming_impl = "emformer_stateful_prefix_recompute"
+        self.vocoder_left_context_frames = int(vocoder_left_context_frames)
+        self.vocoder_left_context_source = str(vocoder_left_context_source)
         self.last_infer_metadata = {}
+        print(
+            f"| Conan vocoder_left_context_frames={self.vocoder_left_context_frames} "
+            f"(source={self.vocoder_left_context_source})"
+        )
         self._validate_runtime_layout()
         self.condition_maps = self._load_condition_maps()
         self.model = self._build_model()
@@ -134,6 +162,12 @@ class StreamingVoiceConversion:
                 vocab = []
             condition_maps[field] = {str(label): idx for idx, label in enumerate(vocab)}
         return condition_maps
+
+    @staticmethod
+    def _write_json(path: str, payload: Dict):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
 
     def _resolve_condition_id(self, field: str, value):
         if value is None:
@@ -363,7 +397,17 @@ class StreamingVoiceConversion:
             "collapsed_split_refs": reference_meta["collapsed_split_refs"],
             "style_profile": resolved_profile.get("style_profile", "strong_style"),
             "style_strength": float(resolved_profile.get("style_strength", 1.0)),
+            "style_strength_effective": float(resolved_profile.get("style_strength", 1.0)),
             "dynamic_timbre_strength": float(resolved_profile.get("dynamic_timbre_strength", 1.0)),
+            "dynamic_timbre_strength_effective": float(
+                resolved_profile.get("dynamic_timbre_strength", 1.0)
+            ),
+            "dynamic_timbre_strength_source": str(
+                resolved_profile.get("dynamic_timbre_strength_source", "derived_from_style_strength")
+            ),
+            "vocoder_left_context_frames": int(self.vocoder_left_context_frames),
+            "vocoder_left_context_frames_effective": int(self.vocoder_left_context_frames),
+            "vocoder_left_context_source": str(self.vocoder_left_context_source),
             "spk_embed_override": bool(spk_embed is not None),
         }
         with torch.no_grad():
@@ -432,7 +476,7 @@ class StreamingVoiceConversion:
         content_code_buffer = []
         mel_chunks = []
         wav_chunks = []
-        vocoder_left_context = max(0, int(self.hparams.get("streaming_vocoder_left_context_frames", 48)))
+        vocoder_left_context = int(self.vocoder_left_context_frames)
         prev_len = 0
         pos = 0
         state = None
@@ -496,6 +540,8 @@ class StreamingVoiceConversion:
             "tokens_per_chunk": int(seg),
             "mel_frames": int(mel_pred.size(0)),
             "wav_num_samples": int(len(wav_pred)),
+            "vocoder_left_context_frames_effective": int(vocoder_left_context),
+            "vocoder_left_context_source": str(self.vocoder_left_context_source),
         }
         return wav_pred, mel_pred, final_out, stream_meta
 
@@ -593,6 +639,8 @@ class StreamingVoiceConversion:
             src_name = os.path.splitext(os.path.basename(inp["src_wav"]))[0]
             save_path = f"infer_out_demo/{ref_name}_{src_name}.wav"
             save_wav(wav, save_path, self.hparams["audio_sample_rate"])
+            metadata_path = f"infer_out_demo/{ref_name}_{src_name}.metadata.json"
+            self._write_json(metadata_path, self.last_infer_metadata)
             print(f"Saved output: {save_path} | metadata={self.last_infer_metadata}")
 
 

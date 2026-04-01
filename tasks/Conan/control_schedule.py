@@ -38,6 +38,27 @@ DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
     "lambda_decoder_late_anchor_budget",
 )
 
+MAINLINE_MINIMAL_CONTROL_LAMBDAS = (
+    "lambda_style_trace_consistency",
+    "lambda_output_identity_cosine",
+    "lambda_dynamic_timbre_budget",
+    "lambda_decoder_late_owner",
+)
+
+VALID_CONTROL_LOSS_PROFILES = (
+    "mainline_minimal",
+    "full",
+)
+
+
+def resolve_control_loss_profile(config, default="mainline_minimal"):
+    profile = str((config or {}).get("control_loss_profile", default) or default).strip().lower()
+    if profile in {"minimal", "core", "mainline"}:
+        profile = "mainline_minimal"
+    if profile not in VALID_CONTROL_LOSS_PROFILES:
+        return str(default or "mainline_minimal")
+    return profile
+
 
 def linear_schedule_scale(
     global_step,
@@ -135,7 +156,7 @@ def resolve_control_regularization_config(config, global_step, *, schedule_key="
     resolved = build_scheduled_control_config(config, global_step)
     schedule_config = config.get(schedule_key, {})
     if not isinstance(schedule_config, dict):
-        return resolved
+        schedule_config = {}
     default_type = str(schedule_config.get("type", "linear")).lower()
     for key in DEFAULT_SCHEDULED_CONTROL_LAMBDAS:
         if key not in resolved:
@@ -146,4 +167,11 @@ def resolve_control_regularization_config(config, global_step, *, schedule_key="
             global_step,
             default_type=default_type,
         )
+    profile = resolve_control_loss_profile(config)
+    resolved["control_loss_profile"] = profile
+    if profile == "mainline_minimal":
+        allowed = set(MAINLINE_MINIMAL_CONTROL_LAMBDAS)
+        for key in DEFAULT_SCHEDULED_CONTROL_LAMBDAS:
+            if key not in allowed:
+                resolved[key] = 0.0
     return resolved

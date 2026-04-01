@@ -194,6 +194,8 @@ def apply_runtime_budget_to_dynamic_timbre(
         style_energy = slow_style_weight * slow_energy if style_energy is None else (style_energy + slow_style_weight * slow_energy)
     if style_energy is None:
         return aligned, {"applied": False, "skip_reason": "style_owner_missing"}
+    if bool(style_energy.detach().abs().max().item() <= 1e-8):
+        return aligned, {"applied": False, "skip_reason": "style_owner_inactive"}
 
     timbre_energy = aligned.abs().mean(dim=-1)
     allowed_energy = float(budget_ratio) * style_energy + float(budget_margin)

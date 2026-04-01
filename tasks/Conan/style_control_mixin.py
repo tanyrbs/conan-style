@@ -6,7 +6,10 @@ from modules.Conan.reference_bundle import (
     reference_bundle_to_model_kwargs,
     resolve_reference_bundle,
 )
-from tasks.Conan.control_schedule import resolve_control_regularization_config
+from tasks.Conan.control_schedule import (
+    resolve_control_loss_profile,
+    resolve_control_regularization_config,
+)
 from tasks.Conan.control_losses import (
     add_classification_losses,
     add_energy_loss,
@@ -20,6 +23,13 @@ from utils.commons.hparams import hparams
 
 
 class ConanStyleControlMixin:
+    @staticmethod
+    def _control_loss_profile(config=None):
+        return resolve_control_loss_profile(
+            config if isinstance(config, dict) else hparams,
+            default="mainline_minimal",
+        )
+
     def build_style_model_kwargs(self, sample, ref):
         reference_bundle = resolve_reference_bundle(sample, fallback_ref=ref)
         reference_cache = sample.get("reference_cache", None)
@@ -69,50 +79,53 @@ class ConanStyleControlMixin:
 
     def add_control_losses(self, output, sample, losses):
         regularization_config = resolve_control_regularization_config(hparams, self.global_step)
+        control_loss_profile = self._control_loss_profile(regularization_config)
+        minimal_profile = control_loss_profile == "mainline_minimal"
 
-        add_classification_losses(
-            losses,
-            output,
-            sample,
-            specs=(
-                ("emotion_cls", "emotion_logits", "emotion_ids", hparams.get("lambda_emotion_cls", 0.0)),
-                ("accent_cls", "accent_logits", "accent_ids", hparams.get("lambda_accent_cls", 0.0)),
-                (
-                    "emotion_prompt_cls",
-                    "emotion_prompt_logits",
-                    "emotion_ids",
-                    hparams.get("lambda_emotion_prompt_cls", 0.0),
+        if not minimal_profile:
+            add_classification_losses(
+                losses,
+                output,
+                sample,
+                specs=(
+                    ("emotion_cls", "emotion_logits", "emotion_ids", hparams.get("lambda_emotion_cls", 0.0)),
+                    ("accent_cls", "accent_logits", "accent_ids", hparams.get("lambda_accent_cls", 0.0)),
+                    (
+                        "emotion_prompt_cls",
+                        "emotion_prompt_logits",
+                        "emotion_ids",
+                        hparams.get("lambda_emotion_prompt_cls", 0.0),
+                    ),
+                    (
+                        "accent_prompt_cls",
+                        "accent_prompt_logits",
+                        "accent_ids",
+                        hparams.get("lambda_accent_prompt_cls", 0.0),
+                    ),
                 ),
-                (
-                    "accent_prompt_cls",
-                    "accent_prompt_logits",
-                    "accent_ids",
-                    hparams.get("lambda_accent_prompt_cls", 0.0),
-                ),
-            ),
-        )
+            )
 
-        add_regression_losses(
-            losses,
-            output,
-            sample,
-            specs=(
-                ("arousal_reg", "arousal_pred", "arousal", hparams.get("lambda_arousal_reg", 0.0)),
-                ("valence_reg", "valence_pred", "valence", hparams.get("lambda_valence_reg", 0.0)),
-                (
-                    "emotion_prompt_arousal_reg",
-                    "emotion_prompt_arousal_pred",
-                    "arousal",
-                    hparams.get("lambda_emotion_prompt_arousal", 0.0),
+            add_regression_losses(
+                losses,
+                output,
+                sample,
+                specs=(
+                    ("arousal_reg", "arousal_pred", "arousal", hparams.get("lambda_arousal_reg", 0.0)),
+                    ("valence_reg", "valence_pred", "valence", hparams.get("lambda_valence_reg", 0.0)),
+                    (
+                        "emotion_prompt_arousal_reg",
+                        "emotion_prompt_arousal_pred",
+                        "arousal",
+                        hparams.get("lambda_emotion_prompt_arousal", 0.0),
+                    ),
+                    (
+                        "emotion_prompt_valence_reg",
+                        "emotion_prompt_valence_pred",
+                        "valence",
+                        hparams.get("lambda_emotion_prompt_valence", 0.0),
+                    ),
                 ),
-                (
-                    "emotion_prompt_valence_reg",
-                    "emotion_prompt_valence_pred",
-                    "valence",
-                    hparams.get("lambda_emotion_prompt_valence", 0.0),
-                ),
-            ),
-        )
+            )
 
         add_energy_loss(
             losses,
@@ -121,19 +134,21 @@ class ConanStyleControlMixin:
             lambda_energy=hparams.get("lambda_energy", 0.0),
             nonpadding=self._content_nonpadding(sample),
         )
-        add_prompt_regularization_losses(losses, output, regularization_config)
+        if not minimal_profile:
+            add_prompt_regularization_losses(losses, output, regularization_config)
         add_style_timbre_regularization_losses(losses, output, sample, regularization_config)
 
-        add_weighted_output_losses(
-            losses,
-            output,
-            specs=(
-                ("style_trace_smooth", "style_trace_smooth", regularization_config.get("lambda_style_trace_smooth", 0.0)),
-                ("tv_timbre_smooth", "tv_timbre_smooth", regularization_config.get("lambda_tv_timbre_smooth", 0.0)),
-                ("tv_timbre_anchor", "tv_timbre_anchor", regularization_config.get("lambda_tv_timbre_anchor", 0.0)),
-                ("tv_gloss", "tv_gloss", regularization_config.get("lambda_tv_gloss", 0.0)),
-            ),
-        )
+        if not minimal_profile:
+            add_weighted_output_losses(
+                losses,
+                output,
+                specs=(
+                    ("style_trace_smooth", "style_trace_smooth", regularization_config.get("lambda_style_trace_smooth", 0.0)),
+                    ("tv_timbre_smooth", "tv_timbre_smooth", regularization_config.get("lambda_tv_timbre_smooth", 0.0)),
+                    ("tv_timbre_anchor", "tv_timbre_anchor", regularization_config.get("lambda_tv_timbre_anchor", 0.0)),
+                    ("tv_gloss", "tv_gloss", regularization_config.get("lambda_tv_gloss", 0.0)),
+                ),
+            )
 
         if output.get("timbre_vq_loss") is not None and self.global_step > hparams.get("tv_timbre_vq_start", hparams["vq_start"]):
             losses["timbre_vq_loss"] = output["timbre_vq_loss"] * regularization_config.get("lambda_timbre_vq", 1.0)

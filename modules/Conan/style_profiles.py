@@ -1,5 +1,7 @@
 import warnings
 
+from modules.Conan.style_mainline import derive_dynamic_timbre_strength
+
 
 STYLE_PROFILE_KEYS = (
     "decoder_style_condition_mode",
@@ -12,7 +14,6 @@ STYLE_PROFILE_KEYS = (
     "slow_style_strength_scale",
     "style_temperature",
     "global_style_trace_blend",
-    "dynamic_timbre_strength",
     "dynamic_timbre_memory_mode",
     "dynamic_timbre_style_condition_scale",
     "dynamic_timbre_temperature",
@@ -42,7 +43,6 @@ STYLE_PROFILES = {
         "slow_style_strength_scale": 1.3,
         "style_temperature": 1.2,
         "global_style_trace_blend": 0.25,
-        "dynamic_timbre_strength": 1.0,
         "dynamic_timbre_memory_mode": "slow",
         "dynamic_timbre_style_condition_scale": 0.5,
         "dynamic_timbre_temperature": 1.0,
@@ -69,7 +69,6 @@ STYLE_PROFILES = {
         "slow_style_strength_scale": 1.3,
         "style_temperature": 1.3,
         "global_style_trace_blend": 0.05,
-        "dynamic_timbre_strength": 1.1,
         "dynamic_timbre_memory_mode": "slow",
         "dynamic_timbre_style_condition_scale": 0.6,
         "dynamic_timbre_temperature": 1.05,
@@ -116,6 +115,18 @@ def resolve_style_profile(
         value = overrides.get(key, None)
         if value is not None:
             resolved[key] = value
+    allow_explicit_dynamic_timbre_strength = bool(
+        overrides.get("allow_explicit_dynamic_timbre_strength", False)
+    )
+    explicit_dynamic_timbre_strength = overrides.get("dynamic_timbre_strength", None)
+    if allow_explicit_dynamic_timbre_strength and explicit_dynamic_timbre_strength is not None:
+        resolved["dynamic_timbre_strength"] = explicit_dynamic_timbre_strength
+        resolved["dynamic_timbre_strength_source"] = "explicit_runtime_override"
+    else:
+        resolved["dynamic_timbre_strength"] = derive_dynamic_timbre_strength(
+            resolved.get("style_strength", 1.0)
+        )
+        resolved["dynamic_timbre_strength_source"] = "derived_from_style_strength"
     resolved["style_profile"] = preset_name
     return resolved
 

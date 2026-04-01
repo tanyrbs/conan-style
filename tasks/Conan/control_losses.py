@@ -203,6 +203,37 @@ def _sum_optional_scalars(*values):
     return total
 
 
+def _sum_optional_maps(*values):
+    present = [value for value in values if isinstance(value, torch.Tensor) and value.dim() == 2]
+    if not present:
+        return None
+    total = present[0]
+    for value in present[1:]:
+        if tuple(value.shape) != tuple(total.shape):
+            continue
+        total = total + value
+    return total
+
+
+def _adapter_stage_energy_map(stage_outputs, *, stage_names=None, branch_keys=()):
+    if not isinstance(stage_outputs, dict):
+        return None
+    if stage_names is not None:
+        stage_names = {str(name).lower() for name in stage_names}
+    total = None
+    for stage_name, stage_meta in stage_outputs.items():
+        if stage_names is not None and str(stage_name).lower() not in stage_names:
+            continue
+        if not isinstance(stage_meta, dict):
+            continue
+        branch_total = _sum_optional_maps(
+            *[_sequence_abs_mean(stage_meta.get(key)) for key in branch_keys]
+        )
+        if isinstance(branch_total, torch.Tensor):
+            total = branch_total if total is None else _sum_optional_maps(total, branch_total)
+    return total
+
+
 def add_classification_losses(losses, output, sample, *, specs):
     for loss_name, logit_key, target_key, lambda_value in specs:
         if lambda_value <= 0:
@@ -310,6 +341,20 @@ def add_prompt_regularization_losses(losses, output, config):
 
 
 def add_style_timbre_regularization_losses(losses, output, sample, config):
+    control_loss_profile = str(config.get("control_loss_profile", "mainline_minimal") or "mainline_minimal").strip().lower()
+    minimal_mainline = control_loss_profile in {"mainline_minimal", "minimal", "core", "mainline"}
+    minimal_allowed = {
+        "lambda_style_trace_consistency",
+        "lambda_output_identity_cosine",
+        "lambda_dynamic_timbre_budget",
+        "lambda_decoder_late_owner",
+    }
+
+    def _lambda(key):
+        if minimal_mainline and key not in minimal_allowed:
+            return 0.0
+        return float(config.get(key, 0.0))
+
     style_repr = _style_representation(output)
     slow_style_repr = _slow_style_representation(output)
     style_memory_repr = _masked_sequence_mean(
@@ -328,19 +373,19 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
     )
 
-    style_trace_consistency_lambda = float(config.get("lambda_style_trace_consistency", 0.0))
+    style_trace_consistency_lambda = _lambda("lambda_style_trace_consistency")
     if style_trace_consistency_lambda > 0:
         consistency = _cosine_distance(style_repr, style_memory_repr)
         if consistency is not None:
             losses["style_trace_consistency"] = consistency * style_trace_consistency_lambda
 
-    timbre_anchor_cos_lambda = float(config.get("lambda_timbre_anchor_cosine", 0.0))
+    timbre_anchor_cos_lambda = _lambda("lambda_timbre_anchor_cosine")
     if timbre_anchor_cos_lambda > 0:
         timbre_anchor_cos = _cosine_distance(timbre_repr, global_timbre_anchor)
         if timbre_anchor_cos is not None:
             losses["timbre_anchor_cosine"] = timbre_anchor_cos * timbre_anchor_cos_lambda
 
-    output_identity_lambda = float(config.get("lambda_output_identity_cosine", 0.0))
+    output_identity_lambda = _lambda("lambda_output_identity_cosine")
     if output_identity_lambda > 0:
         output_identity_embed = _summary_vector(output.get("output_identity_embed"))
         output_identity_target = _summary_vector(
@@ -350,19 +395,19 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if output_identity_cos is not None:
             losses["output_identity_cosine"] = output_identity_cos * output_identity_lambda
 
-    style_timbre_dis_lambda = float(config.get("lambda_style_timbre_disentangle", 0.0))
+    style_timbre_dis_lambda = _lambda("lambda_style_timbre_disentangle")
     if style_timbre_dis_lambda > 0:
         style_timbre_dis = _mean_abs_cosine(style_repr, global_timbre_anchor)
         if style_timbre_dis is not None:
             losses["style_timbre_dis"] = style_timbre_dis * style_timbre_dis_lambda
 
-    style_summary_align_lambda = float(config.get("lambda_global_style_summary_align", 0.0))
+    style_summary_align_lambda = _lambda("lambda_global_style_summary_align")
     if style_summary_align_lambda > 0:
         style_summary_align = _cosine_distance(style_repr, global_style_summary)
         if style_summary_align is not None:
             losses["global_style_summary_align"] = style_summary_align * style_summary_align_lambda
 
-    style_dynamic_timbre_dis_lambda = float(config.get("lambda_style_dynamic_timbre_disentangle", 0.0))
+    style_dynamic_timbre_dis_lambda = _lambda("lambda_style_dynamic_timbre_disentangle")
     if style_dynamic_timbre_dis_lambda > 0:
         style_dynamic_timbre_dis = _mean_abs_cosine(style_repr, timbre_repr)
         if style_dynamic_timbre_dis is not None:
@@ -370,13 +415,13 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                 style_dynamic_timbre_dis * style_dynamic_timbre_dis_lambda
             )
 
-    query_dis_lambda = float(config.get("lambda_style_timbre_query_disentangle", 0.0))
+    query_dis_lambda = _lambda("lambda_style_timbre_query_disentangle")
     if query_dis_lambda > 0:
         query_dis = _mean_abs_cosine(style_query_repr, timbre_query_repr)
         if query_dis is not None:
             losses["style_timbre_query_dis"] = query_dis * query_dis_lambda
 
-    style_query_var_lambda = float(config.get("lambda_style_query_var", 0.0))
+    style_query_var_lambda = _lambda("lambda_style_query_var")
     if style_query_var_lambda > 0:
         style_query_var = _variance_floor_penalty(
             style_query_repr,
@@ -385,7 +430,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if style_query_var is not None:
             losses["style_query_var"] = style_query_var * style_query_var_lambda
 
-    timbre_query_var_lambda = float(config.get("lambda_timbre_query_var", 0.0))
+    timbre_query_var_lambda = _lambda("lambda_timbre_query_var")
     if timbre_query_var_lambda > 0:
         timbre_query_var = _variance_floor_penalty(
             timbre_query_repr,
@@ -394,7 +439,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if timbre_query_var is not None:
             losses["timbre_query_var"] = timbre_query_var * timbre_query_var_lambda
 
-    slow_style_summary_align_lambda = float(config.get("lambda_slow_style_summary_align", 0.0))
+    slow_style_summary_align_lambda = _lambda("lambda_slow_style_summary_align")
     if slow_style_summary_align_lambda > 0:
         slow_style_summary_align = _cosine_distance(slow_style_repr, global_style_summary)
         if slow_style_summary_align is not None:
@@ -402,7 +447,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                 slow_style_summary_align * slow_style_summary_align_lambda
             )
 
-    dynamic_timbre_gate_lambda = float(config.get("lambda_dynamic_timbre_gate", 0.0))
+    dynamic_timbre_gate_lambda = _lambda("lambda_dynamic_timbre_gate")
     if dynamic_timbre_gate_lambda > 0:
         gate_mean = _gate_mean(
             output.get("dynamic_timbre_gate"),
@@ -412,15 +457,30 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             gate_target = float(config.get("dynamic_timbre_gate_target", 0.6))
             losses["dynamic_timbre_gate_reg"] = (gate_mean - gate_target).abs() * dynamic_timbre_gate_lambda
 
-    dynamic_timbre_budget_lambda = float(config.get("lambda_dynamic_timbre_budget", 0.0))
+    dynamic_timbre_budget_lambda = _lambda("lambda_dynamic_timbre_budget")
     if dynamic_timbre_budget_lambda > 0:
-        style_decoder_residual = output.get("style_decoder_residual")
-        dynamic_timbre_decoder_residual = output.get("dynamic_timbre_decoder_residual")
-        if isinstance(style_decoder_residual, torch.Tensor) and isinstance(dynamic_timbre_decoder_residual, torch.Tensor):
-            style_budget = _sequence_abs_mean(style_decoder_residual.detach())
-            timbre_budget = _sequence_abs_mean(dynamic_timbre_decoder_residual)
+        stage_outputs = output.get("decoder_style_adapter_stages")
+        style_budget = _adapter_stage_energy_map(
+            stage_outputs,
+            stage_names=("mid", "late"),
+            branch_keys=("global_style_delta", "slow_style_delta", "style_trace_delta"),
+        )
+        timbre_budget = _adapter_stage_energy_map(
+            stage_outputs,
+            stage_names=("mid", "late"),
+            branch_keys=("dynamic_timbre_delta",),
+        )
+        if style_budget is None or timbre_budget is None:
+            style_decoder_residual = output.get("style_decoder_residual")
+            dynamic_timbre_decoder_residual = output.get("dynamic_timbre_decoder_residual")
+            if isinstance(style_decoder_residual, torch.Tensor):
+                style_budget = _sequence_abs_mean(style_decoder_residual.detach())
+            if isinstance(dynamic_timbre_decoder_residual, torch.Tensor):
+                timbre_budget = _sequence_abs_mean(dynamic_timbre_decoder_residual)
+        if isinstance(style_budget, torch.Tensor) and isinstance(timbre_budget, torch.Tensor):
             budget_ratio = float(config.get("dynamic_timbre_budget_ratio", 0.75))
             budget_margin = float(config.get("dynamic_timbre_budget_margin", 0.02))
+            style_budget_reference = style_budget.detach()
             voiced_weight = None
             sample_uv = sample.get("uv")
             if isinstance(sample_uv, torch.Tensor) and sample_uv.dim() == 2 and tuple(sample_uv.shape) == tuple(timbre_budget.shape):
@@ -431,12 +491,12 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                 boundary_mask=output.get("dynamic_timbre_boundary_mask"),
                 voiced_weight=voiced_weight,
             )
-            local_budget = F.relu(timbre_budget - budget_ratio * style_budget - budget_margin)
+            local_budget = F.relu(timbre_budget - budget_ratio * style_budget_reference - budget_margin)
             reduced_budget = _weighted_mean(local_budget, valid_weight)
             if reduced_budget is not None:
                 losses["dynamic_timbre_budget"] = reduced_budget * dynamic_timbre_budget_lambda
 
-    dynamic_timbre_boundary_lambda = float(config.get("lambda_dynamic_timbre_boundary", 0.0))
+    dynamic_timbre_boundary_lambda = _lambda("lambda_dynamic_timbre_boundary")
     if dynamic_timbre_boundary_lambda > 0:
         dynamic_timbre_decoder_residual = output.get("dynamic_timbre_decoder_residual")
         boundary_mask = output.get("dynamic_timbre_boundary_mask")
@@ -460,8 +520,8 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                                 reduced_boundary * dynamic_timbre_boundary_lambda
                             )
 
-    late_owner_lambda = float(config.get("lambda_decoder_late_owner", 0.0))
-    late_anchor_lambda = float(config.get("lambda_decoder_late_anchor_budget", 0.0))
+    late_owner_lambda = _lambda("lambda_decoder_late_owner")
+    late_anchor_lambda = _lambda("lambda_decoder_late_anchor_budget")
     if late_owner_lambda > 0 or late_anchor_lambda > 0:
         stage_outputs = output.get("decoder_style_adapter_stages")
         late_stage = stage_outputs.get("late") if isinstance(stage_outputs, dict) else None

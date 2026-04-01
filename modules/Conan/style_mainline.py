@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Optional
 
+import torch
+
 
 STYLE_MAINLINE_OWNER = "M_style_owner_plus_bounded_M_timbre"
 STYLE_MAINLINE_SURFACE = "ConanStrongStyleMainlineSurface"
@@ -61,6 +63,28 @@ def normalize_decoder_style_condition_mode(mode, default: str = "mainline_full")
     return normalized
 
 
+def derive_dynamic_timbre_strength(
+    style_strength,
+    *,
+    base: float = 0.6,
+    slope: float = 0.7,
+    min_value: float = 0.6,
+    max_value: float = 1.4,
+):
+    base = float(base)
+    slope = float(slope)
+    min_value = float(min_value)
+    max_value = float(max_value)
+    if isinstance(style_strength, torch.Tensor):
+        derived = base + slope * (style_strength - 1.0)
+        return derived.clamp(min=min_value, max=max_value)
+    try:
+        derived = base + slope * (float(style_strength) - 1.0)
+    except (TypeError, ValueError):
+        derived = 1.0
+    return max(min_value, min(max_value, float(derived)))
+
+
 def normalize_style_trace_mode(mode, default: str = "fast") -> str:
     normalized_default = str(default or "fast").strip().lower() or "fast"
     normalized = str(mode or normalized_default).strip().lower() or normalized_default
@@ -98,6 +122,7 @@ class StyleMainlineControls:
     fast_style_strength_scale: float = 1.0
     slow_style_strength_scale: float = 1.0
     dynamic_timbre_strength: float = 1.0
+    dynamic_timbre_strength_source: str = "derived_from_style_strength"
     style_trace_mode: str = "slow"
     style_memory_mode: str = "fast"
     dynamic_timbre_memory_mode: str = "fast"
@@ -183,6 +208,28 @@ def resolve_style_mainline_controls(
     if not apply_style_trace:
         resolved_style_trace_mode = "none"
 
+    style_strength_value = _raw_or_float("style_strength", "style_strengths", default=1.0)
+    allow_explicit_dynamic_timbre_strength = bool(
+        _value("allow_explicit_dynamic_timbre_strength", default=False)
+    )
+    explicit_dynamic_timbre_strength = _raw_or_float(
+        "dynamic_timbre_strength",
+        "dynamic_timbre_strengths",
+        default=None,
+    )
+    if allow_explicit_dynamic_timbre_strength and explicit_dynamic_timbre_strength is not None:
+        dynamic_timbre_strength_value = explicit_dynamic_timbre_strength
+        dynamic_timbre_strength_source = "explicit_runtime_override"
+    else:
+        dynamic_timbre_strength_value = derive_dynamic_timbre_strength(
+            style_strength_value,
+            base=float(_value("dynamic_timbre_strength_base", default=0.6)),
+            slope=float(_value("dynamic_timbre_strength_slope", default=0.7)),
+            min_value=float(_value("dynamic_timbre_strength_min", default=0.6)),
+            max_value=float(_value("dynamic_timbre_strength_max", default=1.4)),
+        )
+        dynamic_timbre_strength_source = "derived_from_style_strength"
+
     return StyleMainlineControls(
         mode=mode,
         apply_global_style_anchor=apply_global_style_anchor,
@@ -202,16 +249,15 @@ def resolve_style_mainline_controls(
             "style_anchor_strength",
             default=1.0,
         ),
-        style_strength=_raw_or_float("style_strength", "style_strengths", default=1.0),
+        style_strength=style_strength_value,
         fast_style_strength_scale=float(
             _value("fast_style_strength_scale", "fast_style_scale", default=1.0)
         ),
         slow_style_strength_scale=float(
             _value("slow_style_strength_scale", "slow_style_scale", default=1.0)
         ),
-        dynamic_timbre_strength=_raw_or_float(
-            "dynamic_timbre_strength", "dynamic_timbre_strengths", default=1.0
-        ),
+        dynamic_timbre_strength=dynamic_timbre_strength_value,
+        dynamic_timbre_strength_source=str(dynamic_timbre_strength_source),
         style_trace_mode=resolved_style_trace_mode,
         style_memory_mode=str(_value("style_memory_mode", "style_reference_memory_mode", default="fast")),
         dynamic_timbre_memory_mode=str(
@@ -274,6 +320,7 @@ def build_style_mainline_surface_payload(
         "fast_style_strength_scale": float(controls.fast_style_strength_scale),
         "slow_style_strength_scale": float(controls.slow_style_strength_scale),
         "dynamic_timbre_strength": _surface_value(controls.dynamic_timbre_strength),
+        "dynamic_timbre_strength_source": str(controls.dynamic_timbre_strength_source),
         "style_trace_mode": str(controls.style_trace_mode),
         "style_memory_mode": str(controls.style_memory_mode),
         "dynamic_timbre_memory_mode": str(controls.dynamic_timbre_memory_mode),
@@ -324,6 +371,7 @@ __all__ = [
     "VALID_STYLE_TRACE_MODES",
     "build_style_mainline_memory_payload",
     "build_style_mainline_surface_payload",
+    "derive_dynamic_timbre_strength",
     "normalize_decoder_style_condition_mode",
     "normalize_style_trace_mode",
     "resolve_style_mainline_controls",

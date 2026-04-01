@@ -7,15 +7,9 @@ from modules.Conan.style_trace_utils import resolve_combined_style_trace
 
 TRACKED_LAMBDA_KEYS = (
     "lambda_style_trace_consistency",
-    "lambda_style_timbre_disentangle",
-    "lambda_style_query_var",
-    "lambda_global_style_summary_align",
-    "lambda_slow_style_summary_align",
     "lambda_output_identity_cosine",
     "lambda_dynamic_timbre_budget",
-    "lambda_dynamic_timbre_boundary",
     "lambda_decoder_late_owner",
-    "lambda_decoder_late_anchor_budget",
 )
 
 
@@ -203,6 +197,7 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     global_residual_values = []
     slow_style_residual_values = []
     global_style_skip_flags = []
+    global_style_fallback_skip_flags = []
     late_style_delta = None
     late_timbre_delta = None
     late_anchor_delta = None
@@ -213,6 +208,10 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
         if "global_style_skipped_due_to_local_owner" in stage_meta:
             global_style_skip_flags.append(
                 1.0 if bool(stage_meta.get("global_style_skipped_due_to_local_owner", False)) else 0.0
+            )
+        if "global_style_skipped_due_to_fallback" in stage_meta:
+            global_style_fallback_skip_flags.append(
+                1.0 if bool(stage_meta.get("global_style_skipped_due_to_fallback", False)) else 0.0
             )
         branch_stats = _branch_statistics(
             stage_meta.get("global_timbre_ctx"),
@@ -321,6 +320,11 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     if global_style_skip_flags:
         stats["diag_decoder_global_style_skipped_due_to_local_owner"] = torch.tensor(
             global_style_skip_flags,
+            dtype=torch.float32,
+        ).mean()
+    if global_style_fallback_skip_flags:
+        stats["diag_decoder_global_style_skipped_due_to_fallback"] = torch.tensor(
+            global_style_fallback_skip_flags,
             dtype=torch.float32,
         ).mean()
     style_total_residual = None

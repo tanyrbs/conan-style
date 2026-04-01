@@ -86,6 +86,14 @@ def run_smoke(args):
         raise AssertionError("query_anchor_split_applied is false on the prefix-online path.")
     if not bool(streaming_output.get("dynamic_timbre_style_context_owner_safe", False)):
         raise AssertionError("dynamic_timbre_style_context_owner_safe is false on the prefix-online path.")
+    if not bool(offline_output.get("query_anchor_split_applied", False)):
+        raise AssertionError("query_anchor_split_applied is false on the offline path.")
+    if not bool(offline_output.get("dynamic_timbre_style_context_owner_safe", False)):
+        raise AssertionError("dynamic_timbre_style_context_owner_safe is false on the offline path.")
+    if bool(streaming_output.get("global_timbre_to_pitch_applied", False)):
+        raise AssertionError("global_timbre_to_pitch_applied unexpectedly true on the prefix-online path.")
+    if bool(offline_output.get("global_timbre_to_pitch_applied", False)):
+        raise AssertionError("global_timbre_to_pitch_applied unexpectedly true on the offline path.")
     if int(streaming_output.get("streaming_total_chunks", 0)) <= 0:
         raise AssertionError("streaming_total_chunks must be positive.")
 
@@ -104,6 +112,12 @@ def run_smoke(args):
         "dynamic_timbre_style_context_owner_safe": bool(
             streaming_output.get("dynamic_timbre_style_context_owner_safe", False)
         ),
+        "offline_query_anchor_split_applied": bool(offline_output.get("query_anchor_split_applied", False)),
+        "offline_dynamic_timbre_style_context_owner_safe": bool(
+            offline_output.get("dynamic_timbre_style_context_owner_safe", False)
+        ),
+        "global_timbre_to_pitch_applied_online": bool(streaming_output.get("global_timbre_to_pitch_applied", False)),
+        "global_timbre_to_pitch_applied_offline": bool(offline_output.get("global_timbre_to_pitch_applied", False)),
         "parity_metrics": {key: scalarize_value(value) for key, value in parity_metrics.items()},
     }
     output_path = Path(args.output_path)

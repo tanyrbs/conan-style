@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from modules.Conan.style_profiles import available_style_profiles, resolve_style_profile
+from modules.Conan.style_profiles import available_mainline_style_profiles, resolve_style_profile
 from utils.audio.io import save_wav
 
 
@@ -102,8 +102,8 @@ class StyleProfileSweepRunner:
         return os.path.join("infer_out_profiles", timestamp)
 
     def _resolve_profiles_for_case(self, case):
-        profiles = case.get("profiles") or self.config.get("profiles") or available_style_profiles()
-        known_profiles = set(available_style_profiles())
+        profiles = case.get("profiles") or self.config.get("profiles") or available_mainline_style_profiles()
+        known_profiles = set(available_mainline_style_profiles())
         profiles = [str(p) for p in profiles]
         unknown_profiles = [p for p in profiles if p not in known_profiles]
         if unknown_profiles:
@@ -290,7 +290,7 @@ class StyleProfileSweepRunner:
             "successful_runs": success,
             "failed_runs": failed,
             "elapsed_sec": round(time.time() - started, 4),
-            "profiles": self.config.get("profiles", available_style_profiles()),
+            "profiles": self.config.get("profiles", available_mainline_style_profiles()),
         }
         with open(self.output_dir / "run_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)

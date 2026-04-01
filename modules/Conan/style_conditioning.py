@@ -66,8 +66,8 @@ class ConanStyleConditioningMixin:
         style_residual=None,
         slow_style_residual=None,
         padding_mask=None,
-        budget_ratio=0.55,
-        budget_margin=0.02,
+        budget_ratio=0.50,
+        budget_margin=0.0,
         slow_style_weight=1.0,
     ):
         return apply_runtime_budget_to_dynamic_timbre(
@@ -79,6 +79,24 @@ class ConanStyleConditioningMixin:
             budget_margin=budget_margin,
             slow_style_weight=slow_style_weight,
         )
+
+    @staticmethod
+    def _prepare_dynamic_timbre_style_context(
+        style_context,
+        *,
+        padding_mask=None,
+        stopgrad=True,
+    ):
+        if not isinstance(style_context, torch.Tensor) or style_context.dim() != 3:
+            return None
+        prepared = style_context.detach() if bool(stopgrad) else style_context
+        prepared = F.layer_norm(prepared, (prepared.size(-1),))
+        if isinstance(padding_mask, torch.Tensor):
+            if padding_mask.dim() == 3 and padding_mask.size(-1) == 1:
+                padding_mask = padding_mask.squeeze(-1)
+            if padding_mask.dim() == 2 and tuple(padding_mask.shape) == tuple(prepared.shape[:2]):
+                prepared = prepared.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+        return prepared
 
     def _resolve_pool_size(self, primary_key, default, fallback_key=None):
         value = self._get_hparam(primary_key, None)
@@ -630,6 +648,7 @@ class ConanStyleConditioningMixin:
         boundary_suppress_strength=0.0,
         boundary_radius=2,
         anchor_preserve_strength=0.0,
+        style_context_prepared=False,
     ):
         memory_mode = self._normalize_memory_mode(
             memory_mode,
@@ -698,13 +717,22 @@ class ConanStyleConditioningMixin:
             and tuple(style_context.shape) == tuple(aligned.shape)
         )
         if style_context_available:
-            style_context = F.layer_norm(
-                style_context.detach(),
-                (style_context.size(-1),),
+            if not bool(style_context_prepared):
+                style_context = self._prepare_dynamic_timbre_style_context(
+                    style_context,
+                    padding_mask=src_key_padding_mask,
+                    stopgrad=True,
+                )
+            else:
+                style_context = style_context.masked_fill(src_key_padding_mask.unsqueeze(-1), 0.0)
+            style_context_available = (
+                isinstance(style_context, torch.Tensor)
+                and tuple(style_context.shape) == tuple(aligned.shape)
             )
-            style_context = style_context.masked_fill(src_key_padding_mask.unsqueeze(-1), 0.0)
+        if style_context_available:
             encoder_gate_input = encoder_out + float(style_condition_scale) * style_context
         else:
+            style_context = None
             encoder_gate_input = encoder_out
         gate = self.timbre_gate(torch.cat([encoder_gate_input, aligned, global_timbre_anchor], dim=-1))
         ret["dynamic_timbre_gate_raw"] = gate.squeeze(-1)

@@ -25,6 +25,11 @@ VALID_STYLE_TRACE_MODES = (
     "dual",
 )
 
+VALID_STYLE_MEMORY_MODES = (
+    "fast",
+    "slow",
+)
+
 
 def _first_present(source: Optional[Mapping[str, Any]], *keys: str, default=None):
     if not isinstance(source, Mapping):
@@ -48,10 +53,10 @@ def normalize_decoder_style_condition_mode(mode, default: str = "mainline_full")
         "global_style_plus_trace_dynamic_timbre": "mainline_full",
         "gstdt": "mainline_full",
         "mainline": "mainline_full",
-        "bridge": "global_style_dynamic_timbre",
-        "gsdt": "global_style_dynamic_timbre",
-        "global_dynamic_timbre": "global_style_dynamic_timbre",
-        "global_style_plus_dynamic_timbre": "global_style_dynamic_timbre",
+        "bridge": "mainline_full",
+        "gsdt": "mainline_full",
+        "global_dynamic_timbre": "mainline_full",
+        "global_style_plus_dynamic_timbre": "mainline_full",
         "global_anchor_only": "global_only",
         "anchor_only": "global_only",
         "timbre_only": "dynamic_timbre_only",
@@ -106,6 +111,20 @@ def normalize_style_trace_mode(mode, default: str = "slow") -> str:
     }
     normalized = alias_map.get(normalized, normalized)
     if normalized not in VALID_STYLE_TRACE_MODES:
+        return normalized_default
+    return normalized
+
+
+def normalize_style_memory_mode(mode, default: str = "slow") -> str:
+    normalized_default = str(default or "slow").strip().lower() or "slow"
+    normalized = str(mode or normalized_default).strip().lower() or normalized_default
+    alias_map = {
+        "auto": normalized_default,
+        "default": normalized_default,
+        "mainline": "slow",
+    }
+    normalized = alias_map.get(normalized, normalized)
+    if normalized not in VALID_STYLE_MEMORY_MODES:
         return normalized_default
     return normalized
 
@@ -259,13 +278,17 @@ def resolve_style_mainline_controls(
         dynamic_timbre_strength=dynamic_timbre_strength_value,
         dynamic_timbre_strength_source=str(dynamic_timbre_strength_source),
         style_trace_mode=resolved_style_trace_mode,
-        style_memory_mode=str(_value("style_memory_mode", "style_reference_memory_mode", default="slow")),
-        dynamic_timbre_memory_mode=str(
+        style_memory_mode=normalize_style_memory_mode(
+            _value("style_memory_mode", "style_reference_memory_mode", default="slow"),
+            default="slow",
+        ),
+        dynamic_timbre_memory_mode=normalize_style_memory_mode(
             _value(
                 "dynamic_timbre_memory_mode",
                 "dynamic_timbre_reference_memory_mode",
                 default="slow",
-            )
+            ),
+            default="slow",
         ),
         style_temperature=float(_value("style_temperature", default=1.0)),
         global_style_trace_blend=float(_value("global_style_trace_blend", default=0.0)),
@@ -373,6 +396,7 @@ __all__ = [
     "build_style_mainline_surface_payload",
     "derive_dynamic_timbre_strength",
     "normalize_decoder_style_condition_mode",
+    "normalize_style_memory_mode",
     "normalize_style_trace_mode",
     "resolve_style_mainline_controls",
 ]

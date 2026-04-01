@@ -179,8 +179,8 @@ def apply_runtime_budget_to_dynamic_timbre(
     style_residual: Optional[torch.Tensor] = None,
     slow_style_residual: Optional[torch.Tensor] = None,
     padding_mask: Optional[torch.Tensor] = None,
-    budget_ratio: float = 0.55,
-    budget_margin: float = 0.02,
+    budget_ratio: float = 0.50,
+    budget_margin: float = 0.0,
     slow_style_weight: float = 1.0,
 ):
     if not isinstance(aligned, torch.Tensor):
@@ -194,8 +194,6 @@ def apply_runtime_budget_to_dynamic_timbre(
         style_energy = slow_style_weight * slow_energy if style_energy is None else (style_energy + slow_style_weight * slow_energy)
     if style_energy is None:
         return aligned, {"applied": False, "skip_reason": "style_owner_missing"}
-    if bool(style_energy.detach().abs().max().item() <= 1e-8):
-        return aligned, {"applied": False, "skip_reason": "style_owner_inactive"}
 
     timbre_energy = aligned.abs().mean(dim=-1)
     allowed_energy = float(budget_ratio) * style_energy + float(budget_margin)
@@ -219,7 +217,7 @@ def apply_runtime_budget_to_dynamic_timbre(
             controlled = controlled.masked_fill(padding_mask.unsqueeze(-1).bool(), 0.0)
 
     metadata = {
-        "applied": bool(over_budget.any().item()),
+        "applied": over_budget.any(),
         "skip_reason": None,
         "budget_scale": budget_scale,
         "timbre_energy": timbre_energy,

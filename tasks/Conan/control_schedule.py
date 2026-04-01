@@ -4,22 +4,34 @@ STYLE_REGULARIZATION_LAMBDAS = (
 
 TIMBRE_REGULARIZATION_LAMBDAS = (
     "lambda_output_identity_cosine",
+    "lambda_dynamic_timbre_gate",
     "lambda_dynamic_timbre_budget",
+    "lambda_dynamic_timbre_boundary",
+    "lambda_dynamic_timbre_anchor",
+    "lambda_gate_rank",
     "lambda_decoder_late_owner",
+    "lambda_decoder_late_anchor_budget",
 )
 
 DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
     "lambda_style_trace_consistency",
     "lambda_output_identity_cosine",
+    "lambda_dynamic_timbre_gate",
     "lambda_dynamic_timbre_budget",
+    "lambda_dynamic_timbre_boundary",
+    "lambda_dynamic_timbre_anchor",
+    "lambda_gate_rank",
     "lambda_decoder_late_owner",
+    "lambda_decoder_late_anchor_budget",
 )
 
 MAINLINE_MINIMAL_CONTROL_LAMBDAS = (
     "lambda_style_trace_consistency",
     "lambda_output_identity_cosine",
     "lambda_dynamic_timbre_budget",
-    "lambda_decoder_late_owner",
+    "lambda_dynamic_timbre_boundary",
+    "lambda_dynamic_timbre_anchor",
+    "lambda_gate_rank",
 )
 
 VALID_CONTROL_LOSS_PROFILES = (

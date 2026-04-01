@@ -72,6 +72,12 @@ def _cosine_mean(a, b):
     return torch.nn.functional.cosine_similarity(a, b, dim=-1, eps=1e-6).mean()
 
 
+def _safe_abs_mean(value):
+    if not isinstance(value, torch.Tensor):
+        return None
+    return value.abs().mean()
+
+
 def _validate_mode_output(mode, output):
     expected = EXPECTED_MODE_FLAGS[mode]
     if bool(output.get("style_trace_applied", False)) != expected["style_trace"]:
@@ -112,8 +118,12 @@ def _validate_mode_output(mode, output):
         raise AssertionError(f"{mode}: style/timbre query shape mismatch.")
     if not bool(output.get("query_anchor_split_applied", False)):
         raise AssertionError(f"{mode}: query_anchor_split_applied is false.")
-    if not bool(output.get("dynamic_timbre_style_context_owner_safe", False)):
-        raise AssertionError(f"{mode}: dynamic_timbre_style_context_owner_safe is false.")
+    expected_owner_safe = bool(expected["style_trace"])
+    if bool(output.get("dynamic_timbre_style_context_owner_safe", False)) != expected_owner_safe:
+        raise AssertionError(
+            f"{mode}: dynamic_timbre_style_context_owner_safe mismatch, "
+            f"expected {expected_owner_safe}, got {output.get('dynamic_timbre_style_context_owner_safe')}"
+        )
     if not bool(output.get("decoder_style_adapter_enabled", False)):
         raise AssertionError(f"{mode}: decoder_style_adapter_enabled is false.")
     if not isinstance(output.get("output_identity_embed"), torch.Tensor):
@@ -138,6 +148,18 @@ def _validate_mode_output(mode, output):
         or isinstance(decoder_style_bundle.get("slow_style_trace"), torch.Tensor)
     ):
         raise AssertionError(f"{mode}: style bundle missing M_style/slow_style_trace.")
+    if mode == "mainline_full" and expected["style_trace"]:
+        M_style = decoder_style_bundle.get("M_style")
+        if not isinstance(M_style, torch.Tensor):
+            raise AssertionError(f"{mode}: M_style missing from decoder bundle.")
+        if decoder_style_bundle.get("slow_style_trace") is not None:
+            raise AssertionError(f"{mode}: slow_style_trace should not be a parallel owner in decoder bundle.")
+        if not torch.allclose(output["style_decoder_residual"], M_style, atol=1e-5, rtol=1e-4):
+            raise AssertionError(f"{mode}: style_decoder_residual does not match decoder bundle M_style.")
+        if not torch.allclose(output["main_style_owner_residual"], output["style_decoder_residual"], atol=1e-5, rtol=1e-4):
+            raise AssertionError(f"{mode}: main_style_owner_residual does not match style_decoder_residual.")
+        if not torch.allclose(output["pitch_condition_inp"], output["query_condition_inp"], atol=1e-5, rtol=1e-4):
+            raise AssertionError(f"{mode}: pitch_condition_inp should equal query_condition_inp when global_timbre_to_pitch is off.")
     expected_global_timbre_to_pitch = False
     if bool(output.get("global_timbre_to_pitch_applied", False)) != expected_global_timbre_to_pitch:
         raise AssertionError(
@@ -245,9 +267,11 @@ def run_smoke(args):
                 ),
                 "decoder_inp_l1": scalarize_value(output["decoder_inp"].abs().mean()),
                 "pitch_inp_l1": scalarize_value(output["pitch_embed"].abs().mean()),
-                "style_decoder_residual_l1": scalarize_value(output["style_decoder_residual"].abs().mean()),
+                "style_decoder_residual_l1": scalarize_value(
+                    _safe_abs_mean(output.get("style_decoder_residual"))
+                ),
                 "dynamic_timbre_decoder_residual_l1": scalarize_value(
-                    output["dynamic_timbre_decoder_residual"].abs().mean()
+                    _safe_abs_mean(output.get("dynamic_timbre_decoder_residual"))
                 ),
                 "runtime_dynamic_timbre_style_budget_applied": bool(
                     output.get("runtime_dynamic_timbre_style_budget_applied", False)

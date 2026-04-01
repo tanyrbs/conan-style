@@ -132,13 +132,12 @@ def build_style_realization_payload(
     style_strength,
 ):
     style_trace_mode = _style_trace_mode_from_controls(controls)
-    zero_residual = torch.zeros_like(query)
     payload = {
         "style_trace_mode": style_trace_mode,
         "style_trace_available": False,
         "style_trace_source": "disabled_by_mode" if style_trace_mode == "none" else "missing",
-        "style_decoder_residual": zero_residual,
-        "slow_style_decoder_residual": zero_residual,
+        "style_decoder_residual": None,
+        "slow_style_decoder_residual": None,
         "global_style_summary_runtime": global_style_summary,
         "style_trace_skip_reason": None,
         "global_style_summary_runtime_source": "reference_summary",

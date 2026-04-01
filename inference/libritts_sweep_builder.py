@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from modules.Conan.style_profiles import available_style_profiles
+from modules.Conan.style_profiles import available_mainline_style_profiles
 
 
 def collect_libritts_wavs(dataset_root, splits=None):
@@ -55,7 +55,7 @@ def build_sweep_config_from_libritts(
     output_dir="infer_out_profiles/libritts",
     defaults=None,
 ):
-    profiles = list(profiles or available_style_profiles())
+    profiles = list(profiles or available_mainline_style_profiles())
     speaker_to_wavs = collect_libritts_wavs(dataset_root, splits=splits)
     cases = build_cross_speaker_cases(speaker_to_wavs, num_cases=num_cases)
     return {

@@ -44,6 +44,7 @@ from modules.Conan.style_mainline import (
     resolve_style_mainline_controls,
 )
 from modules.Conan.style_realization_builder import build_style_realization_payload
+from modules.Conan.style_trace_utils import combine_style_traces, resolve_combined_style_trace
 from modules.Conan.style_conditioning import ConanStyleConditioningMixin
 from modules.commons.transformer import SinusoidalPositionalEmbedding
 
@@ -381,10 +382,13 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         if not style_mainline.apply_global_style_anchor:
             global_timbre_anchor_runtime = torch.zeros_like(global_timbre_anchor_runtime)
         ret["global_timbre_anchor_runtime"] = global_timbre_anchor_runtime
+        # Query path is strictly content+condition (no global timbre anchor injection).
         base_condition_inp = content_embed + condition_embed
-        if style_mainline.apply_global_style_anchor and style_mainline.global_timbre_to_pitch:
-            base_condition_inp = base_condition_inp + global_timbre_anchor_runtime
         ret["query_condition_inp"] = base_condition_inp
+        pitch_inp = base_condition_inp
+        if style_mainline.apply_global_style_anchor and style_mainline.global_timbre_to_pitch:
+            pitch_inp = pitch_inp + global_timbre_anchor_runtime
+        ret["pitch_condition_inp"] = pitch_inp
         ret["global_timbre_to_pitch_applied"] = bool(
             style_mainline.apply_global_style_anchor and style_mainline.global_timbre_to_pitch
         )
@@ -414,10 +418,11 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             if self.style_query_proj is not None else style_query_base
         )
         ret["style_query_inp"] = style_query_inp
-        pitch_inp = base_condition_inp
-        style_decoder_residual = torch.zeros_like(base_condition_inp)
-        slow_style_decoder_residual = torch.zeros_like(base_condition_inp)
-        dynamic_timbre_decoder_residual = torch.zeros_like(base_condition_inp)
+        fast_style_decoder_residual = None
+        slow_style_decoder_residual = None
+        M_style_final = None
+        M_style_mask = None
+        dynamic_timbre_decoder_residual = None
 
         has_cached_timbre = reference_cache.get("timbre_memory") is not None or reference_cache.get("timbre_memory_slow") is not None
         style_trace_available = False
@@ -448,8 +453,8 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         )
         style_trace_available = bool(style_payload.get("style_trace_available", False))
         style_trace_source = str(style_payload.get("style_trace_source", style_trace_source))
-        style_decoder_residual = style_payload.get("style_decoder_residual", style_decoder_residual)
-        slow_style_decoder_residual = style_payload.get("slow_style_decoder_residual", slow_style_decoder_residual)
+        fast_style_decoder_residual = style_payload.get("style_decoder_residual")
+        slow_style_decoder_residual = style_payload.get("slow_style_decoder_residual")
         global_style_summary_runtime = style_payload.get("global_style_summary_runtime", global_style_summary)
         global_style_summary_runtime_source = style_payload.get(
             "global_style_summary_runtime_source",
@@ -457,36 +462,54 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             if isinstance(reference_cache, dict)
             else "reference_cache",
         )
-        main_style_owner_residual = style_decoder_residual + slow_style_decoder_residual
-        ret["main_style_owner_residual"] = main_style_owner_residual
+        M_style_final, M_style_mask = resolve_combined_style_trace(
+            {
+                "style_trace": fast_style_decoder_residual,
+                "slow_style_trace": slow_style_decoder_residual,
+                "style_trace_mask": ret.get("style_trace_mask"),
+                "slow_style_trace_mask": ret.get("slow_style_trace_mask"),
+            }
+        )
+        if M_style_final is None:
+            M_style_final = combine_style_traces(
+                fast_style_decoder_residual,
+                slow_style_decoder_residual,
+            )
+            M_style_mask = ret.get("style_trace_mask", ret.get("slow_style_trace_mask"))
+        ret["main_style_owner_residual"] = M_style_final
         dynamic_timbre_coarse_style_context_scale = float(
             kwargs.get(
                 "dynamic_timbre_coarse_style_context_scale",
                 self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.0),
             )
         )
-        dynamic_timbre_style_context = main_style_owner_residual
-        if isinstance(global_style_query_prior, torch.Tensor) and dynamic_timbre_coarse_style_context_scale != 0.0:
-            dynamic_timbre_style_context = (
-                dynamic_timbre_style_context
-                + dynamic_timbre_coarse_style_context_scale * global_style_query_prior
-            )
-        ret["dynamic_timbre_style_context_raw"] = dynamic_timbre_style_context
-        if self.dynamic_timbre_style_context_norm is not None:
-            dynamic_timbre_style_context = self.dynamic_timbre_style_context_norm(dynamic_timbre_style_context)
+        # Dynamic timbre may only condition on the unified local style owner.
         dynamic_timbre_style_context_stopgrad = bool(
             kwargs.get(
                 "dynamic_timbre_style_context_stopgrad",
                 self.hparams.get("dynamic_timbre_style_context_stopgrad", True),
             )
         )
-        if dynamic_timbre_style_context_stopgrad:
-            dynamic_timbre_style_context = dynamic_timbre_style_context.detach()
+        content_padding_mask = content.eq(self.content_padding_idx)
+        dynamic_timbre_style_context = self._prepare_dynamic_timbre_style_context(
+            M_style_final,
+            padding_mask=content_padding_mask,
+            stopgrad=dynamic_timbre_style_context_stopgrad,
+        )
+        ret["dynamic_timbre_style_context_raw"] = M_style_final
         ret["dynamic_timbre_style_context"] = dynamic_timbre_style_context
         ret["dynamic_timbre_coarse_style_context_scale"] = dynamic_timbre_coarse_style_context_scale
+        ret["dynamic_timbre_coarse_style_context_applied"] = False
         ret["dynamic_timbre_style_context_stopgrad"] = dynamic_timbre_style_context_stopgrad
-        ret["dynamic_timbre_style_context_owner_safe"] = True
-        timbre_query_base = base_condition_inp + dynamic_timbre_style_context
+        ret["dynamic_timbre_style_context_owner_safe"] = isinstance(dynamic_timbre_style_context, torch.Tensor)
+        ret["dynamic_timbre_style_context_bridge"] = (
+            "layernorm_stopgrad" if dynamic_timbre_style_context_stopgrad else "layernorm"
+        )
+        timbre_query_style_scale = float(style_mainline.dynamic_timbre_style_condition_scale)
+        ret["timbre_query_style_scale"] = timbre_query_style_scale
+        timbre_query_base = base_condition_inp
+        if isinstance(dynamic_timbre_style_context, torch.Tensor) and timbre_query_style_scale != 0.0:
+            timbre_query_base = timbre_query_base + timbre_query_style_scale * dynamic_timbre_style_context
         if self.timbre_query_norm is not None:
             timbre_query_base = self.timbre_query_norm(timbre_query_base)
         timbre_query_inp = (
@@ -519,12 +542,13 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 boundary_suppress_strength=style_mainline.dynamic_timbre_boundary_suppress_strength,
                 boundary_radius=style_mainline.dynamic_timbre_boundary_radius,
                 anchor_preserve_strength=style_mainline.dynamic_timbre_anchor_preserve_strength,
+                style_context_prepared=True,
             )
             dynamic_timbre_decoder_residual = dynamic_timbre * dynamic_timbre_strength
             dynamic_timbre_decoder_residual = self._apply_runtime_dynamic_timbre_budget(
                 dynamic_timbre_decoder_residual,
-                style_decoder_residual=style_decoder_residual,
-                slow_style_decoder_residual=slow_style_decoder_residual,
+                style_decoder_residual=M_style_final,
+                slow_style_decoder_residual=None,
                 content=content,
                 kwargs=kwargs,
                 ret=ret,
@@ -537,24 +561,28 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             ret["dynamic_timbre_skip_reason"] = "reference_missing"
         ret["style_trace_applied"] = bool(style_trace_available)
         ret["dynamic_timbre_applied"] = bool(dynamic_timbre_available)
-        ret["fast_style_decoder_residual"] = style_decoder_residual
-        ret["style_decoder_residual"] = main_style_owner_residual
+        ret["fast_style_decoder_residual"] = fast_style_decoder_residual
+        ret["style_decoder_residual"] = M_style_final
         ret["slow_style_decoder_residual"] = slow_style_decoder_residual
         ret["dynamic_timbre_decoder_residual"] = dynamic_timbre_decoder_residual
         ret["global_style_summary_runtime"] = global_style_summary_runtime
         ret["global_style_summary_runtime_source"] = global_style_summary_runtime_source
+        decoder_global_timbre_anchor = global_timbre_anchor if style_mainline.apply_global_style_anchor else None
+        decoder_global_timbre_anchor_runtime = (
+            global_timbre_anchor_runtime if style_mainline.apply_global_style_anchor else None
+        )
         ret["decoder_style_bundle"] = build_decoder_style_bundle(
-            global_timbre_anchor=global_timbre_anchor,
-            global_timbre_anchor_runtime=global_timbre_anchor_runtime,
+            global_timbre_anchor=decoder_global_timbre_anchor,
+            global_timbre_anchor_runtime=decoder_global_timbre_anchor_runtime,
             global_timbre_source=reference_cache.get("global_timbre_anchor_source", "reference_cache"),
             global_style_summary=global_style_summary_runtime,
             global_style_summary_source=global_style_summary_runtime_source,
-            slow_style_trace=self._maybe_decoder_sequence(slow_style_decoder_residual),
-            slow_style_trace_mask=ret.get("slow_style_trace_mask", ret.get("style_trace_mask")),
-            slow_style_source=ret.get("slow_style_trace_source_runtime", ret.get("style_trace_source_runtime", "none")),
-            M_style=self._maybe_decoder_sequence(style_decoder_residual),
-            M_style_mask=ret.get("style_trace_mask"),
-            M_style_source=ret.get("style_trace_source_runtime", style_trace_source),
+            slow_style_trace=None,
+            slow_style_trace_mask=None,
+            slow_style_source="retained_in_logs_only",
+            M_style=self._maybe_decoder_sequence(M_style_final),
+            M_style_mask=M_style_mask,
+            M_style_source="combined_style_owner",
             M_timbre=self._maybe_decoder_sequence(dynamic_timbre_decoder_residual),
             M_timbre_mask=ret.get("dynamic_timbre_mask"),
             M_timbre_source=dynamic_timbre_source,
@@ -675,13 +703,13 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ratio = float(
             kwargs.get(
                 "runtime_dynamic_timbre_style_budget_ratio",
-                self.hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.90),
+                self.hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.50),
             )
         )
         margin = float(
             kwargs.get(
                 "runtime_dynamic_timbre_style_budget_margin",
-                self.hparams.get("runtime_dynamic_timbre_style_budget_margin", 0.04),
+                self.hparams.get("runtime_dynamic_timbre_style_budget_margin", 0.0),
             )
         )
         slow_style_weight = float(
@@ -714,9 +742,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 if isinstance(budget_meta.get("timbre_energy"), torch.Tensor):
                     ret["runtime_dynamic_timbre_dynamic_energy"] = budget_meta["timbre_energy"]
                 ret["runtime_dynamic_timbre_style_budget_skip_reason"] = budget_meta.get("skip_reason")
-                ret["runtime_dynamic_timbre_style_budget_applied"] = bool(
-                    budget_meta.get("applied", False)
-                )
+                ret["runtime_dynamic_timbre_style_budget_applied"] = budget_meta.get("applied", False)
                 clip_frac = budget_meta.get("active_fraction")
                 if isinstance(clip_frac, torch.Tensor):
                     ret["runtime_dynamic_timbre_style_budget_clip_frac"] = clip_frac

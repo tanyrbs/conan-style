@@ -23,6 +23,7 @@ from modules.Conan.reference_bundle import (
 )
 from modules.Conan.reference_cache import reference_cache_to_model_kwargs
 from modules.Conan.style_profiles import (
+    available_mainline_style_profiles,
     available_style_profiles,
     resolve_style_profile,
     style_profile_to_runtime_kwargs,
@@ -369,6 +370,24 @@ class StreamingVoiceConversion:
                     self.hparams.get("dynamic_timbre_style_context_stopgrad", True),
                 )
             ),
+            "runtime_dynamic_timbre_style_budget_enabled": bool(
+                style_profile.get(
+                    "runtime_dynamic_timbre_style_budget_enabled",
+                    self.hparams.get("runtime_dynamic_timbre_style_budget_enabled", True),
+                )
+            ),
+            "runtime_dynamic_timbre_style_budget_ratio": float(
+                style_profile.get(
+                    "runtime_dynamic_timbre_style_budget_ratio",
+                    self.hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.50),
+                )
+            ),
+            "runtime_dynamic_timbre_style_budget_margin": float(
+                style_profile.get(
+                    "runtime_dynamic_timbre_style_budget_margin",
+                    self.hparams.get("runtime_dynamic_timbre_style_budget_margin", 0.0),
+                )
+            ),
         }
 
     def _normalize_spk_embed(self, spk_emb):
@@ -586,9 +605,22 @@ class StreamingVoiceConversion:
     def infer_once(self, inp: Dict, *, spk_emb: Optional[torch.Tensor] = None):
         runtime = self._prepare_inference_runtime(inp, spk_emb=spk_emb)
         src_mel, _ = self._load_source_mel_tensor(inp["src_wav"])
-        wav_pred, mel_pred, _, stream_meta = self._infer_prefix_online_from_mel(src_mel, runtime)
+        wav_pred, mel_pred, final_out, stream_meta = self._infer_prefix_online_from_mel(src_mel, runtime)
         self.last_infer_metadata = dict(runtime["metadata"])
-        self.last_infer_metadata.update(stream_meta)
+        self.last_infer_metadata.update(
+            {
+                **stream_meta,
+                "mainline_contract": {
+                    "query_anchor_split_applied": bool(final_out.get("query_anchor_split_applied", False)),
+                    "dynamic_timbre_style_context_owner_safe": bool(
+                        final_out.get("dynamic_timbre_style_context_owner_safe", False)
+                    ),
+                    "global_timbre_to_pitch_applied": bool(
+                        final_out.get("global_timbre_to_pitch_applied", False)
+                    ),
+                },
+            }
+        )
         return wav_pred, mel_pred.cpu().numpy()
 
     def infer_parity_once(self, inp: Dict, *, spk_emb: Optional[torch.Tensor] = None):
@@ -659,7 +691,7 @@ if __name__ == "__main__":
             "style_profile": "strong_style",
         },
     ]
-    print("Available style profiles:", ", ".join(available_style_profiles()))
+    print("Available style profiles:", ", ".join(available_mainline_style_profiles()))
 
     engine = StreamingVoiceConversion(hparams)
     engine.test_multiple_sentences(demo)

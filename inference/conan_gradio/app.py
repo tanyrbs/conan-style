@@ -14,7 +14,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from inference.Conan import StreamingVoiceConversion
-from modules.Conan.style_profiles import available_style_profiles
+from modules.Conan.style_profiles import available_mainline_style_profiles
 from utils.commons.hparams import hparams, set_hparams
 
 
@@ -53,7 +53,7 @@ def build_demo(engine, settings, *, config_path, exp_name):
     article = settings.get("article", "")
     default_style_profile = settings.get("default_style_profile", "strong_style")
     default_style_strength = float(settings.get("default_style_strength", 1.0))
-    style_profiles = available_style_profiles()
+    style_profiles = available_mainline_style_profiles()
     if default_style_profile not in style_profiles:
         default_style_profile = style_profiles[0]
 

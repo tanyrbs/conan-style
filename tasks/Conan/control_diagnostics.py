@@ -9,7 +9,9 @@ TRACKED_LAMBDA_KEYS = (
     "lambda_style_trace_consistency",
     "lambda_output_identity_cosine",
     "lambda_dynamic_timbre_budget",
-    "lambda_decoder_late_owner",
+    "lambda_dynamic_timbre_boundary",
+    "lambda_dynamic_timbre_anchor",
+    "lambda_gate_rank",
 )
 
 
@@ -177,7 +179,7 @@ def _branch_statistics(branch_ctx, branch_gate, prefix, branch_delta=None):
     return stats
 
 
-def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=None):
+def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=None, style_owner_residual=None):
     if not isinstance(stage_outputs, dict):
         return {}
     stats = {}
@@ -328,17 +330,18 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
             dtype=torch.float32,
         ).mean()
     style_total_residual = None
-    if "diag_decoder_global_style_residual_norm" in stats and "diag_decoder_slow_style_residual_norm" in stats:
-        style_total_residual = (
-            stats["diag_decoder_global_style_residual_norm"] + stats["diag_decoder_slow_style_residual_norm"]
-        )
-    elif "diag_decoder_global_style_residual_norm" in stats:
-        style_total_residual = stats["diag_decoder_global_style_residual_norm"]
-    elif "diag_decoder_slow_style_residual_norm" in stats:
-        style_total_residual = stats["diag_decoder_slow_style_residual_norm"]
+    if isinstance(style_owner_residual, torch.Tensor):
+        style_total_residual, _ = _safe_mean_std(style_owner_residual.norm(dim=-1))
+    if style_total_residual is None:
+        if "diag_decoder_global_style_residual_norm" in stats and "diag_decoder_slow_style_residual_norm" in stats:
+            style_total_residual = (
+                stats["diag_decoder_global_style_residual_norm"] + stats["diag_decoder_slow_style_residual_norm"]
+            )
+        elif "diag_decoder_global_style_residual_norm" in stats:
+            style_total_residual = stats["diag_decoder_global_style_residual_norm"]
+        elif "diag_decoder_slow_style_residual_norm" in stats:
+            style_total_residual = stats["diag_decoder_slow_style_residual_norm"]
     if style_total_residual is not None:
-        if "diag_decoder_global_timbre_residual_norm" in stats:
-            style_total_residual = style_total_residual + stats["diag_decoder_global_timbre_residual_norm"]
         stats["diag_decoder_style_total_residual_norm"] = style_total_residual
     dynamic_norm, _ = _safe_mean_std(
         dynamic_timbre_residual.norm(dim=-1) if isinstance(dynamic_timbre_residual, torch.Tensor) else None
@@ -513,9 +516,13 @@ def collect_control_diagnostics(output, sample, config):
             _decoder_style_adapter_statistics(
                 output.get("decoder_style_adapter_stages"),
                 dynamic_timbre_residual=output.get("dynamic_timbre_decoder_residual"),
+                style_owner_residual=output.get("style_decoder_residual"),
             )
         )
-        style_summary_source = output.get("global_style_summary_source")
+        style_summary_source = output.get(
+            "global_style_summary_runtime_source",
+            output.get("global_style_summary_source"),
+        )
         if style_summary_source is not None:
             fallback_flag = 1.0 if str(style_summary_source) == "fallback_timbre_anchor" else 0.0
             if isinstance(style_repr, torch.Tensor):

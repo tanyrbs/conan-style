@@ -25,7 +25,7 @@ REQUIRED_ZERO_KEYS = (
     "lambda_timbre_anchor_cosine",
     "lambda_style_dynamic_timbre_disentangle",
     "lambda_dynamic_timbre_gate",
-    "lambda_dynamic_timbre_boundary",
+    "lambda_decoder_late_owner",
     "lambda_decoder_late_anchor_budget",
 )
 
@@ -33,7 +33,15 @@ REQUIRED_POSITIVE_KEYS = (
     "lambda_style_trace_consistency",
     "lambda_output_identity_cosine",
     "lambda_dynamic_timbre_budget",
-    "lambda_decoder_late_owner",
+    "lambda_dynamic_timbre_boundary",
+    "lambda_dynamic_timbre_anchor",
+    "lambda_gate_rank",
+)
+
+REQUIRED_PRESENT_KEYS = (
+    "lambda_dynamic_timbre_boundary",
+    "lambda_dynamic_timbre_anchor",
+    "lambda_gate_rank",
 )
 
 
@@ -151,10 +159,10 @@ def run_prep(args):
     _check_close(
         checks,
         "runtime_dynamic_timbre_style_budget_ratio",
-        hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.55),
-        0.55,
+        hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.50),
+        0.50,
     )
-    _check_close(checks, "dynamic_timbre_budget_ratio", hparams.get("dynamic_timbre_budget_ratio", 0.55), 0.55)
+    _check_close(checks, "dynamic_timbre_budget_ratio", hparams.get("dynamic_timbre_budget_ratio", 0.50), 0.50)
     _check_close(
         checks,
         "decoder_late_timbre_owner_ratio",
@@ -173,6 +181,15 @@ def run_prep(args):
         )
     for key in REQUIRED_ZERO_KEYS:
         _check_close(checks, key, hparams.get(key, 0.0), 0.0)
+    for key in REQUIRED_PRESENT_KEYS:
+        checks.append(
+            {
+                "name": f"{key}_present",
+                "ok": key in hparams,
+                "actual": key in hparams,
+                "expected": True,
+            }
+        )
 
     _check_exists(checks, "binary_data_dir_exists", hparams.get("binary_data_dir"))
     _check_exists(checks, "processed_data_dir_exists", hparams.get("processed_data_dir"))

@@ -217,8 +217,8 @@ dynamic_timbre_boundary_suppress_strength: 0.50
 dynamic_timbre_boundary_radius: 2
 dynamic_timbre_anchor_preserve_strength: 0.20
 runtime_dynamic_timbre_style_budget_enabled: true
-runtime_dynamic_timbre_style_budget_ratio: 0.55
-runtime_dynamic_timbre_style_budget_margin: 0.02
+runtime_dynamic_timbre_style_budget_ratio: 0.50
+runtime_dynamic_timbre_style_budget_margin: 0.0
 runtime_dynamic_timbre_style_budget_slow_style_weight: 1.0
 runtime_dynamic_timbre_style_budget_epsilon: 1.0e-6
 # (single-reference) style/dynamic_timbre ref sampling disabled
@@ -243,12 +243,14 @@ lambda_output_identity_cosine: 0.01
 lambda_style_dynamic_timbre_disentangle: 0.0
 lambda_dynamic_timbre_gate: 0.0
 lambda_dynamic_timbre_budget: 0.01
-lambda_dynamic_timbre_boundary: 0.0
-lambda_decoder_late_owner: 0.02
+lambda_dynamic_timbre_boundary: 0.005
+lambda_dynamic_timbre_anchor: 0.005
+lambda_gate_rank: 0.01
+lambda_decoder_late_owner: 0.0
 lambda_decoder_late_anchor_budget: 0.0
 dynamic_timbre_gate_target: 0.35
-dynamic_timbre_budget_ratio: 0.55
-dynamic_timbre_budget_margin: 0.02
+dynamic_timbre_budget_ratio: 0.50
+dynamic_timbre_budget_margin: 0.0
 decoder_late_timbre_owner_ratio: 0.55
 decoder_late_anchor_budget_ratio: 0.35
 decoder_late_anchor_budget_floor: 0.0
@@ -261,7 +263,10 @@ control_regularization_schedule:
   lambda_style_trace_consistency: {start: 10000, warmup: 15000, initial: 0.0, target: 0.1}
   lambda_output_identity_cosine: {start: 18000, warmup: 15000, initial: 0.0, target: 0.01}
   lambda_dynamic_timbre_budget: {start: 15000, warmup: 12000, initial: 0.0, target: 0.01}
-  lambda_decoder_late_owner: {start: 18000, warmup: 15000, initial: 0.0, target: 0.02}
+  lambda_dynamic_timbre_boundary: {start: 15000, warmup: 12000, initial: 0.0, target: 0.005}
+  lambda_dynamic_timbre_anchor: {start: 15000, warmup: 12000, initial: 0.0, target: 0.005}
+  lambda_gate_rank: {start: 18000, warmup: 15000, initial: 0.0, target: 0.01}
+  lambda_decoder_late_owner: {start: 18000, warmup: 15000, initial: 0.0, target: 0.0}
 log_control_diagnostics: true
 control_diagnostics_track_lambdas: true
 valid_use_streaming_prefix_path: true

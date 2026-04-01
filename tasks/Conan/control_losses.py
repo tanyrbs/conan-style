@@ -203,6 +203,16 @@ def _sum_optional_scalars(*values):
     return total
 
 
+def _mean_optional_scalars(*values):
+    present = [value for value in values if isinstance(value, torch.Tensor)]
+    if not present:
+        return None
+    total = present[0]
+    for value in present[1:]:
+        total = total + value
+    return total / float(len(present))
+
+
 def _sum_optional_maps(*values):
     present = [value for value in values if isinstance(value, torch.Tensor) and value.dim() == 2]
     if not present:
@@ -347,7 +357,9 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         "lambda_style_trace_consistency",
         "lambda_output_identity_cosine",
         "lambda_dynamic_timbre_budget",
-        "lambda_decoder_late_owner",
+        "lambda_dynamic_timbre_boundary",
+        "lambda_dynamic_timbre_anchor",
+        "lambda_gate_rank",
     }
 
     def _lambda(key):
@@ -459,27 +471,33 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
 
     dynamic_timbre_budget_lambda = _lambda("lambda_dynamic_timbre_budget")
     if dynamic_timbre_budget_lambda > 0:
-        stage_outputs = output.get("decoder_style_adapter_stages")
-        style_budget = _adapter_stage_energy_map(
-            stage_outputs,
-            stage_names=("mid", "late"),
-            branch_keys=("global_style_delta", "slow_style_delta", "style_trace_delta"),
-        )
-        timbre_budget = _adapter_stage_energy_map(
-            stage_outputs,
-            stage_names=("mid", "late"),
-            branch_keys=("dynamic_timbre_delta",),
-        )
+        style_budget = None
+        timbre_budget = None
+        style_decoder_residual = output.get("style_decoder_residual")
+        dynamic_timbre_decoder_residual = output.get("dynamic_timbre_decoder_residual")
+        if isinstance(style_decoder_residual, torch.Tensor):
+            style_budget = _sequence_abs_mean(style_decoder_residual.detach())
+        if isinstance(dynamic_timbre_decoder_residual, torch.Tensor):
+            timbre_budget = _sequence_abs_mean(dynamic_timbre_decoder_residual)
         if style_budget is None or timbre_budget is None:
-            style_decoder_residual = output.get("style_decoder_residual")
-            dynamic_timbre_decoder_residual = output.get("dynamic_timbre_decoder_residual")
-            if isinstance(style_decoder_residual, torch.Tensor):
-                style_budget = _sequence_abs_mean(style_decoder_residual.detach())
-            if isinstance(dynamic_timbre_decoder_residual, torch.Tensor):
-                timbre_budget = _sequence_abs_mean(dynamic_timbre_decoder_residual)
+            stage_outputs = output.get("decoder_style_adapter_stages")
+            stage_style_budget = _adapter_stage_energy_map(
+                stage_outputs,
+                stage_names=("mid", "late"),
+                branch_keys=("global_style_delta", "slow_style_delta", "style_trace_delta"),
+            )
+            stage_timbre_budget = _adapter_stage_energy_map(
+                stage_outputs,
+                stage_names=("mid", "late"),
+                branch_keys=("dynamic_timbre_delta",),
+            )
+            if style_budget is None:
+                style_budget = stage_style_budget
+            if timbre_budget is None:
+                timbre_budget = stage_timbre_budget
         if isinstance(style_budget, torch.Tensor) and isinstance(timbre_budget, torch.Tensor):
-            budget_ratio = float(config.get("dynamic_timbre_budget_ratio", 0.55))
-            budget_margin = float(config.get("dynamic_timbre_budget_margin", 0.02))
+            budget_ratio = float(config.get("dynamic_timbre_budget_ratio", 0.50))
+            budget_margin = float(config.get("dynamic_timbre_budget_margin", 0.0))
             style_budget_reference = style_budget.detach()
             voiced_weight = None
             sample_uv = sample.get("uv")
@@ -519,6 +537,41 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                             losses["dynamic_timbre_boundary"] = (
                                 reduced_boundary * dynamic_timbre_boundary_lambda
                             )
+
+    dynamic_timbre_anchor_lambda = _lambda("lambda_dynamic_timbre_anchor")
+    if dynamic_timbre_anchor_lambda > 0:
+        anchor_shift = output.get("dynamic_timbre_anchor_shift")
+        if isinstance(anchor_shift, torch.Tensor):
+            losses["dynamic_timbre_anchor"] = anchor_shift.abs().mean() * dynamic_timbre_anchor_lambda
+
+    gate_rank_lambda = _lambda("lambda_gate_rank")
+    if gate_rank_lambda > 0:
+        stage_outputs = output.get("decoder_style_adapter_stages")
+        style_gate = None
+        timbre_gate = None
+        if isinstance(stage_outputs, dict):
+            mid_stage = stage_outputs.get("mid") if isinstance(stage_outputs.get("mid"), dict) else None
+            late_stage = stage_outputs.get("late") if isinstance(stage_outputs.get("late"), dict) else None
+            style_gate = _mean_optional_scalars(
+                _gate_mean(mid_stage.get("slow_style_gate")) if isinstance(mid_stage, dict) else None,
+                _gate_mean(late_stage.get("global_style_gate")) if isinstance(late_stage, dict) else None,
+                _gate_mean(late_stage.get("slow_style_gate")) if isinstance(late_stage, dict) else None,
+                _gate_mean(late_stage.get("style_trace_gate")) if isinstance(late_stage, dict) else None,
+            )
+            timbre_gate = _mean_optional_scalars(
+                _gate_mean(mid_stage.get("dynamic_timbre_gate")) if isinstance(mid_stage, dict) else None,
+                _gate_mean(late_stage.get("dynamic_timbre_gate")) if isinstance(late_stage, dict) else None,
+            )
+        if style_gate is None:
+            style_gate = _gate_mean(output.get("style_trace_gate"), output.get("style_trace_mask"))
+        if timbre_gate is None:
+            timbre_gate = _gate_mean(
+                output.get("dynamic_timbre_gate"),
+                output.get("dynamic_timbre_mask"),
+            )
+        if isinstance(style_gate, torch.Tensor) and isinstance(timbre_gate, torch.Tensor):
+            gate_rank_ratio = float(config.get("gate_rank_ratio", 0.60))
+            losses["gate_rank"] = F.relu(timbre_gate - gate_rank_ratio * style_gate) * gate_rank_lambda
 
     late_owner_lambda = _lambda("lambda_decoder_late_owner")
     late_anchor_lambda = _lambda("lambda_decoder_late_anchor_budget")

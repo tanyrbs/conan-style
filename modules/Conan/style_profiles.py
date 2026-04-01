@@ -1,6 +1,10 @@
 import warnings
 
-from modules.Conan.style_mainline import derive_dynamic_timbre_strength
+from modules.Conan.style_mainline import (
+    derive_dynamic_timbre_strength,
+    normalize_decoder_style_condition_mode,
+    normalize_style_trace_mode,
+)
 
 
 STYLE_PROFILE_KEYS = (
@@ -33,6 +37,7 @@ STYLE_PROFILE_KEYS = (
 
 STYLE_PROFILES = {
     "strong_style": {
+        "track": "mainline",
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
         "global_style_anchor_strength": 1.0,
@@ -55,10 +60,38 @@ STYLE_PROFILES = {
         "dynamic_timbre_coarse_style_context_scale": 0.0,
         "dynamic_timbre_style_context_stopgrad": True,
         "runtime_dynamic_timbre_style_budget_enabled": True,
+        "runtime_dynamic_timbre_style_budget_ratio": 0.50,
+        "runtime_dynamic_timbre_style_budget_margin": 0.0,
+    },
+    "research_dual": {
+        "track": "research",
+        "decoder_style_condition_mode": "mainline_full",
+        "global_timbre_to_pitch": False,
+        "global_style_anchor_strength": 1.0,
+        "style_trace_mode": "dual",
+        "style_memory_mode": "slow",
+        "style_strength": 1.35,
+        "fast_style_strength_scale": 1.0,
+        "slow_style_strength_scale": 1.35,
+        "style_temperature": 1.2,
+        "global_style_trace_blend": 0.25,
+        "dynamic_timbre_memory_mode": "slow",
+        "dynamic_timbre_style_condition_scale": 0.5,
+        "dynamic_timbre_temperature": 1.0,
+        "dynamic_timbre_gate_scale": 1.0,
+        "dynamic_timbre_gate_bias": 0.0,
+        "dynamic_timbre_boundary_suppress_strength": 0.5,
+        "dynamic_timbre_boundary_radius": 2,
+        "dynamic_timbre_anchor_preserve_strength": 0.2,
+        "style_query_global_summary_scale": 0.0,
+        "dynamic_timbre_coarse_style_context_scale": 0.0,
+        "dynamic_timbre_style_context_stopgrad": True,
+        "runtime_dynamic_timbre_style_budget_enabled": True,
         "runtime_dynamic_timbre_style_budget_ratio": 0.55,
         "runtime_dynamic_timbre_style_budget_margin": 0.02,
     },
     "extreme": {
+        "track": "mainline",
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
         "global_style_anchor_strength": 1.15,
@@ -81,14 +114,27 @@ STYLE_PROFILES = {
         "dynamic_timbre_coarse_style_context_scale": 0.0,
         "dynamic_timbre_style_context_stopgrad": True,
         "runtime_dynamic_timbre_style_budget_enabled": True,
-        "runtime_dynamic_timbre_style_budget_ratio": 0.60,
-        "runtime_dynamic_timbre_style_budget_margin": 0.03,
+        "runtime_dynamic_timbre_style_budget_ratio": 0.50,
+        "runtime_dynamic_timbre_style_budget_margin": 0.0,
     },
 }
 
 
+def _style_profile_track(name, profile=None):
+    if isinstance(profile, dict) and profile.get("track") is not None:
+        return str(profile.get("track"))
+    return "research" if str(name).startswith("research_") else "mainline"
+
+
 def available_style_profiles():
     return sorted(STYLE_PROFILES.keys())
+
+
+def available_mainline_style_profiles():
+    return [
+        name for name in available_style_profiles()
+        if _style_profile_track(name, STYLE_PROFILES.get(name)) == "mainline"
+    ]
 
 
 def resolve_style_profile(
@@ -111,10 +157,52 @@ def resolve_style_profile(
         preset_name = default_preset
 
     resolved = dict(STYLE_PROFILES[preset_name])
+    profile_track = _style_profile_track(preset_name, resolved)
+    allow_mainline_profile_research_overrides = bool(
+        overrides.get("allow_mainline_profile_research_overrides", False)
+    )
     for key in STYLE_PROFILE_KEYS:
         value = overrides.get(key, None)
         if value is not None:
             resolved[key] = value
+    normalized_mode = normalize_decoder_style_condition_mode(
+        resolved.get("decoder_style_condition_mode", "mainline_full"),
+        default="mainline_full",
+    )
+    normalized_trace_mode = normalize_style_trace_mode(
+        resolved.get("style_trace_mode", "slow"),
+        default="slow",
+    )
+    if profile_track == "mainline":
+        research_like_override = (
+            normalized_mode != "mainline_full"
+            or normalized_trace_mode == "dual"
+            or float(resolved.get("global_style_trace_blend", 0.0)) > 0.0
+            or float(resolved.get("style_query_global_summary_scale", 0.0)) != 0.0
+            or str(resolved.get("style_memory_mode", "slow")).strip().lower() != "slow"
+            or str(resolved.get("dynamic_timbre_memory_mode", "slow")).strip().lower() != "slow"
+        )
+        if research_like_override and not allow_mainline_profile_research_overrides:
+            warnings.warn(
+                f"Mainline style_profile '{preset_name}' received research-style overrides; coercing back to canonical mainline defaults. "
+                "Use 'research_dual' or set allow_mainline_profile_research_overrides=True to keep them.",
+                stacklevel=2,
+            )
+            resolved["decoder_style_condition_mode"] = "mainline_full"
+            resolved["style_trace_mode"] = "slow"
+            resolved["global_style_trace_blend"] = 0.0
+            resolved["style_query_global_summary_scale"] = 0.0
+            resolved["style_memory_mode"] = "slow"
+            resolved["dynamic_timbre_memory_mode"] = "slow"
+            normalized_mode = "mainline_full"
+            normalized_trace_mode = "slow"
+        elif research_like_override:
+            warnings.warn(
+                f"Mainline style_profile '{preset_name}' is being used with research-style overrides. "
+                "Prefer the dedicated research profile if this is intentional.",
+                stacklevel=2,
+            )
+            profile_track = "research_override"
     allow_explicit_dynamic_timbre_strength = bool(
         overrides.get("allow_explicit_dynamic_timbre_strength", False)
     )
@@ -128,6 +216,7 @@ def resolve_style_profile(
         )
         resolved["dynamic_timbre_strength_source"] = "derived_from_style_strength"
     resolved["style_profile"] = preset_name
+    resolved["style_profile_track"] = profile_track
     return resolved
 
 

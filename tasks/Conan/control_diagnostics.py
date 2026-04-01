@@ -202,6 +202,7 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     dynamic_timbre_residual_values = []
     global_residual_values = []
     slow_style_residual_values = []
+    global_style_skip_flags = []
     late_style_delta = None
     late_timbre_delta = None
     late_anchor_delta = None
@@ -209,6 +210,10 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
         if not isinstance(stage_meta, dict):
             continue
         stage_name = str(stage_meta.get("stage_name", "")).lower()
+        if "global_style_skipped_due_to_local_owner" in stage_meta:
+            global_style_skip_flags.append(
+                1.0 if bool(stage_meta.get("global_style_skipped_due_to_local_owner", False)) else 0.0
+            )
         branch_stats = _branch_statistics(
             stage_meta.get("global_timbre_ctx"),
             stage_meta.get("global_timbre_gate"),
@@ -313,6 +318,11 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
         stats["diag_decoder_fast_style_residual_norm"] = torch.stack(fast_style_residual_values).mean()
     if dynamic_timbre_residual_values:
         stats["diag_decoder_dynamic_timbre_residual_norm"] = torch.stack(dynamic_timbre_residual_values).mean()
+    if global_style_skip_flags:
+        stats["diag_decoder_global_style_skipped_due_to_local_owner"] = torch.tensor(
+            global_style_skip_flags,
+            dtype=torch.float32,
+        ).mean()
     style_total_residual = None
     if "diag_decoder_global_style_residual_norm" in stats and "diag_decoder_slow_style_residual_norm" in stats:
         style_total_residual = (
@@ -485,6 +495,15 @@ def collect_control_diagnostics(output, sample, config):
             1.0 if bool(reference_contract.get("factorization_guaranteed", False)) else 0.0,
             **tensor_kwargs,
         )
+        diagnostics["diag_runtime_dynamic_timbre_style_budget_applied"] = torch.tensor(
+            1.0 if bool(output.get("runtime_dynamic_timbre_style_budget_applied", False)) else 0.0,
+            **tensor_kwargs,
+        )
+        runtime_budget_clip_frac = output.get("runtime_dynamic_timbre_style_budget_clip_frac")
+        if isinstance(runtime_budget_clip_frac, torch.Tensor):
+            diagnostics["diag_runtime_dynamic_timbre_style_budget_clip_frac"] = runtime_budget_clip_frac.to(
+                **tensor_kwargs
+            )
 
         diagnostics.update(
             _decoder_style_adapter_statistics(

@@ -75,7 +75,7 @@ def normalize_decoder_style_bundle_variant(variant: Any, default: str = "mainlin
 class DecoderStyleBundle:
     bundle_variant: str = "mainline_full"
     bundle_source: str = "decoder_style_mainline"
-    mainline_owner: str = "global_style_plus_dynamic_timbre"
+    mainline_owner: str = "M_style_owner_plus_bounded_M_timbre"
     timing_authority: str = DECODER_STYLE_TIMING_AUTHORITY
     decoder_only: bool = True
     planner_writeback_allowed: bool = False
@@ -129,7 +129,7 @@ def canonicalize_decoder_style_bundle(bundle: Optional[Mapping[str, Any]] = None
         normalized.get("bundle_variant", normalized.get("decoder_style_condition_mode", "mainline_full"))
     )
     normalized["bundle_source"] = str(normalized.get("bundle_source", "decoder_style_mainline"))
-    normalized["mainline_owner"] = str(normalized.get("mainline_owner", "global_style_plus_dynamic_timbre"))
+    normalized["mainline_owner"] = str(normalized.get("mainline_owner", "M_style_owner_plus_bounded_M_timbre"))
     normalized["timing_authority"] = str(
         normalized.get("timing_authority", DECODER_STYLE_TIMING_AUTHORITY)
     )
@@ -219,7 +219,7 @@ def build_decoder_style_bundle(
     M_timbre_source: str = "none",
     bundle_variant: str = "mainline_full",
     bundle_source: str = "decoder_style_mainline",
-    mainline_owner: str = "global_style_plus_dynamic_timbre",
+    mainline_owner: str = "M_style_owner_plus_bounded_M_timbre",
     timing_authority: str = DECODER_STYLE_TIMING_AUTHORITY,
     decoder_only: bool = True,
     planner_writeback_allowed: bool = False,

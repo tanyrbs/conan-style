@@ -10,7 +10,7 @@ emformer_ckpt: checkpoints/Emformer
 vocoder_ckpt: checkpoints/hifigan_vc
 nVQ: 128
 use_dynamic_timbre: true
-reference_contract_mode: collapsed_reference
+reference_contract_mode: collapsed_reference  # canonical mainline = single-reference weak internal factorization
 global_timbre_to_pitch: false
 style_profile: strong_style
-allow_split_reference_inputs: false
+allow_split_reference_inputs: false  # split-reference paths stay research-only and do not define the mainline contract

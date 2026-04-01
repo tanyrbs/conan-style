@@ -24,6 +24,9 @@ STYLE_PROFILE_KEYS = (
     "style_query_global_summary_scale",
     "dynamic_timbre_coarse_style_context_scale",
     "dynamic_timbre_style_context_stopgrad",
+    "runtime_dynamic_timbre_style_budget_enabled",
+    "runtime_dynamic_timbre_style_budget_ratio",
+    "runtime_dynamic_timbre_style_budget_margin",
 )
 
 
@@ -49,8 +52,11 @@ STYLE_PROFILES = {
         "dynamic_timbre_boundary_radius": 2,
         "dynamic_timbre_anchor_preserve_strength": 0.2,
         "style_query_global_summary_scale": 0.35,
-        "dynamic_timbre_coarse_style_context_scale": 0.25,
+        "dynamic_timbre_coarse_style_context_scale": 0.10,
         "dynamic_timbre_style_context_stopgrad": True,
+        "runtime_dynamic_timbre_style_budget_enabled": True,
+        "runtime_dynamic_timbre_style_budget_ratio": 0.90,
+        "runtime_dynamic_timbre_style_budget_margin": 0.04,
     },
     "extreme": {
         "decoder_style_condition_mode": "mainline_full",
@@ -73,8 +79,11 @@ STYLE_PROFILES = {
         "dynamic_timbre_boundary_radius": 2,
         "dynamic_timbre_anchor_preserve_strength": 0.18,
         "style_query_global_summary_scale": 0.35,
-        "dynamic_timbre_coarse_style_context_scale": 0.30,
+        "dynamic_timbre_coarse_style_context_scale": 0.10,
         "dynamic_timbre_style_context_stopgrad": True,
+        "runtime_dynamic_timbre_style_budget_enabled": True,
+        "runtime_dynamic_timbre_style_budget_ratio": 0.95,
+        "runtime_dynamic_timbre_style_budget_margin": 0.05,
     },
 }
 

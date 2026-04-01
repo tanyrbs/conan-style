@@ -93,6 +93,13 @@ def _validate_mode_output(mode, output):
         raise AssertionError(
             f"{mode}: unexpected reference_contract_mode={output.get('reference_contract_mode')}"
         )
+    reference_contract = output.get("reference_contract", {}) or {}
+    if bool(reference_contract.get("factorization_guaranteed", True)):
+        raise AssertionError(f"{mode}: factorization_guaranteed unexpectedly true for mainline.")
+    if str(reference_contract.get("factorization_semantics")) != "single_reference_weak_internal_factorization":
+        raise AssertionError(
+            f"{mode}: unexpected factorization_semantics={reference_contract.get('factorization_semantics')}"
+        )
     if not isinstance(output.get("style_query_inp"), torch.Tensor):
         raise AssertionError(f"{mode}: style_query_inp missing.")
     if not isinstance(output.get("timbre_query_inp"), torch.Tensor):
@@ -137,6 +144,37 @@ def _validate_mode_output(mode, output):
             f"{mode}: global_timbre_to_pitch_applied mismatch, expected {expected_global_timbre_to_pitch}, "
             f"got {output.get('global_timbre_to_pitch_applied')}"
         )
+    stage_outputs = output.get("decoder_style_adapter_stages") or {}
+    late_stage = stage_outputs.get("late") if isinstance(stage_outputs, dict) else None
+    if isinstance(stage_outputs, dict):
+        if not expected["style_trace"]:
+            for stage_name, stage_meta in stage_outputs.items():
+                if not isinstance(stage_meta, dict):
+                    continue
+                if stage_meta.get("style_trace_delta") is not None or stage_meta.get("slow_style_delta") is not None:
+                    raise AssertionError(f"{mode}: style branch leaked into stage '{stage_name}' despite being disabled.")
+        if not expected["dynamic_timbre"]:
+            for stage_name, stage_meta in stage_outputs.items():
+                if not isinstance(stage_meta, dict):
+                    continue
+                if stage_meta.get("dynamic_timbre_delta") is not None:
+                    raise AssertionError(f"{mode}: dynamic timbre branch leaked into stage '{stage_name}' despite being disabled.")
+        if not expected["global_anchor"]:
+            for stage_name, stage_meta in stage_outputs.items():
+                if not isinstance(stage_meta, dict):
+                    continue
+                if stage_meta.get("global_timbre_delta") is not None:
+                    raise AssertionError(f"{mode}: global anchor branch leaked into stage '{stage_name}' despite being disabled.")
+    if expected["dynamic_timbre"]:
+        if "runtime_dynamic_timbre_style_budget_enabled" not in output:
+            raise AssertionError(f"{mode}: runtime_dynamic_timbre_style_budget_enabled missing.")
+        if "runtime_dynamic_timbre_style_budget_clip_frac" not in output:
+            raise AssertionError(f"{mode}: runtime_dynamic_timbre_style_budget_clip_frac missing.")
+    if mode == "mainline_full" and expected["style_trace"] and isinstance(late_stage, dict):
+        if not bool(late_stage.get("global_style_skipped_due_to_local_owner", False)):
+            raise AssertionError(
+                f"{mode}: late-stage global_style_summary was not skipped despite local style owner."
+            )
 
 
 def run_smoke(args):
@@ -199,11 +237,23 @@ def run_smoke(args):
                 "style_mainline_surface": output.get("style_mainline_surface"),
                 "decoder_style_adapter_enabled": bool(output.get("decoder_style_adapter_enabled", False)),
                 "decoder_style_adapter_stages": sorted(list((output.get("decoder_style_adapter_stages") or {}).keys())),
+                "late_stage_global_style_skipped_due_to_local_owner": bool(
+                    ((output.get("decoder_style_adapter_stages") or {}).get("late") or {}).get(
+                        "global_style_skipped_due_to_local_owner",
+                        False,
+                    )
+                ),
                 "decoder_inp_l1": scalarize_value(output["decoder_inp"].abs().mean()),
                 "pitch_inp_l1": scalarize_value(output["pitch_embed"].abs().mean()),
                 "style_decoder_residual_l1": scalarize_value(output["style_decoder_residual"].abs().mean()),
                 "dynamic_timbre_decoder_residual_l1": scalarize_value(
                     output["dynamic_timbre_decoder_residual"].abs().mean()
+                ),
+                "runtime_dynamic_timbre_style_budget_applied": bool(
+                    output.get("runtime_dynamic_timbre_style_budget_applied", False)
+                ),
+                "runtime_dynamic_timbre_style_budget_clip_frac": scalarize_value(
+                    output.get("runtime_dynamic_timbre_style_budget_clip_frac")
                 ),
                 "dynamic_timbre_style_context_owner_safe": bool(
                     output.get("dynamic_timbre_style_context_owner_safe", False)

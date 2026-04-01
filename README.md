@@ -25,6 +25,12 @@
 split reference / factorized swap 仍保留给研究与 ablation，
 但不再代表 Conan 主线产品接口。
 
+补充说明：
+
+- Conan mainline 只使用 `reference_contract_mode: collapsed_reference`
+- 当前内部的 style/timbre 三角色分工是 **single-reference weak internal factorization**
+- `reference_contract.factorization_guaranteed = false` 是主线设计事实，不是 bug
+
 ## 直接可跑的 Conan mainline 入口
 
 ### 1) 单参考 strong-style demo
@@ -82,8 +88,13 @@ pip install gradio
 - `timing_writeback_allowed: false`
 - `M_style` 是 expression owner
 - `M_timbre` 是 bounded material enhancer，而不是第二个主风格 owner
+- `mainline_owner` metadata 只是主线层级标记；真正的 owner hierarchy 以
+  `global_timbre_anchor / M_style / M_timbre` 为准
 - style / timbre query 已拆分：不再共享 `content + condition + anchor`
 - `M_style -> M_timbre` 已改成 owner-aware conditioning：`LayerNorm + stopgrad`
+- decoder adapter 对 zero tensor / 无效分支已做 hard no-op，避免“禁用分支仍偷偷注入”
+- late-stage 默认会在 local style owner 已存在时跳过 `global_style_summary` 重复注入
+- dynamic timbre 已增加 runtime hard budget，确保 `M_timbre` 受 `M_style` 预算约束
 - decoder-side regularization 已补 owner-centric loss：local budget / boundary / late-owner
 - 输出端已补 mel-side identity proxy loss：`mel_out -> global_timbre_anchor`
 - validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel parity

@@ -162,7 +162,7 @@ silent_token: 57
 content_embedding_dim: 102
 content_vocab_size: 102
 content_padding_idx: 101
-reference_contract_mode: collapsed_reference
+reference_contract_mode: collapsed_reference  # mainline training contract = single-reference weak internal factorization
 decoder_style_condition_mode: mainline_full
 style_trace_mode: dual
 style_reference_memory_mode: slow
@@ -176,8 +176,8 @@ global_style_anchor_strength: 1.0
 use_decoder_style_adapter: true
 decoder_style_adapter_gate_hidden: 256
 decoder_global_timbre_scale: 0.18
-decoder_global_timbre_scale_mid: 0.12
-decoder_global_timbre_scale_late: 0.08
+decoder_global_timbre_scale_mid: 0.10
+decoder_global_timbre_scale_late: 0.05
 decoder_style_global_scale: 0.2
 decoder_slow_style_trace_scale: 0.70
 decoder_style_trace_scale: 1.00
@@ -185,6 +185,8 @@ decoder_dynamic_timbre_scale: 0.20
 decoder_dynamic_timbre_scale_mid: 0.20
 decoder_dynamic_timbre_scale_late: 0.12
 decoder_dynamic_timbre_late_no_style_scale: 0.25
+decoder_skip_global_style_when_local_style_present: true  # late stage prefers local style owner over repeated global summary injection
+decoder_style_adapter_effective_signal_epsilon: 1.0e-8
 decoder_style_adapter_gate_bias: -1.0
 decoder_style_adapter_gate_bias_start: -1.0
 decoder_style_adapter_gate_bias_end: 0.0
@@ -202,11 +204,16 @@ reference_prosody_slow_pool: 4
 reference_timbre_slow_pool: 2
 dynamic_timbre_reference_memory_mode: slow
 dynamic_timbre_style_condition_scale: 0.50
-dynamic_timbre_coarse_style_context_scale: 0.25
+dynamic_timbre_coarse_style_context_scale: 0.10
 dynamic_timbre_style_context_stopgrad: true
 dynamic_timbre_boundary_suppress_strength: 0.50
 dynamic_timbre_boundary_radius: 2
 dynamic_timbre_anchor_preserve_strength: 0.20
+runtime_dynamic_timbre_style_budget_enabled: true
+runtime_dynamic_timbre_style_budget_ratio: 0.75
+runtime_dynamic_timbre_style_budget_margin: 0.02
+runtime_dynamic_timbre_style_budget_slow_style_weight: 1.0
+runtime_dynamic_timbre_style_budget_epsilon: 1.0e-6
 # (single-reference) style/dynamic_timbre ref sampling disabled
 use_fixed_timbre_reference: true
 # (single-reference) style/dynamic_timbre ref sampling params removed

@@ -43,6 +43,8 @@ class ConanDecoderStyleAdapter(nn.Module):
         dynamic_timbre_scale_mid: Optional[float] = None,
         dynamic_timbre_scale_late: Optional[float] = None,
         dynamic_timbre_late_no_style_scale: float = 0.25,
+        skip_global_style_when_local_style_present: bool = True,
+        effective_signal_epsilon: float = 1e-8,
         gate_bias: float = -2.0,
     ) -> None:
         super().__init__()
@@ -64,6 +66,10 @@ class ConanDecoderStyleAdapter(nn.Module):
             else dynamic_timbre_scale_late
         )
         self.dynamic_timbre_late_no_style_scale = float(dynamic_timbre_late_no_style_scale)
+        self.skip_global_style_when_local_style_present = bool(
+            skip_global_style_when_local_style_present
+        )
+        self.effective_signal_epsilon = max(0.0, float(effective_signal_epsilon))
         gate_hidden = max(1, int(gate_hidden or hidden_size))
 
         self.global_timbre_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
@@ -185,6 +191,20 @@ class ConanDecoderStyleAdapter(nn.Module):
             return value
         return value * nonpadding_mask
 
+    def _has_effective_signal(
+        self,
+        branch: Optional[torch.Tensor],
+        nonpadding_mask: Optional[torch.Tensor],
+    ) -> bool:
+        if not isinstance(branch, torch.Tensor):
+            return False
+        candidate = branch
+        if isinstance(nonpadding_mask, torch.Tensor):
+            candidate = self._apply_mask(candidate, nonpadding_mask)
+        if candidate.numel() <= 0:
+            return False
+        return bool(candidate.detach().abs().amax().item() > self.effective_signal_epsilon)
+
     def _apply_branch(
         self,
         hidden_btc: torch.Tensor,
@@ -195,7 +215,7 @@ class ConanDecoderStyleAdapter(nn.Module):
         scale: float,
         nonpadding_mask: Optional[torch.Tensor],
     ):
-        if not isinstance(branch, torch.Tensor) or float(scale) == 0.0:
+        if float(scale) == 0.0 or not self._has_effective_signal(branch, nonpadding_mask):
             return hidden_btc, None, None, None
         branch = projector(branch)
         branch = self._apply_mask(branch, nonpadding_mask)
@@ -231,6 +251,8 @@ class ConanDecoderStyleAdapter(nn.Module):
             style_bundle.get("global_style_summary"),
             hidden_btc.size(1),
         )
+        global_style_summary_source = str(style_bundle.get("global_style_summary_source", "none"))
+        global_style_summary_is_fallback = bool(global_style_summary_source == "fallback_timbre_anchor")
 
         global_timbre_scale = {
             "early": self.global_timbre_scale_early,
@@ -238,19 +260,32 @@ class ConanDecoderStyleAdapter(nn.Module):
             "late": self.global_timbre_scale_late,
         }.get(stage_name, 0.0)
         apply_global_timbre = global_timbre_scale > 0.0
-        apply_global = stage_name == "late"
         apply_slow_style = stage_name in {"mid", "late"}
         apply_style = stage_name == "late"
+        local_style_owner_present = bool(
+            self._has_effective_signal(slow_style_trace, nonpadding_mask)
+            or self._has_effective_signal(style_trace, nonpadding_mask)
+        )
         style_owner_present = bool(
-            global_style_summary is not None
-            or _is_sequence_tensor(slow_style_trace)
-            or _is_sequence_tensor(style_trace)
+            self._has_effective_signal(global_style_summary, nonpadding_mask)
+            or local_style_owner_present
+        )
+        skip_global_style_due_to_local_owner = bool(
+            stage_name == "late"
+            and self.skip_global_style_when_local_style_present
+            and local_style_owner_present
+        )
+        skip_global_style_due_to_fallback = bool(stage_name == "late" and global_style_summary_is_fallback)
+        apply_global = (
+            stage_name == "late"
+            and not skip_global_style_due_to_local_owner
+            and not skip_global_style_due_to_fallback
         )
         dynamic_timbre_scale = {
             "mid": self.dynamic_timbre_scale_mid,
             "late": self.dynamic_timbre_scale_late,
         }.get(stage_name, 0.0)
-        if stage_name == "late" and not style_owner_present:
+        if stage_name == "late" and not local_style_owner_present:
             dynamic_timbre_scale = dynamic_timbre_scale * self.dynamic_timbre_late_no_style_scale
         apply_timbre = dynamic_timbre_scale > 0.0
 
@@ -258,7 +293,12 @@ class ConanDecoderStyleAdapter(nn.Module):
         metadata = {
             "stage_name": stage_name,
             "applied": False,
+            "local_style_owner_present": bool(local_style_owner_present),
             "style_owner_present": bool(style_owner_present),
+            "global_style_skipped_due_to_local_owner": bool(skip_global_style_due_to_local_owner),
+            "global_style_summary_source": global_style_summary_source,
+            "global_style_summary_is_fallback": bool(global_style_summary_is_fallback),
+            "global_style_skipped_due_to_fallback": bool(skip_global_style_due_to_fallback),
             "dynamic_timbre_scale_used": float(dynamic_timbre_scale),
         }
 

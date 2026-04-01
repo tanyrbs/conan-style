@@ -33,6 +33,9 @@ STYLE_RUNTIME_KEYS = (
     "style_query_global_summary_scale",
     "dynamic_timbre_coarse_style_context_scale",
     "dynamic_timbre_style_context_stopgrad",
+    "runtime_dynamic_timbre_style_budget_enabled",
+    "runtime_dynamic_timbre_style_budget_ratio",
+    "runtime_dynamic_timbre_style_budget_margin",
 )
 
 REFERENCE_CONTRACT_MODES = (
@@ -87,6 +90,7 @@ def _build_reference_contract_metadata(
     factorization_guaranteed = False
     return {
         "mode": contract_mode,
+        "factorization_semantics": "single_reference_weak_internal_factorization",
         "explicit_ref": bool(explicit_ref),
         "explicit_timbre": bool(explicit_timbre),
         "explicit_style": bool(explicit_style),
@@ -375,6 +379,18 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
         "dynamic_timbre_style_context_stopgrad": first_present(
             source,
             "dynamic_timbre_style_context_stopgrad",
+        ),
+        "runtime_dynamic_timbre_style_budget_enabled": first_present(
+            source,
+            "runtime_dynamic_timbre_style_budget_enabled",
+        ),
+        "runtime_dynamic_timbre_style_budget_ratio": first_present(
+            source,
+            "runtime_dynamic_timbre_style_budget_ratio",
+        ),
+        "runtime_dynamic_timbre_style_budget_margin": first_present(
+            source,
+            "runtime_dynamic_timbre_style_budget_margin",
         ),
     }
 

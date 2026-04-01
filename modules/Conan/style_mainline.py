@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Optional
 
 
-STYLE_MAINLINE_OWNER = "global_style_plus_dynamic_timbre"
+STYLE_MAINLINE_OWNER = "M_style_owner_plus_bounded_M_timbre"
 STYLE_MAINLINE_SURFACE = "ConanStrongStyleMainlineSurface"
 STYLE_MAINLINE_MEMORY = "ConanStrongStyleMainlineMemory"
 

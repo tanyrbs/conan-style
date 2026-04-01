@@ -321,7 +321,7 @@ class StreamingVoiceConversion:
             "dynamic_timbre_coarse_style_context_scale": float(
                 style_profile.get(
                     "dynamic_timbre_coarse_style_context_scale",
-                    self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.25),
+                    self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.10),
                 )
             ),
             "dynamic_timbre_style_context_stopgrad": bool(

@@ -11,6 +11,12 @@ Updated: 2026-04-01
 外部默认不是多参考分解控制；
 内部仍然保留三角色分工。
 
+需要明确的是：
+
+- Conan mainline contract 只有 `collapsed_reference`
+- 当前内部分工属于 **single-reference weak internal factorization**
+- `reference_contract.factorization_guaranteed = false` 是设计语义，不是未完成状态
+
 ## 2. Canonical inference path
 
 唯一 canonical inference config：
@@ -61,6 +67,11 @@ split reference 仍可保留给 research-only tooling，
 - breathiness / brightness / thickness / onset-release
 - 服务于 style realization，而不是第二条主风格通道
 
+说明：
+
+- `mainline_owner` metadata 只是层级标签
+- 真正 owner 关系以 `global_timbre_anchor / M_style / M_timbre` 为准
+
 ## 5. Current implementation policy
 
 当前必须继续保持：
@@ -83,6 +94,9 @@ split reference 仍可保留给 research-only tooling，
 - old NATSpeech/PortaSpeech surface 明确标成 legacy
 - factorized report 改成显式开启
 - inference metadata 在 mainline batch runner 中落盘
+- decoder adapter 对 zero / 无效分支已做 hard no-op
+- local style owner 存在时，late-stage 默认跳过 `global_style_summary` 重复注入
+- dynamic timbre 已增加 runtime hard budget
 
 ## 7. Remaining gaps
 

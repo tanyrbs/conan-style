@@ -59,6 +59,12 @@ Updated: 2026-04-01
 - `timing_writeback_allowed: false`
 - `dynamic_timbre` 的角色是 style realization enhancer，不是独立主控制通道
 
+补充解释：
+
+- 当前 mainline 是 **single-reference weak internal factorization**
+- `mainline_owner` 只是 metadata；真正 owner hierarchy 以
+  `global_timbre_anchor -> M_style -> bounded M_timbre` 为准
+
 ## 4. 本阶段已经落实的事
 
 - canonical inference config 已单独落到 `egs/conan_mainline_infer.yaml`
@@ -71,6 +77,12 @@ Updated: 2026-04-01
 - `set_hparams()` 已允许 config 中的 `work_dir` 在无 `exp_name` 时保留，不再被清空
 - style / timbre query 已拆开，不再共同吃 `content + condition + anchor`
 - dynamic timbre 的 style conditioning 已改成 owner-aware：`LayerNorm + stopgrad`
+- decoder adapter 已加 hard no-op 语义：
+  - zero / effectively-zero branch 不再继续 projector → gate → residual
+- decoder late stage 已收口：
+  - 有本地 style owner 时，`global_style_summary` 只保留 coarse prior，不再重复 late 注入
+- `M_timbre` 已补 runtime hard budget：
+  - 相对 `M_style` 的局部上限在运行时也会生效，而不只依赖训练正则
 - control loss 已补成更接近 owner/stage 的版本：
   - local mask-aware dynamic timbre budget
   - boundary penalty
@@ -116,9 +128,23 @@ Updated: 2026-04-01
 
 - `dynamic_timbre_style_context = LN(M_style_fast + 0.5 * M_style_slow + coarse_style_prior)`
 - 默认 `stopgrad`
+- decoder/runtime 侧再加一层 `style-budget cap`
 - 语义上是：
   - `M_style` owns
   - `M_timbre` follows and enhances
+
+### Contract 语义
+
+主线 contract 仍然明确是：
+
+- `collapsed_reference`
+- `factorization_guaranteed = false`
+- `factorization_semantics = single_reference_weak_internal_factorization`
+
+也就是：
+
+- **主线不是严格 factorized 多参考控制系统**
+- 而是 **单参考 + 内部弱分解 + owner-hardened decoder-side realization**
 
 ### Streaming 语义
 

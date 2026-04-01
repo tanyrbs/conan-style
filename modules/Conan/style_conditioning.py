@@ -18,6 +18,7 @@ from modules.Conan.reference_cache import (
 )
 from modules.Conan.dynamic_timbre_control import (
     apply_boundary_suppression_to_gate,
+    apply_runtime_budget_to_dynamic_timbre,
     build_dynamic_timbre_boundary_mask,
     recenter_dynamic_timbre_to_anchor,
     resolve_dynamic_timbre_control,
@@ -57,6 +58,27 @@ class ConanStyleConditioningMixin:
         valid_mask = (~mask[:, 1:].bool()).float()
         denom = valid_mask.sum().clamp_min(1.0)
         return (delta * valid_mask).sum() / denom
+
+    @staticmethod
+    def _apply_dynamic_timbre_runtime_budget(
+        aligned,
+        *,
+        style_residual=None,
+        slow_style_residual=None,
+        padding_mask=None,
+        budget_ratio=0.75,
+        budget_margin=0.02,
+        slow_style_weight=1.0,
+    ):
+        return apply_runtime_budget_to_dynamic_timbre(
+            aligned,
+            style_residual=style_residual,
+            slow_style_residual=slow_style_residual,
+            padding_mask=padding_mask,
+            budget_ratio=budget_ratio,
+            budget_margin=budget_margin,
+            slow_style_weight=slow_style_weight,
+        )
 
     def _resolve_pool_size(self, primary_key, default, fallback_key=None):
         value = self._get_hparam(primary_key, None)

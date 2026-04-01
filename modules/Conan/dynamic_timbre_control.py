@@ -173,9 +173,66 @@ def apply_boundary_suppression_to_gate(
     return gate * boundary_scale, boundary_scale
 
 
+def apply_runtime_budget_to_dynamic_timbre(
+    aligned: Optional[torch.Tensor],
+    *,
+    style_residual: Optional[torch.Tensor] = None,
+    slow_style_residual: Optional[torch.Tensor] = None,
+    padding_mask: Optional[torch.Tensor] = None,
+    budget_ratio: float = 0.75,
+    budget_margin: float = 0.02,
+    slow_style_weight: float = 1.0,
+):
+    if not isinstance(aligned, torch.Tensor):
+        return aligned, {"applied": False, "skip_reason": "missing_aligned"}
+
+    style_energy = None
+    if isinstance(style_residual, torch.Tensor):
+        style_energy = style_residual.detach().abs().mean(dim=-1)
+    if isinstance(slow_style_residual, torch.Tensor):
+        slow_energy = slow_style_residual.detach().abs().mean(dim=-1)
+        style_energy = slow_style_weight * slow_energy if style_energy is None else (style_energy + slow_style_weight * slow_energy)
+    if style_energy is None:
+        return aligned, {"applied": False, "skip_reason": "style_owner_missing"}
+
+    timbre_energy = aligned.abs().mean(dim=-1)
+    allowed_energy = float(budget_ratio) * style_energy + float(budget_margin)
+    denom = timbre_energy.clamp_min(1e-6)
+    budget_scale = torch.minimum(torch.ones_like(timbre_energy), allowed_energy / denom)
+    over_budget = timbre_energy > allowed_energy
+
+    if isinstance(padding_mask, torch.Tensor):
+        if padding_mask.dim() == 3 and padding_mask.size(-1) == 1:
+            padding_mask = padding_mask.squeeze(-1)
+        if padding_mask.dim() == 2 and tuple(padding_mask.shape) == tuple(timbre_energy.shape):
+            valid = (~padding_mask.bool()).to(timbre_energy.dtype)
+            budget_scale = budget_scale * valid + (1.0 - valid)
+            over_budget = over_budget & valid.bool()
+
+    controlled = aligned * budget_scale.unsqueeze(-1)
+    if isinstance(padding_mask, torch.Tensor):
+        if padding_mask.dim() == 3 and padding_mask.size(-1) == 1:
+            padding_mask = padding_mask.squeeze(-1)
+        if padding_mask.dim() == 2 and tuple(padding_mask.shape) == tuple(timbre_energy.shape):
+            controlled = controlled.masked_fill(padding_mask.unsqueeze(-1).bool(), 0.0)
+
+    metadata = {
+        "applied": bool(over_budget.any().item()),
+        "skip_reason": None,
+        "budget_scale": budget_scale,
+        "timbre_energy": timbre_energy,
+        "style_energy": style_energy,
+        "allowed_energy": allowed_energy,
+        "over_budget_mask": over_budget,
+        "active_fraction": over_budget.float().mean(),
+    }
+    return controlled, metadata
+
+
 __all__ = [
     "DynamicTimbreControlConfig",
     "apply_boundary_suppression_to_gate",
+    "apply_runtime_budget_to_dynamic_timbre",
     "build_dynamic_timbre_boundary_mask",
     "recenter_dynamic_timbre_to_anchor",
     "resolve_dynamic_timbre_control",

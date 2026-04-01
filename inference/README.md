@@ -23,6 +23,13 @@ In other words:
 
 > single reference -> stable identity -> stronger style -> bounded material enhancement
 
+More precisely:
+
+- the shipped mainline contract is `collapsed_reference` only
+- the internal style/timbre split is **weak internal factorization on a single reference**
+- `reference_contract.factorization_guaranteed = false` is expected on the mainline path
+- low-level split-reference compatibility paths still exist for research/ablation, but they do **not** define the Conan mainline contract
+
 Internally the mainline now hardens that hierarchy as:
 
 - `global_timbre_anchor`: identity owner

@@ -234,6 +234,14 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                     "decoder_dynamic_timbre_late_no_style_scale",
                     0.25,
                 ),
+                skip_global_style_when_local_style_present=hparams.get(
+                    "decoder_skip_global_style_when_local_style_present",
+                    True,
+                ),
+                effective_signal_epsilon=hparams.get(
+                    "decoder_style_adapter_effective_signal_epsilon",
+                    1e-8,
+                ),
                 gate_bias=hparams.get("decoder_style_adapter_gate_bias", -1.0),
             )
         else:
@@ -454,7 +462,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         dynamic_timbre_coarse_style_context_scale = float(
             kwargs.get(
                 "dynamic_timbre_coarse_style_context_scale",
-                self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.25),
+                self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.10),
             )
         )
         dynamic_timbre_style_context = style_decoder_residual + 0.5 * slow_style_decoder_residual
@@ -503,6 +511,14 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 anchor_preserve_strength=style_mainline.dynamic_timbre_anchor_preserve_strength,
             )
             dynamic_timbre_decoder_residual = dynamic_timbre * dynamic_timbre_strength
+            dynamic_timbre_decoder_residual = self._apply_runtime_dynamic_timbre_budget(
+                dynamic_timbre_decoder_residual,
+                style_decoder_residual=style_decoder_residual,
+                slow_style_decoder_residual=slow_style_decoder_residual,
+                content=content,
+                kwargs=kwargs,
+                ret=ret,
+            )
             dynamic_timbre_available = True
             dynamic_timbre_source = "reference_cache" if has_cached_timbre else "reference_audio"
         if self.use_dynamic_timbre and not style_mainline.apply_dynamic_timbre:
@@ -525,13 +541,13 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 "global_style_summary_source",
                 ret.get("style_trace_source_runtime", "reference_cache"),
             ),
-            slow_style_trace=slow_style_decoder_residual,
+            slow_style_trace=self._maybe_decoder_sequence(slow_style_decoder_residual),
             slow_style_trace_mask=ret.get("slow_style_trace_mask", ret.get("style_trace_mask")),
             slow_style_source=ret.get("slow_style_trace_source_runtime", ret.get("style_trace_source_runtime", "none")),
-            M_style=style_decoder_residual,
+            M_style=self._maybe_decoder_sequence(style_decoder_residual),
             M_style_mask=ret.get("style_trace_mask"),
             M_style_source=ret.get("style_trace_source_runtime", style_trace_source),
-            M_timbre=dynamic_timbre_decoder_residual,
+            M_timbre=self._maybe_decoder_sequence(dynamic_timbre_decoder_residual),
             M_timbre_mask=ret.get("dynamic_timbre_mask"),
             M_timbre_source=dynamic_timbre_source,
             factorization_guaranteed=bool(
@@ -611,6 +627,98 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             device=device if device is not None else expanded.device,
             dtype=dtype if dtype is not None else expanded.dtype,
         )
+
+    @staticmethod
+    def _maybe_decoder_sequence(sequence, eps: float = 1e-8):
+        if not isinstance(sequence, torch.Tensor):
+            return None
+        if sequence.dim() != 3 or sequence.size(1) <= 0:
+            return None
+        max_abs = sequence.detach().abs().amax()
+        if not torch.isfinite(max_abs) or max_abs.item() <= float(eps):
+            return None
+        return sequence
+
+    def _apply_runtime_dynamic_timbre_budget(
+        self,
+        dynamic_timbre_decoder_residual,
+        *,
+        style_decoder_residual,
+        slow_style_decoder_residual=None,
+        content=None,
+        kwargs=None,
+        ret=None,
+    ):
+        kwargs = kwargs or {}
+        enabled = bool(
+            kwargs.get(
+                "runtime_dynamic_timbre_style_budget_enabled",
+                self.hparams.get("runtime_dynamic_timbre_style_budget_enabled", True),
+            )
+        )
+        if not isinstance(dynamic_timbre_decoder_residual, torch.Tensor):
+            return dynamic_timbre_decoder_residual
+
+        if ret is not None:
+            ret["runtime_dynamic_timbre_style_budget_enabled"] = enabled
+        if not enabled:
+            return dynamic_timbre_decoder_residual
+
+        ratio = float(
+            kwargs.get(
+                "runtime_dynamic_timbre_style_budget_ratio",
+                self.hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.90),
+            )
+        )
+        margin = float(
+            kwargs.get(
+                "runtime_dynamic_timbre_style_budget_margin",
+                self.hparams.get("runtime_dynamic_timbre_style_budget_margin", 0.04),
+            )
+        )
+        slow_style_weight = float(
+            kwargs.get(
+                "runtime_dynamic_timbre_style_budget_slow_style_weight",
+                self.hparams.get("runtime_dynamic_timbre_style_budget_slow_style_weight", 1.0),
+            )
+        )
+        content_padding_mask = None
+        if isinstance(content, torch.Tensor) and content.dim() == 2:
+            content_padding_mask = content.eq(self.content_padding_idx).unsqueeze(-1)
+
+        bounded, budget_meta = self._apply_dynamic_timbre_runtime_budget(
+            dynamic_timbre_decoder_residual,
+            style_residual=style_decoder_residual,
+            slow_style_residual=slow_style_decoder_residual,
+            padding_mask=content_padding_mask,
+            budget_ratio=ratio,
+            budget_margin=margin,
+            slow_style_weight=slow_style_weight,
+        )
+        if ret is not None:
+            ret["runtime_dynamic_timbre_style_budget_ratio"] = float(ratio)
+            ret["runtime_dynamic_timbre_style_budget_margin"] = float(margin)
+            if isinstance(budget_meta, dict):
+                if isinstance(budget_meta.get("allowed_energy"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_style_budget_cap"] = budget_meta["allowed_energy"]
+                if isinstance(budget_meta.get("style_energy"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_style_energy"] = budget_meta["style_energy"]
+                if isinstance(budget_meta.get("timbre_energy"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_dynamic_energy"] = budget_meta["timbre_energy"]
+                ret["runtime_dynamic_timbre_style_budget_skip_reason"] = budget_meta.get("skip_reason")
+                ret["runtime_dynamic_timbre_style_budget_applied"] = bool(
+                    budget_meta.get("applied", False)
+                )
+                clip_frac = budget_meta.get("active_fraction")
+                if isinstance(clip_frac, torch.Tensor):
+                    ret["runtime_dynamic_timbre_style_budget_clip_frac"] = clip_frac
+                else:
+                    ret["runtime_dynamic_timbre_style_budget_clip_frac"] = torch.tensor(
+                        float(bool(budget_meta.get("applied", False))),
+                        device=dynamic_timbre_decoder_residual.device,
+                        dtype=dynamic_timbre_decoder_residual.dtype,
+                    )
+        return bounded
 
     def forward_pitch(self, decoder_inp, f0, uv, ret, **kwargs):  # add **kwargs
         pitch_pred_inp = decoder_inp

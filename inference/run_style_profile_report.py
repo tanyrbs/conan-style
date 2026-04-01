@@ -11,9 +11,31 @@ from inference.profile_sweep_evaluator import StyleProfileSweepEvaluator
 from inference.profile_sweep_report import StyleProfileSweepReporter
 from utils.commons.hparams import hparams, set_hparams
 
+CANONICAL_CONFIG = "egs/conan_mainline_infer.yaml"
+CANONICAL_EXP_NAME = "Conan"
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate HTML/Markdown report for style profile sweeps.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=CANONICAL_CONFIG,
+        help="Acoustic config yaml passed through to set_hparams(). Defaults to the canonical Conan mainline infer config.",
+    )
+    parser.add_argument(
+        "--exp_name",
+        type=str,
+        default=CANONICAL_EXP_NAME,
+        help="Checkpoint experiment name passed through to set_hparams(). Defaults to the canonical Conan checkpoint.",
+    )
+    parser.add_argument(
+        "-hp",
+        "--hparams",
+        type=str,
+        default="",
+        help="Optional hparams override string passed through to set_hparams().",
+    )
     parser.add_argument(
         "--sweep_dir",
         type=str,
@@ -36,7 +58,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    set_hparams()
+    set_hparams(config=args.config, exp_name=args.exp_name, hparams_str=args.hparams)
     sweep_dir = Path(args.sweep_dir)
     if args.auto_evaluate and not (sweep_dir / "evaluation_summary.json").exists():
         evaluator = StyleProfileSweepEvaluator(

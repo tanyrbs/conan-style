@@ -24,7 +24,7 @@ from utils.commons.hparams import hparams
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run pseudo-style training smoke for Conan.")
-    parser.add_argument("--config", type=str, default="egs/conan_emformer.yaml")
+    parser.add_argument("--config", type=str, default="egs/conan_mainline_infer.yaml")
     parser.add_argument("--binary_data_dir", type=str, required=True)
     parser.add_argument("--num_steps", type=int, default=3)
     parser.add_argument("--speakers_per_batch", type=int, default=2)

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import time
+import warnings
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,17 @@ SPLIT_REFERENCE_KEYS = (
     "ref_accent_wav",
 )
 
+ADVANCED_CONTROL_KEYS = (
+    "emotion",
+    "emotion_id",
+    "emotion_strength",
+    "accent",
+    "accent_id",
+    "accent_strength",
+    "arousal",
+    "valence",
+    "energy",
+)
 
 def slugify_filename(text, default="case"):
     text = str(text or "").strip()
@@ -61,12 +73,24 @@ def merge_dict(base, update):
 
 
 class StyleProfileSweepRunner:
-    def __init__(self, hparams, sweep_config, *, output_dir=None, engine=None):
+    def __init__(
+        self,
+        hparams,
+        sweep_config,
+        *,
+        output_dir=None,
+        engine=None,
+        allow_advanced_controls=False,
+        allow_split_reference_inputs=False,
+    ):
         self.hparams = hparams
         self.config = load_sweep_config(sweep_config)
         self.output_dir = Path(output_dir or self.config.get("output_dir", self._default_output_dir()))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.engine = engine if engine is not None else self._build_engine()
+        self._advanced_control_warning_emitted = False
+        self.allow_advanced_controls = bool(allow_advanced_controls)
+        self.allow_split_reference_inputs = bool(allow_split_reference_inputs)
 
     def _build_engine(self):
         from inference.Conan import StreamingVoiceConversion
@@ -109,9 +133,32 @@ class StyleProfileSweepRunner:
             case.get("profile_overrides", {}).get(profile_name, {}),
         )
         base_input = merge_dict(base_input, profile_overrides)
+        allow_advanced_controls = bool(
+            base_input.get("allow_advanced_controls", self.allow_advanced_controls)
+        )
+        if not allow_advanced_controls:
+            ignored_advanced_keys = [key for key in ADVANCED_CONTROL_KEYS if base_input.get(key) is not None]
+            if ignored_advanced_keys and not self._advanced_control_warning_emitted:
+                warnings.warn(
+                    "Ignoring advanced non-mainline control keys in style_profile_sweep.py: "
+                    f"{ignored_advanced_keys}. Set allow_advanced_controls=true only for "
+                    "explicit research/ablation sweeps.",
+                    stacklevel=2,
+                )
+                self._advanced_control_warning_emitted = True
+            for key in ignored_advanced_keys:
+                base_input.pop(key, None)
         ref_wav = base_input.get("ref_wav")
-        if any(base_input.get(key) not in (None, "", ref_wav) for key in SPLIT_REFERENCE_KEYS):
-            base_input.setdefault("allow_split_reference_inputs", True)
+        has_distinct_split_refs = any(
+            base_input.get(key) not in (None, "", ref_wav) for key in SPLIT_REFERENCE_KEYS
+        )
+        if has_distinct_split_refs and not self.allow_split_reference_inputs:
+            raise ValueError(
+                "StyleProfileSweepRunner is the canonical single-reference Conan sweep surface "
+                "and does not accept split reference inputs. Use only ref_wav on the mainline path."
+            )
+        if has_distinct_split_refs:
+            base_input["allow_split_reference_inputs"] = True
         base_input["style_profile"] = profile_name
         return base_input
 

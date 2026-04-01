@@ -1,0 +1,16 @@
+# Canonical Conan single-reference strong-style inference config.
+# This is the only repo-shipped mainline inference config that is expected to
+# run against the checked-in Conan / Emformer / HiFi-GAN checkpoints.
+base_config:
+- egs/conan_emformer.yaml
+work_dir: checkpoints/Conan
+binary_data_dir: data/binary/libritts_single
+processed_data_dir: data/processed/libritts_single
+emformer_ckpt: checkpoints/Emformer
+vocoder_ckpt: checkpoints/hifigan_vc
+nVQ: 128
+use_dynamic_timbre: true
+reference_contract_mode: collapsed_reference
+global_timbre_to_pitch: false
+style_profile: strong_style
+allow_split_reference_inputs: false

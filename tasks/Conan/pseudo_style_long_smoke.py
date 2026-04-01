@@ -42,7 +42,7 @@ DEFAULT_TRACKED_KEYS = (
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run longer pseudo-style smoke with checkpoint resume validation.")
-    parser.add_argument("--config", type=str, default="egs/conan_emformer.yaml")
+    parser.add_argument("--config", type=str, default="egs/conan_mainline_infer.yaml")
     parser.add_argument(
         "--binary_data_dir",
         type=str,

@@ -1,8 +1,12 @@
-title: 'NATSpeech/PortaSpeech'
+title: 'Legacy NATSpeech/PortaSpeech TTS Demo (Not Conan Mainline)'
 description: |
-  Gradio demo for NATSpeech/PortaSpeech. To use it, simply add your audio, or click one of the examples to load them. Note: This space is running on CPU, inference times will be higher.
+  Legacy NATSpeech/PortaSpeech text-to-speech demo.
+  This page is kept only for backward compatibility and is not part of the Conan
+  single-reference strong-style mainline. For Conan, use:
+    python inference/run_conan_gradio_demo.py
 article: |
-  Link to <a href='https://github.com/NATSpeech/NATSpeech/blob/main/docs/portaspeech.md' style='color:blue;' target='_blank\'>Github REPO</a>
+  Legacy reference:
+  <a href='https://github.com/NATSpeech/NATSpeech/blob/main/docs/portaspeech.md' style='color:blue;' target='_blank\'>NATSpeech / PortaSpeech documentation</a>
 example_inputs:
   - |-
     the invention of movable metal letters in the middle of the fifteenth century may justly be considered as the invention of the art of printing.

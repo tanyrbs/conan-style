@@ -22,6 +22,38 @@ def override_config(old_config: dict, new_config: dict):
             old_config[k] = v
 
 
+def load_config_recursive(config_fn, loaded_config=None, config_chains=None):
+    # deep first inheritance and avoid the second visit of one node
+    if not config_fn or not os.path.exists(config_fn):
+        return {}
+    config_fn = os.path.normpath(config_fn)
+    if loaded_config is None:
+        loaded_config = set()
+    if config_chains is None:
+        config_chains = []
+    if config_fn in loaded_config:
+        return {}
+    with open(config_fn, encoding='utf-8') as f:
+        hparams_ = yaml.safe_load(f) or {}
+    loaded_config.add(config_fn)
+    if 'base_config' in hparams_:
+        ret_hparams = {}
+        if not isinstance(hparams_['base_config'], list):
+            hparams_['base_config'] = [hparams_['base_config']]
+        for c in hparams_['base_config']:
+            if c.startswith('.'):
+                c = f'{os.path.dirname(config_fn)}/{c}'
+                c = os.path.normpath(c)
+            if c not in loaded_config:
+                override_config(ret_hparams, load_config_recursive(
+                    c, loaded_config=loaded_config, config_chains=config_chains))
+        override_config(ret_hparams, hparams_)
+    else:
+        ret_hparams = hparams_
+    config_chains.append(config_fn)
+    return ret_hparams
+
+
 def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, global_hparams=True):
     if config == '' and exp_name == '':
         parser = argparse.ArgumentParser(description='')
@@ -46,47 +78,27 @@ def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, glob
         assert os.path.exists(args.config)
 
     config_chains = []
-    loaded_config = set()
-
-    def load_config(config_fn):
-        # deep first inheritance and avoid the second visit of one node
-        if not os.path.exists(config_fn):
-            return {}
-        with open(config_fn) as f:
-            hparams_ = yaml.safe_load(f)
-        loaded_config.add(config_fn)
-        if 'base_config' in hparams_:
-            ret_hparams = {}
-            if not isinstance(hparams_['base_config'], list):
-                hparams_['base_config'] = [hparams_['base_config']]
-            for c in hparams_['base_config']:
-                if c.startswith('.'):
-                    c = f'{os.path.dirname(config_fn)}/{c}'
-                    c = os.path.normpath(c)
-                if c not in loaded_config:
-                    override_config(ret_hparams, load_config(c))
-            override_config(ret_hparams, hparams_)
-        else:
-            ret_hparams = hparams_
-        config_chains.append(config_fn)
-        return ret_hparams
-
     saved_hparams = {}
     args_work_dir = ''
+    ckpt_config_path = ''
     if args.exp_name != '':
         args_work_dir = f'checkpoints/{args.exp_name}'
         ckpt_config_path = f'{args_work_dir}/config.yaml'
         if os.path.exists(ckpt_config_path):
-            with open(ckpt_config_path) as f:
-                saved_hparams_ = yaml.safe_load(f)
-                if saved_hparams_ is not None:
-                    saved_hparams.update(saved_hparams_)
+            saved_hparams_ = load_config_recursive(
+                ckpt_config_path, loaded_config=set(), config_chains=config_chains)
+            if saved_hparams_ is not None:
+                saved_hparams.update(saved_hparams_)
     hparams_ = {}
-    if args.config != '':
-        hparams_.update(load_config(args.config))
     if not args.reset:
-        hparams_.update(saved_hparams)
-    hparams_['work_dir'] = args_work_dir
+        override_config(hparams_, saved_hparams)
+    if args.config != '':
+        override_config(hparams_, load_config_recursive(
+            args.config, loaded_config=set(), config_chains=config_chains))
+    if args_work_dir != '':
+        hparams_['work_dir'] = args_work_dir
+    else:
+        hparams_.setdefault('work_dir', '')
 
     # Support config overriding in command line. Support list type config overriding.
     # Examples: --hparams="a=1,b.c=2,d=[1 1 1]"

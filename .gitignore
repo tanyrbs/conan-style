@@ -52,9 +52,12 @@ data/processed/
 !data/.gitkeep
 
 # Training checkpoints, code snapshots, TB logs (keep placeholder)
-checkpoints/
+checkpoints/*
 !checkpoints/README.md
 !checkpoints/.gitkeep
+!checkpoints/Conan/
+checkpoints/Conan/**
+!checkpoints/Conan/config.yaml
 
 # Inference outputs / demos
 infer_out/

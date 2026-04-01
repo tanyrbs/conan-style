@@ -51,11 +51,39 @@ class StreamingVoiceConversion:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.streaming_impl = "emformer_stateful_prefix_recompute"
         self.last_infer_metadata = {}
+        self._validate_runtime_layout()
         self.condition_maps = self._load_condition_maps()
         self.model = self._build_model()
         self.vocoder = self._build_vocoder()
         self.emformer = self._build_emformer()
         self._vocoder_warm_zero()
+
+    def _validate_runtime_layout(self):
+        required_paths = {
+            "work_dir": self.hparams.get("work_dir"),
+            "emformer_ckpt": self.hparams.get("emformer_ckpt"),
+            "vocoder_ckpt": self.hparams.get("vocoder_ckpt"),
+        }
+        missing = [
+            f"{name}={path}"
+            for name, path in required_paths.items()
+            if not path or not os.path.exists(str(path))
+        ]
+        if missing:
+            raise FileNotFoundError(
+                "Conan inference layout is incomplete. Missing required path(s): "
+                + ", ".join(missing)
+            )
+        optional_dirs = [
+            self.hparams.get("binary_data_dir"),
+            self.hparams.get("processed_data_dir"),
+        ]
+        if not any(path and os.path.exists(str(path)) for path in optional_dirs):
+            warnings.warn(
+                "Neither binary_data_dir nor processed_data_dir exists. "
+                "Condition-label vocab lookup will be unavailable for inference.",
+                stacklevel=2,
+            )
 
     def _build_model(self):
         m = Conan(0, self.hparams)
@@ -154,44 +182,56 @@ class StreamingVoiceConversion:
                 "the inference path will collapse them back to ref_wav.",
                 stacklevel=2,
             )
+        ref_mel = torch.from_numpy(self._wav_to_mel(ref_wav)).float().unsqueeze(0).to(self.device)
         if split_reference_inputs:
             ref_timbre_wav = inp.get("ref_timbre_wav", ref_wav)
             ref_style_wav = inp.get("ref_style_wav", ref_wav)
             ref_dynamic_timbre_wav = inp.get("ref_dynamic_timbre_wav", ref_style_wav)
             ref_emotion_wav = inp.get("ref_emotion_wav", ref_style_wav)
             ref_accent_wav = inp.get("ref_accent_wav", ref_style_wav)
+            bundle = build_reference_bundle_from_inputs(
+                ref=ref_mel,
+                ref_timbre=torch.from_numpy(
+                    self._wav_to_mel(ref_timbre_wav)
+                ).float().unsqueeze(0).to(self.device),
+                ref_style=torch.from_numpy(
+                    self._wav_to_mel(ref_style_wav)
+                ).float().unsqueeze(0).to(self.device),
+                ref_dynamic_timbre=torch.from_numpy(
+                    self._wav_to_mel(ref_dynamic_timbre_wav)
+                ).float().unsqueeze(0).to(self.device),
+                ref_emotion=torch.from_numpy(
+                    self._wav_to_mel(ref_emotion_wav)
+                ).float().unsqueeze(0).to(self.device),
+                ref_accent=torch.from_numpy(
+                    self._wav_to_mel(ref_accent_wav)
+                ).float().unsqueeze(0).to(self.device),
+                prompt_fallback_to_style=bool(
+                    inp.get(
+                        "prompt_ref_fallback_to_style",
+                        self.hparams.get("prompt_ref_fallback_to_style", True),
+                    )
+                ),
+                reference_contract_mode=inp.get(
+                    "reference_contract_mode",
+                    self.hparams.get("reference_contract_mode", "collapsed_reference"),
+                ),
+            )
         else:
-            ref_timbre_wav = ref_wav
-            ref_style_wav = ref_wav
-            ref_dynamic_timbre_wav = ref_wav
-            ref_emotion_wav = ref_wav
-            ref_accent_wav = ref_wav
-        return build_reference_bundle_from_inputs(
-            ref=torch.from_numpy(self._wav_to_mel(ref_wav)).float().unsqueeze(0).to(self.device),
-            ref_timbre=torch.from_numpy(
-                self._wav_to_mel(ref_timbre_wav)
-            ).float().unsqueeze(0).to(self.device),
-            ref_style=torch.from_numpy(self._wav_to_mel(ref_style_wav)).float().unsqueeze(0).to(self.device),
-            ref_dynamic_timbre=torch.from_numpy(
-                self._wav_to_mel(ref_dynamic_timbre_wav)
-            ).float().unsqueeze(0).to(self.device),
-            ref_emotion=torch.from_numpy(
-                self._wav_to_mel(ref_emotion_wav)
-            ).float().unsqueeze(0).to(self.device),
-            ref_accent=torch.from_numpy(
-                self._wav_to_mel(ref_accent_wav)
-            ).float().unsqueeze(0).to(self.device),
-            prompt_fallback_to_style=bool(
-                inp.get(
-                    "prompt_ref_fallback_to_style",
-                    self.hparams.get("prompt_ref_fallback_to_style", True),
-                )
-            ),
-            reference_contract_mode=inp.get(
-                "reference_contract_mode",
-                self.hparams.get("reference_contract_mode", "collapsed_reference"),
-            ),
-        ), {
+            bundle = build_reference_bundle_from_inputs(
+                ref=ref_mel,
+                prompt_fallback_to_style=bool(
+                    inp.get(
+                        "prompt_ref_fallback_to_style",
+                        self.hparams.get("prompt_ref_fallback_to_style", True),
+                    )
+                ),
+                reference_contract_mode=inp.get(
+                    "reference_contract_mode",
+                    self.hparams.get("reference_contract_mode", "collapsed_reference"),
+                ),
+            )
+        return bundle, {
             "split_reference_inputs": bool(split_reference_inputs),
             "has_distinct_split_refs": bool(has_distinct_split_refs),
             "collapsed_split_refs": bool(has_distinct_split_refs and not split_reference_inputs),
@@ -228,7 +268,7 @@ class StreamingVoiceConversion:
         return {
             "decoder_style_condition_mode": style_profile.get(
                 "decoder_style_condition_mode",
-                self.hparams.get("decoder_style_condition_mode", "legacy_full"),
+                self.hparams.get("decoder_style_condition_mode", "mainline_full"),
             ),
             "global_timbre_to_pitch": bool(
                 style_profile.get(

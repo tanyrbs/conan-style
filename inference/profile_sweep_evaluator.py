@@ -174,9 +174,6 @@ class ModelFeatureCache:
             mel = self._wav_to_mel_tensor(wav_path)
             bundle = build_reference_bundle_from_inputs(
                 ref=mel,
-                ref_timbre=mel,
-                ref_style=mel,
-                ref_dynamic_timbre=mel,
                 prompt_fallback_to_style=True,
             )
             with torch.no_grad():
@@ -245,6 +242,7 @@ def evaluate_audio_against_reference(gen_audio, ref_audio, prefix):
 PROFILE_META_KEYS = (
     "swap_matrix_group",
     "swap_variant",
+    "factorized_references_requested",
     "reference_contract_mode",
     "src_speaker",
     "timbre_speaker",
@@ -264,11 +262,13 @@ class StyleProfileSweepEvaluator:
         use_external_metrics=False,
         enable_external_speaker=True,
         enable_external_content=False,
+        include_research_metadata=False,
     ):
         self.hparams = hparams
         self.sweep_dir = Path(sweep_dir)
         self.engine = engine
         self.use_model_metrics = bool(use_model_metrics)
+        self.include_research_metadata = bool(include_research_metadata)
         self.audio_cache = AudioFeatureCache(hparams)
         self.model_cache = ModelFeatureCache(engine) if engine is not None and self.use_model_metrics else None
         self.external_metrics = (
@@ -393,18 +393,25 @@ class StyleProfileSweepEvaluator:
                 "ref_wav": str(ref_path),
                 "style_profile": meta.get("style_profile", entry["profile"]),
                 "elapsed_sec": entry.get("elapsed_sec"),
-                "swap_matrix_group": model_input.get("swap_matrix_group"),
-                "swap_variant": model_input.get("swap_variant"),
-                "ref_timbre_wav": model_input.get("ref_timbre_wav"),
-                "ref_style_wav": model_input.get("ref_style_wav"),
-                "ref_dynamic_timbre_wav": model_input.get("ref_dynamic_timbre_wav"),
             }
         )
-        for key in PROFILE_META_KEYS:
-            if key not in metrics:
-                metrics[key] = model_input.get(key)
+        if self.include_research_metadata:
+            metrics.update(
+                {
+                    "swap_matrix_group": model_input.get("swap_matrix_group"),
+                    "swap_variant": model_input.get("swap_variant"),
+                    "factorized_references_requested": model_input.get("factorized_references_requested"),
+                    "ref_timbre_wav": model_input.get("ref_timbre_wav"),
+                    "ref_style_wav": model_input.get("ref_style_wav"),
+                    "ref_dynamic_timbre_wav": model_input.get("ref_dynamic_timbre_wav"),
+                }
+            )
+            for key in PROFILE_META_KEYS:
+                if key not in metrics:
+                    metrics[key] = model_input.get(key)
         metrics.update(self._evaluate_model_metrics(gen_path, src_path, ref_path))
-        metrics.update(self._evaluate_explicit_reference_metrics(gen_path, model_input))
+        if self.include_research_metadata:
+            metrics.update(self._evaluate_explicit_reference_metrics(gen_path, model_input))
         return metrics
 
     def evaluate_all(self):

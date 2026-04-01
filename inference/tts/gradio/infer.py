@@ -1,9 +1,10 @@
 import importlib
 import re
+import warnings
+from pathlib import Path
 
 import gradio as gr
 import yaml
-from gradio.inputs import Textbox
 
 from inference.tts.base_tts_infer import BaseTTSInfer
 from utils.commons.hparams import set_hparams
@@ -49,21 +50,30 @@ class GradioInfer:
         set_hparams(exp_name=self.exp_name)
         infer_cls = self.inference_cls
         self.infer_ins: BaseTTSInfer = infer_cls(hp)
+        warnings.warn(
+            "inference/tts/gradio is a legacy NATSpeech/PortaSpeech surface and is not part of the "
+            "Conan mainline. Use inference/run_conan_gradio_demo.py for the Conan single-reference demo.",
+            stacklevel=2,
+        )
         example_inputs = self.example_inputs
-        iface = gr.Interface(fn=self.greet,
-                             inputs=Textbox(
-                                 lines=10, placeholder=None, default=example_inputs[0], label="input text"),
-                             outputs="audio",
-                             allow_flagging="never",
-                             title=self.title,
-                             description=self.description,
-                             article=self.article,
-                             examples=example_inputs,
-                             enable_queue=True)
-        iface.launch(share=True,cache_examples=True)
+        iface = gr.Interface(
+            fn=self.greet,
+            inputs=gr.Textbox(lines=10, value=example_inputs[0], label="input text"),
+            outputs=gr.Audio(),
+            title=self.title,
+            description=self.description,
+            article=self.article,
+            examples=example_inputs,
+        )
+        iface.queue().launch(share=True)
 
 
 if __name__ == '__main__':
-    gradio_config = yaml.safe_load(open('inference/tts/gradio/gradio_settings.yaml'))
+    print(
+        "Launching legacy NATSpeech/PortaSpeech TTS Gradio surface. "
+        "Conan mainline users should run `python inference/run_conan_gradio_demo.py`."
+    )
+    config_path = Path(__file__).with_name("gradio_settings.yaml")
+    gradio_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     g = GradioInfer(**gradio_config)
     g.run()

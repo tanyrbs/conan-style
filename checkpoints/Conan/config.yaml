@@ -1,0 +1,5 @@
+# Canonical Conan checkpoint overlay.
+# The actual runnable inference defaults live in egs/conan_mainline_infer.yaml.
+base_config:
+- egs/conan_mainline_infer.yaml
+work_dir: checkpoints/Conan

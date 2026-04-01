@@ -10,6 +10,10 @@ if str(ROOT_DIR) not in sys.path:
 from inference.style_profile_sweep import StyleProfileSweepRunner
 from utils.commons.hparams import hparams, set_hparams
 
+CANONICAL_CONFIG = "egs/conan_mainline_infer.yaml"
+CANONICAL_EXP_NAME = "Conan"
+DEFAULT_SWEEP_CONFIG = "inference/conan_style_profile_sweep.example.json"
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -18,14 +22,14 @@ def parse_args():
     parser.add_argument(
         "--config",
         type=str,
-        default="",
-        help="Acoustic config yaml passed through to set_hparams(). Required unless --exp_name is provided.",
+        default=CANONICAL_CONFIG,
+        help="Acoustic config yaml passed through to set_hparams(). Defaults to the canonical Conan mainline infer config.",
     )
     parser.add_argument(
         "--exp_name",
         type=str,
-        default="",
-        help="Checkpoint experiment name passed through to set_hparams().",
+        default=CANONICAL_EXP_NAME,
+        help="Checkpoint experiment name passed through to set_hparams(). Defaults to the canonical Conan checkpoint.",
     )
     parser.add_argument(
         "-hp",
@@ -37,8 +41,8 @@ def parse_args():
     parser.add_argument(
         "--sweep_config",
         type=str,
-        default="inference/style_profile_sweep.example.json",
-        help="JSON config describing cases and profiles.",
+        default=DEFAULT_SWEEP_CONFIG,
+        help="JSON config describing single-reference mainline cases and profiles.",
     )
     parser.add_argument(
         "--output_dir",

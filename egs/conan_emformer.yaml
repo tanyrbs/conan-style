@@ -1,7 +1,9 @@
+# Mainline/training base config.
+# Not the canonical repo inference entrypoint; use egs/conan_mainline_infer.yaml for runnable checked-in inference.
 base_config: egs/egs_bases/tts/fs.yaml
 task_cls: tasks.Conan.Conan.ConanTask
-binary_data_dir: 'data/binary/vc_6layer'
-processed_data_dir: 'data/processed/vc'
+binary_data_dir: 'data/binary/libritts_single'
+processed_data_dir: 'data/processed/libritts_single'
 binarizer_cls: data_gen.conan_binarizer.ConanBinarizer
 
 valid_prefixes: [
@@ -150,7 +152,7 @@ valid_plot_prob: 0.1     # Probability of triggering visualization per batch
 lambda_commit: 0.25
 vq_start: 20500
 vae_dropout: 0.0
-nVQ: 512
+nVQ: 128  # aligned to the shipped Conan checkpoint
 forcing: 20000
 crop: false
 predictor_grad: 1.0
@@ -245,7 +247,7 @@ log_control_diagnostics: true
 control_diagnostics_track_lambdas: true
 
 # Emformer-related parameters
-emformer_ckpt: checkpoints/emformer_test2
+emformer_ckpt: checkpoints/Emformer
 emformer_layers: 6
 chunk_size: 80
 right_context: 2

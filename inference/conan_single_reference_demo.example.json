@@ -1,0 +1,19 @@
+﻿{
+  "output_dir": "infer_out_mainline/demo_single_reference",
+  "conversion_pairs": [
+    {
+      "output_name": "demo_strong_style.wav",
+      "src_wav": "path/to/source.wav",
+      "ref_wav": "path/to/reference.wav",
+      "style_profile": "strong_style",
+      "style_strength": 1.0
+    },
+    {
+      "output_name": "demo_extreme.wav",
+      "src_wav": "path/to/source.wav",
+      "ref_wav": "path/to/reference.wav",
+      "style_profile": "extreme",
+      "style_strength": 1.1
+    }
+  ]
+}

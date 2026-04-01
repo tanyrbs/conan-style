@@ -34,7 +34,7 @@ EXPECTED_MODE_FLAGS = {
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Validate Conan strong-style mainline contract and query split.")
-    parser.add_argument("--config", type=str, default="egs/conan_emformer.yaml")
+    parser.add_argument("--config", type=str, default="egs/conan_mainline_infer.yaml")
     parser.add_argument(
         "--binary_data_dir",
         type=str,
@@ -44,11 +44,11 @@ def parse_args():
     parser.add_argument(
         "--modes",
         type=str,
-        default="legacy_full,mainline_full,global_style_dynamic_timbre,global_only,dynamic_timbre_only",
+        default="mainline_full",
     )
     parser.add_argument("--speakers_per_batch", type=int, default=2)
     parser.add_argument("--items_per_speaker", type=int, default=2)
-    parser.add_argument("--output_path", type=str, default="smoke_runs/style_mainline_smoke.json")
+    parser.add_argument("--output_path", type=str, default="smoke_runs/style_mainline_smoke_mainline_full.json")
     return parser.parse_args()
 
 

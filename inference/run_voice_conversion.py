@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Batch runner for the single-reference Conan inference path."""
+"""Batch runner for the canonical Conan single-reference inference path."""
 
 import argparse
 import json
 import os
 import sys
 import time
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -17,10 +18,16 @@ from inference.Conan import StreamingVoiceConversion
 from utils.audio.io import save_wav
 from utils.commons.hparams import hparams, set_hparams
 
+CANONICAL_CONFIG = "egs/conan_mainline_infer.yaml"
+CANONICAL_EXP_NAME = "Conan"
+DEFAULT_PAIR_CONFIG = "inference/conan_single_reference_demo.example.json"
 
 PUBLIC_CONTROL_KEYS = (
     "style_profile",
     "style_strength",
+)
+
+ADVANCED_CONTROL_KEYS = (
     "emotion",
     "emotion_id",
     "emotion_strength",
@@ -43,26 +50,42 @@ SPLIT_REFERENCE_KEYS = (
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Batch runner for the single-reference Conan inference path."
+        description="Batch runner for the canonical Conan single-reference inference path."
     )
-    parser.add_argument("--config", type=str, default="")
-    parser.add_argument("--exp_name", type=str, default="")
+    parser.add_argument("--config", type=str, default=CANONICAL_CONFIG)
+    parser.add_argument("--exp_name", type=str, default=CANONICAL_EXP_NAME)
     parser.add_argument("-hp", "--hparams", type=str, default="")
-    parser.add_argument("--pair_config", type=str, default="voice_conversion_config.json")
+    parser.add_argument("--pair_config", type=str, default=DEFAULT_PAIR_CONFIG)
     parser.add_argument("--output_dir", type=str, default="")
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--end_idx", type=int, default=-1)
     parser.add_argument("--batch_size", type=int, default=50)
+    parser.add_argument(
+        "--allow_advanced_controls",
+        action="store_true",
+        help="Opt-in passthrough for research-only emotion/accent/arousal/valence/energy controls.",
+    )
     return parser.parse_args()
 
 
 class VoiceConversionRunner:
-    """Run single-reference VC jobs from a JSON manifest."""
+    """Run single-reference Conan VC jobs from a JSON manifest."""
 
-    def __init__(self, config_file="voice_conversion_config.json", hparams=None, *, output_dir=None):
+    def __init__(
+        self,
+        config_file=DEFAULT_PAIR_CONFIG,
+        hparams=None,
+        *,
+        output_dir=None,
+        allow_advanced_controls=False,
+    ):
         self.config_file = config_file
         self.config = self.load_config()
         self.output_dir = self.setup_output_dir(output_dir=output_dir)
+        self.allow_advanced_controls = bool(
+            allow_advanced_controls or self.config.get("allow_advanced_controls", False)
+        )
+        self._advanced_control_warning_emitted = False
 
         print("Initializing StreamingVoiceConversion engine...")
         self.engine = StreamingVoiceConversion(hparams)
@@ -74,6 +97,11 @@ class VoiceConversionRunner:
 
         with open(self.config_file, "r", encoding="utf-8") as f:
             config = json.load(f)
+        if config.get("allow_split_reference_inputs"):
+            raise ValueError(
+                "run_voice_conversion.py is the canonical single-reference Conan runner and "
+                "does not accept allow_split_reference_inputs=true."
+            )
 
         conversion_pairs = config.get("conversion_pairs", [])
         config["total_pairs"] = int(config.get("total_pairs", len(conversion_pairs)))
@@ -92,6 +120,11 @@ class VoiceConversionRunner:
         return any(pair.get(key) not in (None, "", ref_wav) for key in SPLIT_REFERENCE_KEYS)
 
     def _build_infer_input(self, pair):
+        if pair.get("allow_split_reference_inputs") or self._has_distinct_split_refs(pair):
+            raise ValueError(
+                "run_voice_conversion.py is the canonical single-reference Conan runner and "
+                "does not accept split reference inputs. Use only ref_wav on the mainline path."
+            )
         inp = {
             "ref_wav": pair["ref_wav"],
             "src_wav": pair["src_wav"],
@@ -99,15 +132,23 @@ class VoiceConversionRunner:
         for key in PUBLIC_CONTROL_KEYS:
             if pair.get(key) is not None:
                 inp[key] = pair[key]
-        if pair.get("allow_split_reference_inputs"):
-            inp["allow_split_reference_inputs"] = True
-            for key in SPLIT_REFERENCE_KEYS:
-                if pair.get(key):
+        allow_advanced_controls = bool(
+            pair.get("allow_advanced_controls", self.allow_advanced_controls)
+        )
+        if allow_advanced_controls:
+            for key in ADVANCED_CONTROL_KEYS:
+                if pair.get(key) is not None:
                     inp[key] = pair[key]
-        elif self._has_distinct_split_refs(pair):
-            for key in SPLIT_REFERENCE_KEYS:
-                if pair.get(key):
-                    inp[key] = pair[key]
+        else:
+            ignored_advanced_keys = [key for key in ADVANCED_CONTROL_KEYS if pair.get(key) is not None]
+            if ignored_advanced_keys and not self._advanced_control_warning_emitted:
+                warnings.warn(
+                    "Ignoring advanced non-mainline control keys in run_voice_conversion.py: "
+                    f"{ignored_advanced_keys}. Set allow_advanced_controls=true in the manifest "
+                    "only for explicit research/ablation runs.",
+                    stacklevel=2,
+                )
+                self._advanced_control_warning_emitted = True
         return inp
 
     def run_single_conversion(self, pair, pair_idx):
@@ -118,6 +159,21 @@ class VoiceConversionRunner:
             output_name = pair.get("output_name") or f"pair_{pair_idx:05d}.wav"
             output_path = os.path.join(self.output_dir, output_name)
             save_wav(wav_pred, output_path, hparams["audio_sample_rate"])
+            infer_metadata = getattr(self.engine, "last_infer_metadata", None)
+            if infer_metadata is not None:
+                meta_path = os.path.splitext(output_path)[0] + ".json"
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "pair_index": int(pair_idx),
+                            "output_name": output_name,
+                            "model_input": inp,
+                            "infer_metadata": infer_metadata,
+                        },
+                        f,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
             return True, output_path
         except Exception as e:
             print(f"ERROR in pair {pair_idx}: {e}")
@@ -221,6 +277,7 @@ def main():
         args.pair_config,
         hparams=hparams,
         output_dir=args.output_dir or None,
+        allow_advanced_controls=bool(args.allow_advanced_controls),
     )
     runner.run_all_conversions(
         start_idx=int(args.start_idx),

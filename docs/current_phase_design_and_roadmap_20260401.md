@@ -19,6 +19,10 @@ Updated: 2026-04-01
 
 ## 2. 当前 canonical 口径
 
+### 唯一 canonical training config
+
+- `egs/conan_emformer.yaml`
+
 ### 唯一 canonical inference config
 
 - `egs/conan_mainline_infer.yaml`
@@ -34,6 +38,12 @@ Updated: 2026-04-01
 - style profile sweep：`inference/run_style_profile_sweep.py`
 - report/eval：`inference/run_style_profile_evaluation.py` / `inference/run_style_profile_report.py`
 - Gradio：`inference/conan_gradio/app.py`
+
+### Conan 主线训练前入口
+
+- training prep：`tasks/Conan/mainline_train_prep.py`
+- CPU dry run：`tasks/Conan/mainline_cpu_dry_run.py`
+- real training：`python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTrain`
 
 ## 3. 当前设计冻结项
 
@@ -101,6 +111,11 @@ Updated: 2026-04-01
 - 真正 stateful decoder cache（当前仍是 prefix-online acoustic recompute）
 - 真正 stateful vocoder（当前仍是 bounded left-context re-synthesis）
 - 冻结外部 speaker verifier 版本的更强 identity loss / speaker drift 评测闭环
+- 把 validation contract 继续收紧成固定四桶：
+  - identity
+  - content
+  - style
+  - prefix-online parity
 
 ### P1
 

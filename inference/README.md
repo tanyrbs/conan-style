@@ -10,6 +10,10 @@ The Conan repo now has one canonical inference config and one canonical checkpoi
 
 All mainline runners now default to that pair.
 
+Training / dry run / eval recipe is documented separately in:
+
+- `docs/canonical_training_mainline_20260401.md`
+
 ## Mainline product contract
 
 The current Conan mainline only exposes this product-facing surface:

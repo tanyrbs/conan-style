@@ -80,6 +80,46 @@ pip install gradio
 - `--config egs/conan_mainline_infer.yaml`
 - `--exp_name Conan`
 
+## Canonical training / dry run / eval
+
+唯一 canonical 训练配置：
+
+- `egs/conan_emformer.yaml`
+
+训练前检查：
+
+```bash
+python tasks/Conan/mainline_train_prep.py --config egs/conan_emformer.yaml
+```
+
+本地 CPU 最小 dry run：
+
+```bash
+python tasks/Conan/mainline_cpu_dry_run.py ^
+  --config egs/conan_emformer.yaml ^
+  --binary_data_dir data/binary/libritts_single_smoke ^
+  --num_steps 2
+```
+
+正式训练命令模板：
+
+```bash
+python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTrain
+```
+
+训练后固定回归入口：
+
+```bash
+python tasks/Conan/style_mainline_smoke.py --config egs/conan_mainline_infer.yaml
+python tasks/Conan/streaming_prefix_online_smoke.py --config egs/conan_mainline_infer.yaml
+```
+
+补充说明：
+
+- `Conan` 保留给仓库内 canonical inference checkpoint 入口
+- 真正训练请使用新的 `--exp_name`
+- 当前 online 口径仍是 **prefix-online parity target**，不是 fully stateful decoder/vocoder
+
 ## 当前冻结设计
 
 - 外部默认单参考
@@ -133,6 +173,7 @@ python inference/streaming_parity_smoke.py \
 
 - 主线升级说明：`docs/strong_style_mainline_upgrade_20260331.md`
 - 当前阶段 / 设计 / 路线图：`docs/current_phase_design_and_roadmap_20260401.md`
+- canonical training / dry run / eval：`docs/canonical_training_mainline_20260401.md`
 - 推理入口说明：`inference/README.md`
 
 ## Legacy / non-Conan surface

@@ -72,11 +72,17 @@ class ConanDecoderStyleAdapter(nn.Module):
         self.effective_signal_epsilon = max(0.0, float(effective_signal_epsilon))
         gate_hidden = max(1, int(gate_hidden or hidden_size))
 
-        self.global_timbre_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
-        self.global_style_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
-        self.slow_style_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
-        self.style_trace_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
-        self.dynamic_timbre_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.Tanh())
+        self.global_timbre_proj = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size, bias=False), nn.Tanh()
+        )
+        self.global_style_proj = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size, bias=False), nn.Tanh()
+        )
+        self.slow_style_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size, bias=False), nn.Tanh())
+        self.style_trace_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size, bias=False), nn.Tanh())
+        self.dynamic_timbre_proj = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size, bias=False), nn.Tanh()
+        )
 
         self.global_timbre_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
         self.global_style_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
@@ -186,24 +192,30 @@ class ConanDecoderStyleAdapter(nn.Module):
         return None
 
     @staticmethod
+    def _project_maybe_singleton(
+        sequence: Optional[torch.Tensor],
+        *,
+        projector: nn.Module,
+        target_len: int,
+    ):
+        if not isinstance(sequence, torch.Tensor):
+            return None
+        if sequence.dim() == 2:
+            sequence = sequence.unsqueeze(1)
+        if sequence.dim() != 3:
+            return None
+        if sequence.size(1) == 1:
+            projected = projector(sequence)
+            return projected.expand(-1, target_len, -1)
+        if sequence.size(1) == target_len:
+            return projector(sequence)
+        return None
+
+    @staticmethod
     def _apply_mask(value: torch.Tensor, nonpadding_mask: Optional[torch.Tensor]):
         if nonpadding_mask is None:
             return value
         return value * nonpadding_mask
-
-    def _has_effective_signal(
-        self,
-        branch: Optional[torch.Tensor],
-        nonpadding_mask: Optional[torch.Tensor],
-    ) -> bool:
-        if not isinstance(branch, torch.Tensor):
-            return False
-        candidate = branch
-        if isinstance(nonpadding_mask, torch.Tensor):
-            candidate = self._apply_mask(candidate, nonpadding_mask)
-        if candidate.numel() <= 0:
-            return False
-        return bool(candidate.detach().abs().amax().item() > self.effective_signal_epsilon)
 
     def _apply_branch(
         self,
@@ -215,15 +227,17 @@ class ConanDecoderStyleAdapter(nn.Module):
         scale: float,
         nonpadding_mask: Optional[torch.Tensor],
     ):
-        if float(scale) == 0.0 or not self._has_effective_signal(branch, nonpadding_mask):
-            return hidden_btc, None, None, None
-        branch = projector(branch)
+        if float(scale) == 0.0 or not isinstance(branch, torch.Tensor):
+            return hidden_btc, None, None, None, False
         branch = self._apply_mask(branch, nonpadding_mask)
+        if branch.numel() <= 0:
+            return hidden_btc, None, None, None, False
+        branch = projector(branch)
         branch_gate = gate(torch.cat([hidden_btc, branch], dim=-1))
         branch_gate = self._apply_mask(branch_gate, nonpadding_mask)
         branch_delta = branch_gate * branch * float(scale)
         hidden_btc = hidden_btc + branch_delta
-        return hidden_btc, branch, branch_gate, branch_delta
+        return hidden_btc, branch, branch_gate, branch_delta, True
 
     def forward_stage(
         self,
@@ -263,13 +277,9 @@ class ConanDecoderStyleAdapter(nn.Module):
         apply_slow_style = stage_name in {"mid", "late"}
         apply_style = stage_name == "late"
         local_style_owner_present = bool(
-            self._has_effective_signal(slow_style_trace, nonpadding_mask)
-            or self._has_effective_signal(style_trace, nonpadding_mask)
+            _is_sequence_tensor(slow_style_trace) or _is_sequence_tensor(style_trace)
         )
-        style_owner_present = bool(
-            self._has_effective_signal(global_style_summary, nonpadding_mask)
-            or local_style_owner_present
-        )
+        global_style_present = isinstance(global_style_summary, torch.Tensor)
         skip_global_style_due_to_local_owner = bool(
             stage_name == "late"
             and self.skip_global_style_when_local_style_present
@@ -294,7 +304,7 @@ class ConanDecoderStyleAdapter(nn.Module):
             "stage_name": stage_name,
             "applied": False,
             "local_style_owner_present": bool(local_style_owner_present),
-            "style_owner_present": bool(style_owner_present),
+            "global_style_present": bool(global_style_present),
             "global_style_skipped_due_to_local_owner": bool(skip_global_style_due_to_local_owner),
             "global_style_summary_source": global_style_summary_source,
             "global_style_summary_is_fallback": bool(global_style_summary_is_fallback),
@@ -303,10 +313,21 @@ class ConanDecoderStyleAdapter(nn.Module):
         }
 
         if apply_global_timbre and global_timbre_anchor is not None:
-            conditioned, global_timbre_ctx, global_timbre_gate, global_timbre_delta = self._apply_branch(
-                conditioned,
+            global_timbre_proj = self._project_maybe_singleton(
                 global_timbre_anchor,
                 projector=self.global_timbre_proj,
+                target_len=hidden_btc.size(1),
+            )
+            (
+                conditioned,
+                global_timbre_ctx,
+                global_timbre_gate,
+                global_timbre_delta,
+                applied,
+            ) = self._apply_branch(
+                conditioned,
+                global_timbre_proj,
+                projector=nn.Identity(),
                 gate=self.global_timbre_gate,
                 scale=global_timbre_scale,
                 nonpadding_mask=nonpadding_mask,
@@ -315,12 +336,24 @@ class ConanDecoderStyleAdapter(nn.Module):
             metadata["global_timbre_gate"] = global_timbre_gate
             metadata["global_timbre_delta"] = global_timbre_delta
             metadata["global_timbre_scale_used"] = float(global_timbre_scale)
+            metadata["global_timbre_applied"] = bool(applied)
 
         if apply_global and global_style_summary is not None:
-            conditioned, global_ctx, global_gate, global_style_delta = self._apply_branch(
-                conditioned,
+            global_style_proj = self._project_maybe_singleton(
                 global_style_summary,
                 projector=self.global_style_proj,
+                target_len=hidden_btc.size(1),
+            )
+            (
+                conditioned,
+                global_ctx,
+                global_gate,
+                global_style_delta,
+                applied,
+            ) = self._apply_branch(
+                conditioned,
+                global_style_proj,
+                projector=nn.Identity(),
                 gate=self.global_style_gate,
                 scale=self.global_style_scale,
                 nonpadding_mask=nonpadding_mask,
@@ -329,9 +362,16 @@ class ConanDecoderStyleAdapter(nn.Module):
             metadata["global_style_gate"] = global_gate
             metadata["global_style_delta"] = global_style_delta
             metadata["global_style_scale_used"] = float(self.global_style_scale)
+            metadata["global_style_applied"] = bool(applied)
 
         if apply_slow_style and _is_sequence_tensor(slow_style_trace):
-            conditioned, slow_style_ctx, slow_style_gate, slow_style_delta = self._apply_branch(
+            (
+                conditioned,
+                slow_style_ctx,
+                slow_style_gate,
+                slow_style_delta,
+                applied,
+            ) = self._apply_branch(
                 conditioned,
                 slow_style_trace,
                 projector=self.slow_style_proj,
@@ -343,9 +383,16 @@ class ConanDecoderStyleAdapter(nn.Module):
             metadata["slow_style_gate"] = slow_style_gate
             metadata["slow_style_delta"] = slow_style_delta
             metadata["slow_style_scale_used"] = float(self.slow_style_scale)
+            metadata["slow_style_applied"] = bool(applied)
 
         if apply_style and _is_sequence_tensor(style_trace):
-            conditioned, style_ctx, style_gate, style_delta = self._apply_branch(
+            (
+                conditioned,
+                style_ctx,
+                style_gate,
+                style_delta,
+                applied,
+            ) = self._apply_branch(
                 conditioned,
                 style_trace,
                 projector=self.style_trace_proj,
@@ -357,9 +404,16 @@ class ConanDecoderStyleAdapter(nn.Module):
             metadata["style_trace_gate"] = style_gate
             metadata["style_trace_delta"] = style_delta
             metadata["style_trace_scale_used"] = float(self.style_trace_scale)
+            metadata["style_trace_applied"] = bool(applied)
 
         if apply_timbre and _is_sequence_tensor(dynamic_timbre):
-            conditioned, timbre_ctx, timbre_gate, timbre_delta = self._apply_branch(
+            (
+                conditioned,
+                timbre_ctx,
+                timbre_gate,
+                timbre_delta,
+                applied,
+            ) = self._apply_branch(
                 conditioned,
                 dynamic_timbre,
                 projector=self.dynamic_timbre_proj,
@@ -370,13 +424,20 @@ class ConanDecoderStyleAdapter(nn.Module):
             metadata["dynamic_timbre_ctx"] = timbre_ctx
             metadata["dynamic_timbre_gate"] = timbre_gate
             metadata["dynamic_timbre_delta"] = timbre_delta
+            metadata["dynamic_timbre_applied"] = bool(applied)
 
         delta = conditioned - hidden_btc
-        applied = bool(delta.abs().sum().item() > 0)
-        if applied:
+        applied_any = bool(
+            metadata.get("global_timbre_applied")
+            or metadata.get("global_style_applied")
+            or metadata.get("slow_style_applied")
+            or metadata.get("style_trace_applied")
+            or metadata.get("dynamic_timbre_applied")
+        )
+        if applied_any:
             conditioned = self.stage_norm(conditioned)
             conditioned = self._apply_mask(conditioned, nonpadding_mask)
-        metadata["applied"] = applied
+        metadata["applied"] = applied_any
         metadata["delta"] = delta
         return conditioned, metadata
 

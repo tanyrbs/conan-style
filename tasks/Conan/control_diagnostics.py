@@ -11,6 +11,11 @@ TRACKED_LAMBDA_KEYS = (
     "lambda_style_query_var",
     "lambda_global_style_summary_align",
     "lambda_slow_style_summary_align",
+    "lambda_output_identity_cosine",
+    "lambda_dynamic_timbre_budget",
+    "lambda_dynamic_timbre_boundary",
+    "lambda_decoder_late_owner",
+    "lambda_decoder_late_anchor_budget",
 )
 
 
@@ -138,17 +143,36 @@ def _flatten_tensor(value):
     return value.float().reshape(-1)
 
 
-def _branch_statistics(branch_ctx, branch_gate, prefix):
+def _delta_norm(value):
+    if not isinstance(value, torch.Tensor):
+        return None
+    if value.dim() == 3:
+        return value.float().norm(dim=-1).mean()
+    return value.float().abs().mean()
+
+
+def _sum_optional_delta(*values):
+    present = [value for value in values if isinstance(value, torch.Tensor)]
+    if not present:
+        return None
+    total = present[0]
+    for value in present[1:]:
+        total = total + value
+    return total
+
+
+def _branch_statistics(branch_ctx, branch_gate, prefix, branch_delta=None):
     if not isinstance(branch_ctx, torch.Tensor) or not isinstance(branch_gate, torch.Tensor):
         return {}
     gate_flat = _flatten_tensor(branch_gate)
     if gate_flat is None or gate_flat.numel() <= 0:
         return {}
-    branch_value = branch_ctx
-    if branch_gate.dim() == branch_ctx.dim() - 1:
-        branch_value = branch_ctx * branch_gate.unsqueeze(-1)
-    elif branch_gate.dim() == branch_ctx.dim():
-        branch_value = branch_ctx * branch_gate
+    branch_value = branch_delta if isinstance(branch_delta, torch.Tensor) else branch_ctx
+    if not isinstance(branch_delta, torch.Tensor):
+        if branch_gate.dim() == branch_ctx.dim() - 1:
+            branch_value = branch_ctx * branch_gate.unsqueeze(-1)
+        elif branch_gate.dim() == branch_ctx.dim():
+            branch_value = branch_ctx * branch_gate
     branch_norm = branch_value.float().norm(dim=-1).reshape(-1)
     stats = {
         f"{prefix}_gate_mean": gate_flat.mean(),
@@ -178,13 +202,18 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     dynamic_timbre_residual_values = []
     global_residual_values = []
     slow_style_residual_values = []
+    late_style_delta = None
+    late_timbre_delta = None
+    late_anchor_delta = None
     for stage_meta in stage_outputs.values():
         if not isinstance(stage_meta, dict):
             continue
+        stage_name = str(stage_meta.get("stage_name", "")).lower()
         branch_stats = _branch_statistics(
             stage_meta.get("global_timbre_ctx"),
             stage_meta.get("global_timbre_gate"),
             "diag_decoder_global_timbre",
+            branch_delta=stage_meta.get("global_timbre_delta"),
         )
         if "diag_decoder_global_timbre_gate_mean" in branch_stats:
             global_timbre_gate_values.append(branch_stats["diag_decoder_global_timbre_gate_mean"])
@@ -197,6 +226,7 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
             stage_meta.get("global_style_ctx"),
             stage_meta.get("global_style_gate"),
             "diag_decoder_global_style",
+            branch_delta=stage_meta.get("global_style_delta"),
         )
         if "diag_decoder_global_style_gate_mean" in branch_stats:
             global_gate_values.append(branch_stats["diag_decoder_global_style_gate_mean"])
@@ -209,6 +239,7 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
             stage_meta.get("slow_style_ctx", stage_meta.get("style_trace_ctx")),
             stage_meta.get("slow_style_gate", stage_meta.get("style_trace_gate")),
             "diag_decoder_slow_style",
+            branch_delta=stage_meta.get("slow_style_delta", stage_meta.get("style_trace_delta")),
         )
         if "diag_decoder_slow_style_gate_mean" in branch_stats:
             slow_style_gate_values.append(branch_stats["diag_decoder_slow_style_gate_mean"])
@@ -221,6 +252,7 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
             stage_meta.get("style_trace_ctx"),
             stage_meta.get("style_trace_gate"),
             "diag_decoder_fast_style",
+            branch_delta=stage_meta.get("style_trace_delta"),
         )
         if "diag_decoder_fast_style_gate_mean" in branch_stats:
             fast_style_gate_values.append(branch_stats["diag_decoder_fast_style_gate_mean"])
@@ -233,6 +265,7 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
             stage_meta.get("dynamic_timbre_ctx"),
             stage_meta.get("dynamic_timbre_gate"),
             "diag_decoder_dynamic_timbre",
+            branch_delta=stage_meta.get("dynamic_timbre_delta"),
         )
         if "diag_decoder_dynamic_timbre_gate_mean" in branch_stats:
             dynamic_timbre_gate_values.append(branch_stats["diag_decoder_dynamic_timbre_gate_mean"])
@@ -240,6 +273,15 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
             dynamic_timbre_gate_stds.append(branch_stats["diag_decoder_dynamic_timbre_gate_std"])
         if "diag_decoder_dynamic_timbre_residual_norm" in branch_stats:
             dynamic_timbre_residual_values.append(branch_stats["diag_decoder_dynamic_timbre_residual_norm"])
+        if stage_name == "late":
+            late_style_delta = _sum_optional_delta(
+                late_style_delta,
+                stage_meta.get("global_style_delta"),
+                stage_meta.get("slow_style_delta"),
+                stage_meta.get("style_trace_delta"),
+            )
+            late_timbre_delta = stage_meta.get("dynamic_timbre_delta")
+            late_anchor_delta = stage_meta.get("global_timbre_delta")
 
     if global_timbre_gate_values:
         stats["diag_decoder_global_timbre_gate_mean"] = torch.stack(global_timbre_gate_values).mean()
@@ -311,6 +353,19 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
         stats["diag_slow_style_to_timbre_ratio"] = (
             stats["diag_decoder_slow_style_residual_norm"] / dynamic_norm
         )
+    late_style_norm = _delta_norm(late_style_delta)
+    late_timbre_norm = _delta_norm(late_timbre_delta)
+    late_anchor_norm = _delta_norm(late_anchor_delta)
+    if late_style_norm is not None:
+        stats["diag_decoder_late_style_delta_norm"] = late_style_norm
+    if late_timbre_norm is not None:
+        stats["diag_decoder_late_timbre_delta_norm"] = late_timbre_norm
+    if late_anchor_norm is not None:
+        stats["diag_decoder_late_anchor_delta_norm"] = late_anchor_norm
+    if late_style_norm is not None and late_timbre_norm is not None and float(late_timbre_norm.item()) > 1e-8:
+        stats["diag_decoder_late_style_to_timbre_ratio"] = late_style_norm / late_timbre_norm
+    if late_style_norm is not None and late_anchor_norm is not None and float(late_style_norm.item()) > 1e-8:
+        stats["diag_decoder_late_anchor_to_style_ratio"] = late_anchor_norm / late_style_norm
     return stats
 
 
@@ -342,6 +397,8 @@ def collect_control_diagnostics(output, sample, config):
         global_style_summary = summary_vector(
             output.get("global_style_summary_runtime", output.get("global_style_summary"))
         )
+        output_identity_embed = summary_vector(output.get("output_identity_embed"))
+        reference_identity_embed = summary_vector(output.get("reference_identity_embed"))
         style_query_repr = _summary_like(output.get("style_query_inp"))
         timbre_query_repr = _summary_like(output.get("timbre_query_inp"))
 
@@ -392,17 +449,35 @@ def collect_control_diagnostics(output, sample, config):
         timbre_anchor_cos = _cosine_mean(timbre_repr, global_timbre_anchor)
         if timbre_anchor_cos is not None:
             diagnostics["diag_timbre_anchor_cos"] = timbre_anchor_cos
+        output_identity_cos = _cosine_mean(output_identity_embed, global_timbre_anchor)
+        if output_identity_cos is not None:
+            diagnostics["diag_output_identity_anchor_cos"] = output_identity_cos
+            diagnostics["diag_output_identity_anchor_distance"] = 1.0 - output_identity_cos
+        output_identity_ref_cos = _cosine_mean(output_identity_embed, reference_identity_embed)
+        if output_identity_ref_cos is not None:
+            diagnostics["diag_output_identity_ref_cos"] = output_identity_ref_cos
         query_cos = _cosine_mean(
             style_query_repr,
             timbre_query_repr,
         )
         if query_cos is not None:
             diagnostics["diag_style_timbre_query_cos"] = query_cos
+        output_identity_norm, output_identity_norm_std = _safe_mean_std(
+            output_identity_embed.norm(dim=-1) if isinstance(output_identity_embed, torch.Tensor) else None
+        )
+        if output_identity_norm is not None:
+            diagnostics["diag_output_identity_norm"] = output_identity_norm
+        if output_identity_norm_std is not None:
+            diagnostics["diag_output_identity_norm_std"] = output_identity_norm_std
         tensor_kwargs = {"dtype": torch.float32}
         if isinstance(style_repr, torch.Tensor):
             tensor_kwargs["device"] = style_repr.device
         diagnostics["diag_global_timbre_to_pitch_applied"] = torch.tensor(
             1.0 if bool(output.get("global_timbre_to_pitch_applied", False)) else 0.0,
+            **tensor_kwargs,
+        )
+        diagnostics["diag_query_anchor_split_applied"] = torch.tensor(
+            1.0 if bool(output.get("query_anchor_split_applied", False)) else 0.0,
             **tensor_kwargs,
         )
         reference_contract = output.get("reference_contract", {})

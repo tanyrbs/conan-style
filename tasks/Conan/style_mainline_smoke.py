@@ -60,6 +60,18 @@ def _sum_loss(losses):
     return total
 
 
+def _cosine_mean(a, b):
+    if not isinstance(a, torch.Tensor) or not isinstance(b, torch.Tensor):
+        return None
+    if a.dim() == 3:
+        a = a.squeeze(1)
+    if b.dim() == 3:
+        b = b.squeeze(1)
+    if a.dim() != 2 or b.dim() != 2 or tuple(a.shape) != tuple(b.shape):
+        return None
+    return torch.nn.functional.cosine_similarity(a, b, dim=-1, eps=1e-6).mean()
+
+
 def _validate_mode_output(mode, output):
     expected = EXPECTED_MODE_FLAGS[mode]
     if bool(output.get("style_trace_applied", False)) != expected["style_trace"]:
@@ -85,10 +97,22 @@ def _validate_mode_output(mode, output):
         raise AssertionError(f"{mode}: style_query_inp missing.")
     if not isinstance(output.get("timbre_query_inp"), torch.Tensor):
         raise AssertionError(f"{mode}: timbre_query_inp missing.")
+    if not isinstance(output.get("style_query_base"), torch.Tensor):
+        raise AssertionError(f"{mode}: style_query_base missing.")
+    if not isinstance(output.get("timbre_query_base"), torch.Tensor):
+        raise AssertionError(f"{mode}: timbre_query_base missing.")
     if output["style_query_inp"].shape != output["timbre_query_inp"].shape:
         raise AssertionError(f"{mode}: style/timbre query shape mismatch.")
+    if not bool(output.get("query_anchor_split_applied", False)):
+        raise AssertionError(f"{mode}: query_anchor_split_applied is false.")
+    if not bool(output.get("dynamic_timbre_style_context_owner_safe", False)):
+        raise AssertionError(f"{mode}: dynamic_timbre_style_context_owner_safe is false.")
     if not bool(output.get("decoder_style_adapter_enabled", False)):
         raise AssertionError(f"{mode}: decoder_style_adapter_enabled is false.")
+    if not isinstance(output.get("output_identity_embed"), torch.Tensor):
+        raise AssertionError(f"{mode}: output_identity_embed missing.")
+    if not isinstance(output.get("output_identity_anchor_target"), torch.Tensor):
+        raise AssertionError(f"{mode}: output_identity_anchor_target missing.")
     decoder_style_bundle = output.get("decoder_style_bundle")
     if not isinstance(decoder_style_bundle, dict):
         raise AssertionError(f"{mode}: decoder_style_bundle missing.")
@@ -180,6 +204,12 @@ def run_smoke(args):
                 "style_decoder_residual_l1": scalarize_value(output["style_decoder_residual"].abs().mean()),
                 "dynamic_timbre_decoder_residual_l1": scalarize_value(
                     output["dynamic_timbre_decoder_residual"].abs().mean()
+                ),
+                "dynamic_timbre_style_context_owner_safe": bool(
+                    output.get("dynamic_timbre_style_context_owner_safe", False)
+                ),
+                "output_identity_anchor_cos": scalarize_value(
+                    _cosine_mean(output.get("output_identity_embed"), output.get("output_identity_anchor_target"))
                 ),
                 "batch_shape": batch_shape_info,
                 "losses": scalar_losses,

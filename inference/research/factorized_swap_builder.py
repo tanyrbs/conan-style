@@ -99,7 +99,7 @@ def build_factorized_swap_config_from_libritts(
     splits=None,
     num_groups=4,
     profiles=None,
-    output_dir="infer_out_profiles/factorized_swap",
+    output_dir="infer_out_profiles/research_factorized_swap",
     defaults=None,
 ):
     profiles = list(profiles or available_style_profiles())

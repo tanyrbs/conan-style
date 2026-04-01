@@ -123,6 +123,9 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 nn.Linear(self.hidden_size, self.hidden_size),
                 nn.Tanh(),
             )
+            self.style_query_norm = nn.LayerNorm(self.hidden_size)
+            self.timbre_query_norm = nn.LayerNorm(self.hidden_size)
+            self.dynamic_timbre_style_context_norm = nn.LayerNorm(self.hidden_size)
 
             # build attention layer
             self.embed_positions = SinusoidalPositionalEmbedding(
@@ -138,6 +141,9 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             self.timbre_gate = None
             self.style_query_proj = None
             self.timbre_query_proj = None
+            self.style_query_norm = None
+            self.timbre_query_norm = None
+            self.dynamic_timbre_style_context_norm = None
             self.l1 = None
             self.embed_positions = None
 
@@ -219,9 +225,9 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 global_timbre_scale_mid=hparams.get("decoder_global_timbre_scale_mid", 0.12),
                 global_timbre_scale_late=hparams.get("decoder_global_timbre_scale_late", 0.08),
                 global_style_scale=hparams.get("decoder_style_global_scale", 0.2),
-                slow_style_scale=hparams.get("decoder_slow_style_trace_scale", 0.55),
-                style_trace_scale=hparams.get("decoder_style_trace_scale", 0.75),
-                dynamic_timbre_scale=hparams.get("decoder_dynamic_timbre_scale", 0.85),
+                slow_style_scale=hparams.get("decoder_slow_style_trace_scale", 0.70),
+                style_trace_scale=hparams.get("decoder_style_trace_scale", 1.00),
+                dynamic_timbre_scale=hparams.get("decoder_dynamic_timbre_scale", 0.20),
                 dynamic_timbre_scale_mid=hparams.get("decoder_dynamic_timbre_scale_mid", None),
                 dynamic_timbre_scale_late=hparams.get("decoder_dynamic_timbre_scale_late", None),
                 dynamic_timbre_late_no_style_scale=hparams.get(
@@ -363,24 +369,48 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             ref_accent=reference_bundle["ref_accent"],
             reference_cache=reference_cache,
         )
-        global_style_anchor_runtime = global_timbre_anchor * global_style_anchor_strength
+        global_timbre_anchor_runtime = global_timbre_anchor * global_style_anchor_strength
         if not style_mainline.apply_global_style_anchor:
-            global_style_anchor_runtime = torch.zeros_like(global_style_anchor_runtime)
-        ret["global_timbre_anchor_runtime"] = global_style_anchor_runtime
-        query_condition_inp = content_embed + condition_embed + global_style_anchor_runtime
-        ret["query_condition_inp"] = query_condition_inp
+            global_timbre_anchor_runtime = torch.zeros_like(global_timbre_anchor_runtime)
+        ret["global_timbre_anchor_runtime"] = global_timbre_anchor_runtime
         base_condition_inp = content_embed + condition_embed
         if style_mainline.apply_global_style_anchor and style_mainline.global_timbre_to_pitch:
-            base_condition_inp = base_condition_inp + global_style_anchor_runtime
+            base_condition_inp = base_condition_inp + global_timbre_anchor_runtime
+        ret["query_condition_inp"] = base_condition_inp
         ret["global_timbre_to_pitch_applied"] = bool(
             style_mainline.apply_global_style_anchor and style_mainline.global_timbre_to_pitch
         )
+        global_style_query_prior = self._expand_summary_to_sequence(
+            global_style_summary,
+            content_embed.size(1),
+            device=content_embed.device,
+            dtype=content_embed.dtype,
+        )
+        style_query_global_summary_scale = float(
+            kwargs.get(
+                "style_query_global_summary_scale",
+                self.hparams.get("style_query_global_summary_scale", 0.35),
+            )
+        )
+        style_query_base = base_condition_inp
+        if isinstance(global_style_query_prior, torch.Tensor) and style_query_global_summary_scale != 0.0:
+            style_query_base = style_query_base + style_query_global_summary_scale * global_style_query_prior
+        timbre_query_base = base_condition_inp
+        if self.style_query_norm is not None:
+            style_query_base = self.style_query_norm(style_query_base)
+        if self.timbre_query_norm is not None:
+            timbre_query_base = self.timbre_query_norm(timbre_query_base)
+        ret["global_style_query_prior"] = global_style_query_prior
+        ret["style_query_global_summary_scale"] = style_query_global_summary_scale
+        ret["style_query_base"] = style_query_base
+        ret["timbre_query_base"] = timbre_query_base
+        ret["query_anchor_split_applied"] = True
         style_query_inp = (
-            self.style_query_proj(query_condition_inp)
-            if self.style_query_proj is not None else query_condition_inp
+            self.style_query_proj(style_query_base)
+            if self.style_query_proj is not None else style_query_base
         )
         timbre_query_inp = (
-            self.timbre_query_proj(query_condition_inp) if self.timbre_query_proj is not None else query_condition_inp
+            self.timbre_query_proj(timbre_query_base) if self.timbre_query_proj is not None else timbre_query_base
         )
         ret["style_query_inp"] = style_query_inp
         ret["timbre_query_inp"] = timbre_query_inp
@@ -421,8 +451,33 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         style_decoder_residual = style_payload.get("style_decoder_residual", style_decoder_residual)
         slow_style_decoder_residual = style_payload.get("slow_style_decoder_residual", slow_style_decoder_residual)
         global_style_summary_runtime = style_payload.get("global_style_summary_runtime", global_style_summary)
+        dynamic_timbre_coarse_style_context_scale = float(
+            kwargs.get(
+                "dynamic_timbre_coarse_style_context_scale",
+                self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.25),
+            )
+        )
         dynamic_timbre_style_context = style_decoder_residual + 0.5 * slow_style_decoder_residual
+        if isinstance(global_style_query_prior, torch.Tensor) and dynamic_timbre_coarse_style_context_scale != 0.0:
+            dynamic_timbre_style_context = (
+                dynamic_timbre_style_context
+                + dynamic_timbre_coarse_style_context_scale * global_style_query_prior
+            )
+        ret["dynamic_timbre_style_context_raw"] = dynamic_timbre_style_context
+        if self.dynamic_timbre_style_context_norm is not None:
+            dynamic_timbre_style_context = self.dynamic_timbre_style_context_norm(dynamic_timbre_style_context)
+        dynamic_timbre_style_context_stopgrad = bool(
+            kwargs.get(
+                "dynamic_timbre_style_context_stopgrad",
+                self.hparams.get("dynamic_timbre_style_context_stopgrad", True),
+            )
+        )
+        if dynamic_timbre_style_context_stopgrad:
+            dynamic_timbre_style_context = dynamic_timbre_style_context.detach()
         ret["dynamic_timbre_style_context"] = dynamic_timbre_style_context
+        ret["dynamic_timbre_coarse_style_context_scale"] = dynamic_timbre_coarse_style_context_scale
+        ret["dynamic_timbre_style_context_stopgrad"] = dynamic_timbre_style_context_stopgrad
+        ret["dynamic_timbre_style_context_owner_safe"] = True
         if style_payload.get("style_trace_skip_reason") is not None:
             ret["style_trace_skip_reason"] = style_payload.get("style_trace_skip_reason")
         if (
@@ -463,7 +518,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["global_style_summary_runtime"] = global_style_summary_runtime
         ret["decoder_style_bundle"] = build_decoder_style_bundle(
             global_timbre_anchor=global_timbre_anchor,
-            global_timbre_anchor_runtime=global_style_anchor_runtime,
+            global_timbre_anchor_runtime=global_timbre_anchor_runtime,
             global_timbre_source=reference_cache.get("global_timbre_anchor_source", "reference_cache"),
             global_style_summary=global_style_summary_runtime,
             global_style_summary_source=reference_cache.get(
@@ -535,6 +590,27 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         x = x.sum(dim=-1).unsqueeze(-1)
         out = torch.div(x, len_)
         return out
+
+    @staticmethod
+    def _expand_summary_to_sequence(summary, target_len, *, device=None, dtype=None):
+        if not isinstance(summary, torch.Tensor):
+            return None
+        if summary.dim() == 2:
+            summary = summary.unsqueeze(1)
+        if summary.dim() != 3:
+            return None
+        if summary.size(1) == target_len:
+            expanded = summary
+        elif summary.size(1) == 1:
+            expanded = summary.expand(-1, target_len, -1)
+        elif summary.size(1) > 0:
+            expanded = summary.mean(dim=1, keepdim=True).expand(-1, target_len, -1)
+        else:
+            return None
+        return expanded.to(
+            device=device if device is not None else expanded.device,
+            dtype=dtype if dtype is not None else expanded.dtype,
+        )
 
     def forward_pitch(self, decoder_inp, f0, uv, ret, **kwargs):  # add **kwargs
         pitch_pred_inp = decoder_inp

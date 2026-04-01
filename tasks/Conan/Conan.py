@@ -78,12 +78,17 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         # notes, note_durs, note_types = sample["notes"], sample["note_durs"], sample["note_types"]
 
         target = sample["mels"]
-        if self.global_step >= hparams["random_speaker_steps"]:
-            ref=sample['ref_mels']
-        else:
-            ref=target
+        effective_global_step = int(self.global_step)
         if test:
-            self.global_step = 200000
+            effective_global_step = max(
+                effective_global_step,
+                int(hparams.get("random_speaker_steps", 0)),
+                200000,
+            )
+        if effective_global_step >= hparams["random_speaker_steps"]:
+            ref = sample.get('ref_mels', target)
+        else:
+            ref = target
         # assert False, f'content: {content.shape}, target: {target.shape},spk_embed: {spk_embed.shape}'
         # if not infer:
         #     tech_drop = {
@@ -106,17 +111,101 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         model_kwargs = self.build_style_model_kwargs(sample, ref)
         output = self.model(content,spk_embed=spk_embed, target=target,ref=ref,
                             f0=f0, uv=uv,
-                            infer=infer, global_steps=self.global_step, **model_kwargs)
+                            infer=infer, global_steps=effective_global_step, **model_kwargs)
         
         losses = {}
         
         if not test:
+            self._maybe_attach_output_identity_embeddings(output, ref)
             self.add_mel_loss(output['mel_out'], target, losses)
             # self.add_dur_loss(output['dur'], mel2ph, txt_tokens, losses=losses)
             self.add_pitch_loss(output, sample, losses)
             self.add_control_losses(output, sample, losses)
         
         return losses, output
+
+    def _reference_for_inference(self, sample, *, global_step=None):
+        effective_global_step = int(self.global_step if global_step is None else global_step)
+        if effective_global_step >= hparams["random_speaker_steps"]:
+            return sample.get("ref_mels", sample["mels"])
+        return sample["mels"]
+
+    def _run_prefix_online_inference(self, sample, *, tokens_per_chunk=4):
+        content_full = sample["content"]
+        spk_embed = sample.get("spk_embed", None)
+        infer_global_steps = max(int(self.global_step), int(hparams.get("random_speaker_steps", 0)), 200000)
+        ref = self._reference_for_inference(sample, global_step=infer_global_steps)
+        model_kwargs = self.build_style_model_kwargs(sample, ref)
+        with torch.no_grad():
+            reference_cache = self.model.prepare_reference_cache(
+                reference_bundle=model_kwargs["reference_bundle"],
+                spk_embed=spk_embed,
+                infer=True,
+                global_steps=infer_global_steps,
+            )
+        model_kwargs["reference_cache"] = reference_cache
+
+        total_tokens = int(content_full.size(1))
+        step = max(1, int(tokens_per_chunk))
+        prev_mel_len = 0
+        mel_chunks = []
+        last_output = None
+        chunk_count = 0
+        with torch.no_grad():
+            for end_idx in range(step, total_tokens + step, step):
+                chunk_count += 1
+                content_chunk = content_full[:, : min(end_idx, total_tokens)]
+                last_output = self.model(
+                    content_chunk,
+                    spk_embed=spk_embed,
+                    target=None,
+                    ref=ref,
+                    f0=None,
+                    uv=None,
+                    infer=True,
+                    global_steps=infer_global_steps,
+                    **model_kwargs,
+                )
+                mel_out = last_output["mel_out"]
+                mel_new = mel_out[:, prev_mel_len:, :]
+                if mel_new.size(1) > 0:
+                    mel_chunks.append(mel_new)
+                prev_mel_len = int(mel_out.size(1))
+        if last_output is None:
+            raise RuntimeError("Prefix-online inference produced no decoder output.")
+        if mel_chunks:
+            last_output["mel_out"] = torch.cat(mel_chunks, dim=1)
+        last_output["streaming_eval_mode"] = "prefix_online_content_chunked"
+        last_output["streaming_chunk_tokens"] = int(step)
+        last_output["streaming_total_chunks"] = int(chunk_count)
+        return last_output
+
+    @staticmethod
+    def _streaming_parity_metrics(offline_output, streaming_output):
+        if not isinstance(offline_output, dict) or not isinstance(streaming_output, dict):
+            return {}
+        offline_mel = offline_output.get("mel_out")
+        streaming_mel = streaming_output.get("mel_out")
+        if not isinstance(offline_mel, torch.Tensor) or not isinstance(streaming_mel, torch.Tensor):
+            return {}
+        if offline_mel.dim() != 3 or streaming_mel.dim() != 3:
+            return {}
+        min_len = min(int(offline_mel.size(1)), int(streaming_mel.size(1)))
+        if min_len <= 0:
+            return {}
+        offline_aligned = offline_mel[:, :min_len, :]
+        streaming_aligned = streaming_mel[:, :min_len, :]
+        metrics = {
+            "streaming_mel_l1": F.l1_loss(streaming_aligned, offline_aligned),
+            "streaming_mel_l2": F.mse_loss(streaming_aligned, offline_aligned),
+        }
+        tail_frames = min(min_len, int(hparams.get("streaming_parity_tail_frames", 32)))
+        if tail_frames > 0:
+            metrics["streaming_tail_mel_l1"] = F.l1_loss(
+                streaming_aligned[:, -tail_frames:, :],
+                offline_aligned[:, -tail_frames:, :],
+            )
+        return metrics
 
     def add_pitch_loss(self, output, sample, losses):
         # mel2ph = sample['mel2ph']  # [B, T_s]
@@ -203,64 +292,59 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         outputs['nsamples'] = sample['nsamples']
         outputs = tensors_to_scalars(outputs)
         if batch_idx < hparams['num_valid_plots']:
-            outputs['losses'], model_out = self.run_model(sample, infer=True)
+            outputs['losses'], offline_out = self.run_model(sample, infer=True)
+            plot_out = offline_out
+            if bool(hparams.get("valid_use_streaming_prefix_path", True)):
+                streaming_out = self._run_prefix_online_inference(
+                    sample,
+                    tokens_per_chunk=int(hparams.get("streaming_eval_tokens_per_chunk", 4)),
+                )
+                outputs['losses'].update(self._streaming_parity_metrics(offline_out, streaming_out))
+                plot_out = streaming_out
             outputs['total_loss'] = sum(outputs['losses'].values())
             sr = hparams["audio_sample_rate"]
             gt_f0 = denorm_f0(sample['f0'], sample["uv"])
             wav_gt = self.vocoder.spec2wav(sample["mels"][0].cpu().numpy(), f0=gt_f0[0].cpu().numpy())
             self.logger.add_audio(f'wav_gt_{batch_idx}', wav_gt, self.global_step, sr)
 
-            wav_pred = self.vocoder.spec2wav(model_out['mel_out'][0].cpu().numpy(), f0=model_out["f0_denorm_pred"][0].cpu().numpy())
-            self.logger.add_audio(f'wav_pred_{batch_idx}', wav_pred, self.global_step, sr)
-            self.plot_mel(batch_idx, sample['mels'], model_out['mel_out'][0], f'mel_{batch_idx}')
+            offline_f0_pred = offline_out.get("f0_denorm_pred")
+            plot_f0_pred = plot_out.get("f0_denorm_pred")
+            if not isinstance(plot_f0_pred, torch.Tensor):
+                plot_f0_pred = offline_f0_pred
+            plot_f0_np = plot_f0_pred[0].cpu().numpy() if isinstance(plot_f0_pred, torch.Tensor) else None
+            wav_pred = self.vocoder.spec2wav(plot_out['mel_out'][0].cpu().numpy(), f0=plot_f0_np)
+            if plot_out is not offline_out:
+                offline_f0_np = offline_f0_pred[0].cpu().numpy() if isinstance(offline_f0_pred, torch.Tensor) else None
+                wav_pred_offline = self.vocoder.spec2wav(offline_out['mel_out'][0].cpu().numpy(), f0=offline_f0_np)
+                self.logger.add_audio(f'wav_pred_offline_{batch_idx}', wav_pred_offline, self.global_step, sr)
+                self.logger.add_audio(f'wav_pred_streaming_{batch_idx}', wav_pred, self.global_step, sr)
+                self.plot_mel(batch_idx, sample['mels'], offline_out['mel_out'][0], f'mel_offline_{batch_idx}')
+                self.plot_mel(batch_idx, sample['mels'], plot_out['mel_out'][0], f'mel_streaming_{batch_idx}')
+            else:
+                self.logger.add_audio(f'wav_pred_{batch_idx}', wav_pred, self.global_step, sr)
+                self.plot_mel(batch_idx, sample['mels'], plot_out['mel_out'][0], f'mel_{batch_idx}')
             self.logger.add_figure(
                 f'f0_{batch_idx}',
-                f0_to_figure(gt_f0[0], None, model_out["f0_denorm_pred"][0]),
+                f0_to_figure(gt_f0[0], None, plot_f0_pred[0] if isinstance(plot_f0_pred, torch.Tensor) else None),
                 self.global_step)
-        return outputs
+        return tensors_to_scalars(outputs)
     
     def test_step(self, sample, batch_idx):
         """
-        Streaming inference:
-        1. Incrementally input content by 80 ms (=4 tokens) granularity
-        2. Extract newly generated mel segments from each inference round
-        3. Concatenate to get complete mel, then pass through vocoder as a whole
+        Prefix-online streaming evaluation:
+        1. cache the single reference once
+        2. incrementally extend content by 80 ms (=4 tokens) granularity
+        3. recompute the acoustic prefix, but only keep newly emitted mel frames
+        4. optionally compare the online path against the offline/full-prefix mel
         """
-        # === Preparation ===
-        sample['ref_mels'] = sample['mels']  # Keep consistent with original implementation
-        tokens_per_chunk = 4                   # 80 ms / 20 ms
-        content_full = sample['content']         # [B, T_c]
-        B, T_c = content_full.shape
-        total_chunks = (T_c + tokens_per_chunk - 1) // tokens_per_chunk
-
-        mel_chunks = []                          # Save mel segments
-        prev_mel_len = 0                         # Previous complete mel length
-
-        # # === streaming inference ===
-        # for chunk_idx in range(total_chunks):
-        #     end_idx = min((chunk_idx + 1) * tokens_per_chunk, T_c)
-
-        #     # Copy sample; only truncate content
-        #     sample_chunk = {k: v for k, v in sample.items()}
-        #     sample_chunk['content'] = content_full[:, :end_idx]
-
-        #     # Inference
-        #     _, outputs = self.run_model(sample_chunk, infer=True, test=True)
-        #     mel_out = outputs['mel_out'][0]      # [T_mel, 80]
-
-        #     # Extract newly added part from this round
-        #     mel_new = mel_out[prev_mel_len:]
-        #     mel_chunks.append(mel_new)
-        #     prev_mel_len = mel_out.shape[0]
-
-        # # === Concatenate and save results ===
-        # mel_pred = torch.cat(mel_chunks, dim=0)          # [T_total, 80]
-        
-        outputs=self.run_model(sample, infer=True, test=True)[1]
-        mel_pred = outputs['mel_out'][0]  # [T_total, 80
-        # mel_pred=self.run_model(sample, infer=True, test=True)[1]['mel_out'][0] # [T_total, 80]
+        sample['ref_mels'] = sample.get('ref_mels', sample['mels'])
+        tokens_per_chunk = int(hparams.get("streaming_eval_tokens_per_chunk", 4))
+        offline_outputs = self.run_model(sample, infer=True, test=True)[1]
+        outputs = self._run_prefix_online_inference(sample, tokens_per_chunk=tokens_per_chunk)
+        mel_pred = outputs['mel_out'][0]
         item_name = sample['item_name'][0]
         base_fn = f'{item_name.replace(" ", "_")}[P]'
+        parity_metrics = self._streaming_parity_metrics(offline_outputs, outputs)
 
         # Pass through vocoder at once
         wav_pred = self.vocoder.spec2wav(mel_pred.cpu().numpy())
@@ -289,7 +373,19 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                 None]
         )
 
-        return {}  # Keep interface consistent with original test_step
+        scalar_metrics = tensors_to_scalars(parity_metrics)
+        scalar_metrics.update(
+            {
+                "streaming_eval_mode": outputs.get("streaming_eval_mode", "prefix_online_content_chunked"),
+                "streaming_total_chunks": int(outputs.get("streaming_total_chunks", 0)),
+                "streaming_chunk_tokens": int(outputs.get("streaming_chunk_tokens", tokens_per_chunk)),
+                "query_anchor_split_applied": bool(outputs.get("query_anchor_split_applied", False)),
+                "dynamic_timbre_style_context_owner_safe": bool(
+                    outputs.get("dynamic_timbre_style_context_owner_safe", False)
+                ),
+            }
+        )
+        return scalar_metrics
 
 
     def build_optimizer(self, model):

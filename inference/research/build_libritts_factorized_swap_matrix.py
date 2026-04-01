@@ -5,11 +5,11 @@ import argparse
 import sys
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from inference.factorized_swap_builder import (
+from inference.research.factorized_swap_builder import (
     build_factorized_swap_config_from_libritts,
     save_swap_config,
 )
@@ -25,12 +25,12 @@ def parse_args():
     parser.add_argument(
         "--output_config",
         type=str,
-        default="inference/libritts_factorized_swap.generated.json",
+        default="inference/research/configs/libritts_factorized_swap.generated.json",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="infer_out_profiles/factorized_swap",
+        default="infer_out_profiles/research_factorized_swap",
     )
     parser.add_argument(
         "--profiles",

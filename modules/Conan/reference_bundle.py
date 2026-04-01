@@ -30,6 +30,9 @@ STYLE_RUNTIME_KEYS = (
     "dynamic_timbre_boundary_suppress_strength",
     "dynamic_timbre_boundary_radius",
     "dynamic_timbre_anchor_preserve_strength",
+    "style_query_global_summary_scale",
+    "dynamic_timbre_coarse_style_context_scale",
+    "dynamic_timbre_style_context_stopgrad",
 )
 
 REFERENCE_CONTRACT_MODES = (
@@ -103,6 +106,7 @@ def canonicalize_reference_bundle(
     contract_mode: Optional[str] = None,
 ):
     bundle = bundle or {}
+    existing_contract = first_present(bundle, "reference_contract", default={}) or {}
     contract_mode = normalize_reference_contract_mode(
         first_present(bundle, "reference_contract_mode", default=contract_mode),
         default="collapsed_reference",
@@ -110,20 +114,35 @@ def canonicalize_reference_bundle(
     resolved_ref = first_present(bundle, "ref", default=default_ref)
     explicit_ref = resolved_ref is not None
     explicit_timbre_value = first_present(bundle, "ref_timbre", "timbre", default=None)
-    explicit_timbre = explicit_timbre_value is not None
+    if "explicit_timbre" in existing_contract:
+        explicit_timbre = bool(existing_contract.get("explicit_timbre"))
+    else:
+        explicit_timbre = explicit_timbre_value is not None
     resolved_timbre = explicit_timbre_value if explicit_timbre_value is not None else resolved_ref
+    if not explicit_timbre:
+        resolved_timbre = resolved_ref
 
     explicit_style_value = first_present(bundle, "ref_style", "style", default=None)
     explicit_dynamic_timbre_value = first_present(bundle, "ref_dynamic_timbre", "dynamic_timbre", default=None)
-    explicit_style = explicit_style_value is not None
-    explicit_dynamic_timbre = explicit_dynamic_timbre_value is not None
+    if "explicit_style" in existing_contract:
+        explicit_style = bool(existing_contract.get("explicit_style"))
+    else:
+        explicit_style = explicit_style_value is not None
+    if "explicit_dynamic_timbre" in existing_contract:
+        explicit_dynamic_timbre = bool(existing_contract.get("explicit_dynamic_timbre"))
+    else:
+        explicit_dynamic_timbre = explicit_dynamic_timbre_value is not None
 
     resolved_style = explicit_style_value if explicit_style_value is not None else resolved_timbre
+    if not explicit_style:
+        resolved_style = resolved_timbre
     resolved_dynamic_timbre = (
         explicit_dynamic_timbre_value
         if explicit_dynamic_timbre_value is not None
         else resolved_style
     )
+    if not explicit_dynamic_timbre:
+        resolved_dynamic_timbre = resolved_style
 
     prompt_default = resolved_style if prompt_fallback_to_style else None
     resolved_emotion = first_present(bundle, "ref_emotion", "emotion", default=prompt_default)
@@ -345,6 +364,18 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
             source,
             "dynamic_timbre_anchor_preserve_strength",
         ),
+        "style_query_global_summary_scale": first_present(
+            source,
+            "style_query_global_summary_scale",
+        ),
+        "dynamic_timbre_coarse_style_context_scale": first_present(
+            source,
+            "dynamic_timbre_coarse_style_context_scale",
+        ),
+        "dynamic_timbre_style_context_stopgrad": first_present(
+            source,
+            "dynamic_timbre_style_context_stopgrad",
+        ),
     }
 
 
@@ -353,8 +384,16 @@ def bundle_to_model_kwargs(reference_bundle: Optional[Mapping[str, Any]], **extr
     if reference_bundle is not None:
         normalized_bundle = canonicalize_reference_bundle(reference_bundle)
         model_kwargs["reference_bundle"] = normalized_bundle
+        contract = normalized_bundle.get("reference_contract", {}) or {}
+        explicit_field_flags = {
+            "ref_timbre": bool(contract.get("explicit_timbre", False)),
+            "ref_style": bool(contract.get("explicit_style", False)),
+            "ref_dynamic_timbre": bool(contract.get("explicit_dynamic_timbre", False)),
+        }
         for key in REFERENCE_BUNDLE_KEYS:
             if key == "ref":
+                continue
+            if key in explicit_field_flags and not explicit_field_flags[key]:
                 continue
             value = normalized_bundle.get(key, None)
             if value is not None:

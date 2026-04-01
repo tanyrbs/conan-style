@@ -1,3 +1,5 @@
+import torch
+
 from modules.Conan.reference_bundle import (
     build_control_kwargs,
     build_style_runtime_kwargs,
@@ -36,6 +38,34 @@ class ConanStyleControlMixin:
         if content is None:
             return None
         return (content != hparams.get("content_padding_idx", 101)).float()
+
+    def _maybe_attach_output_identity_embeddings(self, output, reference_mels=None):
+        if not isinstance(output, dict):
+            return
+        mel_out = output.get("mel_out")
+        global_timbre_anchor = output.get("global_timbre_anchor")
+        if (
+            not isinstance(mel_out, torch.Tensor)
+            or not isinstance(global_timbre_anchor, torch.Tensor)
+            or getattr(self, "model", None) is None
+            or not hasattr(self.model, "encode_spk_embed")
+        ):
+            return
+        needs_identity_features = (
+            float(hparams.get("lambda_output_identity_cosine", 0.0)) > 0.0
+            or bool(hparams.get("log_control_diagnostics", True))
+        )
+        if not needs_identity_features:
+            return
+        output["output_identity_embed"] = self.model.encode_spk_embed(
+            mel_out.transpose(1, 2)
+        ).transpose(1, 2)
+        output["output_identity_anchor_target"] = global_timbre_anchor.detach()
+        if isinstance(reference_mels, torch.Tensor):
+            with torch.no_grad():
+                output["reference_identity_embed"] = self.model.encode_spk_embed(
+                    reference_mels.transpose(1, 2)
+                ).transpose(1, 2)
 
     def add_control_losses(self, output, sample, losses):
         regularization_config = resolve_control_regularization_config(hparams, self.global_step)

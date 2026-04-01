@@ -196,13 +196,14 @@ class ConanDecoderStyleAdapter(nn.Module):
         nonpadding_mask: Optional[torch.Tensor],
     ):
         if not isinstance(branch, torch.Tensor) or float(scale) == 0.0:
-            return hidden_btc, None, None
+            return hidden_btc, None, None, None
         branch = projector(branch)
         branch = self._apply_mask(branch, nonpadding_mask)
         branch_gate = gate(torch.cat([hidden_btc, branch], dim=-1))
         branch_gate = self._apply_mask(branch_gate, nonpadding_mask)
-        hidden_btc = hidden_btc + branch_gate * branch * float(scale)
-        return hidden_btc, branch, branch_gate
+        branch_delta = branch_gate * branch * float(scale)
+        hidden_btc = hidden_btc + branch_delta
+        return hidden_btc, branch, branch_gate, branch_delta
 
     def forward_stage(
         self,
@@ -262,7 +263,7 @@ class ConanDecoderStyleAdapter(nn.Module):
         }
 
         if apply_global_timbre and global_timbre_anchor is not None:
-            conditioned, global_timbre_ctx, global_timbre_gate = self._apply_branch(
+            conditioned, global_timbre_ctx, global_timbre_gate, global_timbre_delta = self._apply_branch(
                 conditioned,
                 global_timbre_anchor,
                 projector=self.global_timbre_proj,
@@ -272,9 +273,11 @@ class ConanDecoderStyleAdapter(nn.Module):
             )
             metadata["global_timbre_ctx"] = global_timbre_ctx
             metadata["global_timbre_gate"] = global_timbre_gate
+            metadata["global_timbre_delta"] = global_timbre_delta
+            metadata["global_timbre_scale_used"] = float(global_timbre_scale)
 
         if apply_global and global_style_summary is not None:
-            conditioned, global_ctx, global_gate = self._apply_branch(
+            conditioned, global_ctx, global_gate, global_style_delta = self._apply_branch(
                 conditioned,
                 global_style_summary,
                 projector=self.global_style_proj,
@@ -284,9 +287,11 @@ class ConanDecoderStyleAdapter(nn.Module):
             )
             metadata["global_style_ctx"] = global_ctx
             metadata["global_style_gate"] = global_gate
+            metadata["global_style_delta"] = global_style_delta
+            metadata["global_style_scale_used"] = float(self.global_style_scale)
 
         if apply_slow_style and _is_sequence_tensor(slow_style_trace):
-            conditioned, slow_style_ctx, slow_style_gate = self._apply_branch(
+            conditioned, slow_style_ctx, slow_style_gate, slow_style_delta = self._apply_branch(
                 conditioned,
                 slow_style_trace,
                 projector=self.slow_style_proj,
@@ -296,9 +301,11 @@ class ConanDecoderStyleAdapter(nn.Module):
             )
             metadata["slow_style_ctx"] = slow_style_ctx
             metadata["slow_style_gate"] = slow_style_gate
+            metadata["slow_style_delta"] = slow_style_delta
+            metadata["slow_style_scale_used"] = float(self.slow_style_scale)
 
         if apply_style and _is_sequence_tensor(style_trace):
-            conditioned, style_ctx, style_gate = self._apply_branch(
+            conditioned, style_ctx, style_gate, style_delta = self._apply_branch(
                 conditioned,
                 style_trace,
                 projector=self.style_trace_proj,
@@ -308,9 +315,11 @@ class ConanDecoderStyleAdapter(nn.Module):
             )
             metadata["style_trace_ctx"] = style_ctx
             metadata["style_trace_gate"] = style_gate
+            metadata["style_trace_delta"] = style_delta
+            metadata["style_trace_scale_used"] = float(self.style_trace_scale)
 
         if apply_timbre and _is_sequence_tensor(dynamic_timbre):
-            conditioned, timbre_ctx, timbre_gate = self._apply_branch(
+            conditioned, timbre_ctx, timbre_gate, timbre_delta = self._apply_branch(
                 conditioned,
                 dynamic_timbre,
                 projector=self.dynamic_timbre_proj,
@@ -320,6 +329,7 @@ class ConanDecoderStyleAdapter(nn.Module):
             )
             metadata["dynamic_timbre_ctx"] = timbre_ctx
             metadata["dynamic_timbre_gate"] = timbre_gate
+            metadata["dynamic_timbre_delta"] = timbre_delta
 
         delta = conditioned - hidden_btc
         applied = bool(delta.abs().sum().item() > 0)

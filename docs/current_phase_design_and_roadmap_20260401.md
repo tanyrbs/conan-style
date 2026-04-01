@@ -69,26 +69,70 @@ Updated: 2026-04-01
 - 旧 NATSpeech/PortaSpeech Gradio surface 已明确降级为 legacy / non-Conan
 - factorized report 已改为显式 `--enable_factorized_report` 才生成
 - `set_hparams()` 已允许 config 中的 `work_dir` 在无 `exp_name` 时保留，不再被清空
+- style / timbre query 已拆开，不再共同吃 `content + condition + anchor`
+- dynamic timbre 的 style conditioning 已改成 owner-aware：`LayerNorm + stopgrad`
+- control loss 已补成更接近 owner/stage 的版本：
+  - local mask-aware dynamic timbre budget
+  - boundary penalty
+  - late-stage owner / anchor budget
+- 输出端已补一层 mel-side identity proxy：
+  - `mel_out -> encode_spk_embed -> global_timbre_anchor.detach()`
+- test / smoke 已开始直接覆盖 prefix-online 路径：
+  - `tasks/Conan/streaming_prefix_online_smoke.py`
+  - `tasks/Conan/style_mainline_smoke.py`
+  - `inference/streaming_parity_smoke.py`
 
 ## 5. 当前还没彻底做完的工程项
 
 ### P0
 
-- 继续强化 `M_style > M_timbre` 的经验稳定性
-- 继续观察强风格下的 speaker drift / intelligibility / 边界稳定性
+- 真正 stateful decoder cache（当前仍是 prefix-online acoustic recompute）
+- 真正 stateful vocoder（当前仍是 bounded left-context re-synthesis）
+- 冻结外部 speaker verifier 版本的更强 identity loss / speaker drift 评测闭环
 
 ### P1
 
-- 真正增量 decoder cache
-- 真正 stateful vocoder
-- 更强的 online/offline parity 验证
+- 把 inference-side online/offline parity 持续接入回归门槛
+- 更细的 voiced / silence / chunk-boundary diagnostics
 
 ### P2
 
 - 更完整的 identity / style / material 评测闭环
 - 更明确的 streaming diagnostics
 
-## 6. 未来拓展边界
+## 6. 当前实现细节（owner hierarchy / streaming）
+
+### Query / owner hierarchy
+
+- `style_query = LN(content + condition + small global_style_summary prior)`
+- `timbre_query = LN(content + condition)`
+- `global_timbre_anchor` 不再作为 style/timbre query shared base 的一部分
+- `global_timbre_anchor` 继续只服务于：
+  - identity anchor
+  - anchor preserve / recenter
+  - 可选 pitch prior（mainline 默认关）
+
+### Dynamic timbre owner policy
+
+- `dynamic_timbre_style_context = LN(M_style_fast + 0.5 * M_style_slow + coarse_style_prior)`
+- 默认 `stopgrad`
+- 语义上是：
+  - `M_style` owns
+  - `M_timbre` follows and enhances
+
+### Streaming 语义
+
+当前 streaming 需要明确理解为：
+
+- reference cache：一次构建
+- content / Emformer：stateful
+- acoustic model：prefix recompute
+- vocoder：bounded left-context / whole-mel synthesis
+
+这意味着现在已经把 **online path 变成了 first-class validation target**，
+但还没有完成 strict incremental decoder / vocoder。
+
+## 7. 未来拓展边界
 
 允许的未来拓展：
 
@@ -104,6 +148,6 @@ Updated: 2026-04-01
 - style/timbre 写回 timing 或 pitch authority
 - 让 research surface 反向定义产品面
 
-## 7. 一句话路线图
+## 8. 一句话路线图
 
 > **先把 Conan 单参考 strong-style 主线做稳、做清楚、做可跑；再把扩展做成受约束的旁路。**

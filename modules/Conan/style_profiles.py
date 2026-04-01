@@ -21,6 +21,9 @@ STYLE_PROFILE_KEYS = (
     "dynamic_timbre_boundary_suppress_strength",
     "dynamic_timbre_boundary_radius",
     "dynamic_timbre_anchor_preserve_strength",
+    "style_query_global_summary_scale",
+    "dynamic_timbre_coarse_style_context_scale",
+    "dynamic_timbre_style_context_stopgrad",
 )
 
 
@@ -45,6 +48,9 @@ STYLE_PROFILES = {
         "dynamic_timbre_boundary_suppress_strength": 0.5,
         "dynamic_timbre_boundary_radius": 2,
         "dynamic_timbre_anchor_preserve_strength": 0.2,
+        "style_query_global_summary_scale": 0.35,
+        "dynamic_timbre_coarse_style_context_scale": 0.25,
+        "dynamic_timbre_style_context_stopgrad": True,
     },
     "extreme": {
         "decoder_style_condition_mode": "mainline_full",
@@ -66,6 +72,9 @@ STYLE_PROFILES = {
         "dynamic_timbre_boundary_suppress_strength": 0.45,
         "dynamic_timbre_boundary_radius": 2,
         "dynamic_timbre_anchor_preserve_strength": 0.18,
+        "style_query_global_summary_scale": 0.35,
+        "dynamic_timbre_coarse_style_context_scale": 0.30,
+        "dynamic_timbre_style_context_stopgrad": True,
     },
 }
 

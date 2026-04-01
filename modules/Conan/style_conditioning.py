@@ -676,6 +676,10 @@ class ConanStyleConditioningMixin:
             and tuple(style_context.shape) == tuple(aligned.shape)
         )
         if style_context_available:
+            style_context = F.layer_norm(
+                style_context.detach(),
+                (style_context.size(-1),),
+            )
             style_context = style_context.masked_fill(src_key_padding_mask.unsqueeze(-1), 0.0)
             encoder_gate_input = encoder_out + float(style_condition_scale) * style_context
         else:
@@ -712,6 +716,7 @@ class ConanStyleConditioningMixin:
         ret["dynamic_timbre_style_context"] = style_context if style_context_available else None
         ret["dynamic_timbre_style_condition_scale"] = float(style_condition_scale)
         ret["dynamic_timbre_style_conditioned"] = bool(style_context_available and float(style_condition_scale) != 0.0)
+        ret["dynamic_timbre_style_context_owner_safe"] = bool(style_context_available)
         ret["dynamic_timbre_control"] = control.as_dict()
         ret["tv_timbre_smooth"] = self._sequence_smoothness(aligned, src_key_padding_mask)
         ret["tv_timbre_anchor"] = F.l1_loss(

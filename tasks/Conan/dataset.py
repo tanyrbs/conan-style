@@ -51,9 +51,6 @@ class ConanDataset(FastSpeechDataset):
         batch["dynamic_timbre_ref_mels"] = batch["ref_mels"]
         raw_reference_bundle = {
             "ref": batch["ref_mels"],
-            "ref_timbre": batch["ref_timbre_mels"],
-            "ref_style": batch["ref_mels"],
-            "ref_dynamic_timbre": batch["ref_mels"],
             "ref_emotion": batch.get("emotion_ref_mels", None),
             "ref_accent": batch.get("accent_ref_mels", None),
             "reference_contract_mode": contract_mode,

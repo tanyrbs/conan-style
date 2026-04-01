@@ -51,13 +51,13 @@ def _coerce_mask(mask: Any, reference: Optional[torch.Tensor]):
     return mask.bool().to(device=reference.device)
 
 
-def normalize_decoder_style_bundle_variant(variant: Any, default: str = "legacy_full") -> str:
-    normalized_default = str(default or "legacy_full").strip().lower() or "legacy_full"
+def normalize_decoder_style_bundle_variant(variant: Any, default: str = "mainline_full") -> str:
+    normalized_default = str(default or "mainline_full").strip().lower() or "mainline_full"
     normalized = str(variant or normalized_default).strip().lower() or normalized_default
     alias_map = {
-        "default": "legacy_full",
+        "default": "mainline_full",
         "legacy": "legacy_full",
-        "full": "legacy_full",
+        "full": "mainline_full",
         "mainline": "mainline_full",
         "gsdt": "global_style_dynamic_timbre",
         "global_dynamic_timbre": "global_style_dynamic_timbre",
@@ -73,7 +73,7 @@ def normalize_decoder_style_bundle_variant(variant: Any, default: str = "legacy_
 
 @dataclass(frozen=True)
 class DecoderStyleBundle:
-    bundle_variant: str = "legacy_full"
+    bundle_variant: str = "mainline_full"
     bundle_source: str = "decoder_style_mainline"
     mainline_owner: str = "global_style_plus_dynamic_timbre"
     timing_authority: str = DECODER_STYLE_TIMING_AUTHORITY
@@ -126,7 +126,7 @@ def canonicalize_decoder_style_bundle(bundle: Optional[Mapping[str, Any]] = None
         return None
     normalized = dict(bundle)
     normalized["bundle_variant"] = normalize_decoder_style_bundle_variant(
-        normalized.get("bundle_variant", normalized.get("decoder_style_condition_mode", "legacy_full"))
+        normalized.get("bundle_variant", normalized.get("decoder_style_condition_mode", "mainline_full"))
     )
     normalized["bundle_source"] = str(normalized.get("bundle_source", "decoder_style_mainline"))
     normalized["mainline_owner"] = str(normalized.get("mainline_owner", "global_style_plus_dynamic_timbre"))
@@ -217,7 +217,7 @@ def build_decoder_style_bundle(
     M_timbre=None,
     M_timbre_mask=None,
     M_timbre_source: str = "none",
-    bundle_variant: str = "legacy_full",
+    bundle_variant: str = "mainline_full",
     bundle_source: str = "decoder_style_mainline",
     mainline_owner: str = "global_style_plus_dynamic_timbre",
     timing_authority: str = DECODER_STYLE_TIMING_AUTHORITY,

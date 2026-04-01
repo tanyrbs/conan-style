@@ -63,6 +63,12 @@ python inference/run_conan_gradio_demo.py
 
 - `inference/conan_gradio/gradio_settings.yaml`
 
+如果本地没装 Gradio：
+
+```bash
+pip install gradio
+```
+
 默认 runner 已经绑定：
 
 - `--config egs/conan_mainline_infer.yaml`
@@ -76,13 +82,41 @@ python inference/run_conan_gradio_demo.py
 - `timing_writeback_allowed: false`
 - `M_style` 是 expression owner
 - `M_timbre` 是 bounded material enhancer，而不是第二个主风格 owner
+- style / timbre query 已拆分：不再共享 `content + condition + anchor`
+- `M_style -> M_timbre` 已改成 owner-aware conditioning：`LayerNorm + stopgrad`
+- decoder-side regularization 已补 owner-centric loss：local budget / boundary / late-owner
+- 输出端已补 mel-side identity proxy loss：`mel_out -> global_timbre_anchor`
+- validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel parity
 
 ## 当前阶段重点
 
-1. 统一 Conan mainline config / runner / README / docs / checkpoint config
-2. 把 Conan 单参考 strong-style demo 单独立起来
-3. 把旧 NATSpeech/PortaSpeech surface 明确剥离为 legacy / non-Conan
-4. 继续推进真正增量的 decoder / vocoder streaming
+1. 继续推进真正增量的 decoder / vocoder streaming
+2. 把 online/offline parity 变成固定 smoke / regression 入口
+3. 继续观察强风格下 speaker drift / intelligibility / boundary stability
+4. 后续再升级到冻结外部 speaker verifier 的更强 identity loss
+
+## 新增 smoke / regression
+
+```bash
+python tasks/Conan/style_mainline_smoke.py
+python tasks/Conan/streaming_prefix_online_smoke.py
+```
+
+其中：
+
+- `style_mainline_smoke.py`：检查单参考 mainline contract / query split / decoder-side bundle
+- `streaming_prefix_online_smoke.py`：检查 Conan 任务侧 offline mel vs prefix-online chunked mel
+
+用于防止“只在离线路径稳定、在线路径没被回归”的问题。
+
+如果你有真实 `src_wav / ref_wav`，还可以直接检查推理前端的 online/offline parity：
+
+```bash
+python inference/streaming_parity_smoke.py \
+  --exp_name Conan \
+  --src_wav <src.wav> \
+  --ref_wav <ref.wav>
+```
 
 ## 文档
 
@@ -96,5 +130,5 @@ python inference/run_conan_gradio_demo.py
 
 - `inference/tts/gradio/*`（旧 NATSpeech/PortaSpeech TTS demo）
 - `inference/run_voice_conversion_nvae.py`
-- `inference/factorized_swap_builder.py`
+- `inference/research/*`
 - `inference/run_style_profile_evaluation.py --enable_factorized_report`

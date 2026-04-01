@@ -33,12 +33,12 @@ def _first_present(source: Optional[Mapping[str, Any]], *keys: str, default=None
     return default
 
 
-def normalize_decoder_style_condition_mode(mode, default: str = "legacy_full") -> str:
-    normalized_default = str(default or "legacy_full").strip().lower() or "legacy_full"
+def normalize_decoder_style_condition_mode(mode, default: str = "mainline_full") -> str:
+    normalized_default = str(default or "mainline_full").strip().lower() or "mainline_full"
     normalized = str(mode or normalized_default).strip().lower() or normalized_default
     alias_map = {
-        "default": "legacy_full",
-        "full": "legacy_full",
+        "default": "mainline_full",
+        "full": "mainline_full",
         "legacy": "legacy_full",
         "legacy_full_conditioning": "legacy_full",
         "mainline_full_stack": "mainline_full",
@@ -88,17 +88,17 @@ def normalize_style_trace_mode(mode, default: str = "fast") -> str:
 
 @dataclass(frozen=True)
 class StyleMainlineControls:
-    mode: str = "legacy_full"
+    mode: str = "mainline_full"
     apply_global_style_anchor: bool = True
     apply_style_trace: bool = True
     apply_dynamic_timbre: bool = True
-    global_timbre_to_pitch: bool = True
+    global_timbre_to_pitch: bool = False
     global_style_anchor_strength: float = 1.0
     style_strength: float = 1.0
     fast_style_strength_scale: float = 1.0
     slow_style_strength_scale: float = 1.0
     dynamic_timbre_strength: float = 1.0
-    style_trace_mode: str = "fast"
+    style_trace_mode: str = "slow"
     style_memory_mode: str = "fast"
     dynamic_timbre_memory_mode: str = "fast"
     style_temperature: float = 1.0
@@ -121,7 +121,7 @@ def resolve_style_mainline_controls(
     overrides: Optional[Mapping[str, Any]] = None,
     *,
     hparams: Optional[Mapping[str, Any]] = None,
-    default_mode: str = "legacy_full",
+    default_mode: str = "mainline_full",
 ) -> StyleMainlineControls:
     mode = normalize_decoder_style_condition_mode(
         _first_present(

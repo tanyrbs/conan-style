@@ -130,6 +130,79 @@ def _gate_mean(gate, mask=None):
     return None
 
 
+def _sequence_abs_mean(value):
+    if not isinstance(value, torch.Tensor):
+        return None
+    if value.dim() == 3:
+        return value.abs().mean(dim=-1)
+    if value.dim() == 2:
+        return value.abs()
+    return None
+
+
+def _sequence_weight(mask=None, *, reference=None, boundary_mask=None, voiced_weight=None):
+    device = None
+    dtype = torch.float32
+    if isinstance(reference, torch.Tensor):
+        device = reference.device
+        dtype = reference.dtype if reference.is_floating_point() else torch.float32
+        shape = reference.shape[:2]
+    else:
+        shape = None
+
+    weight = None
+    if isinstance(mask, torch.Tensor):
+        if mask.dim() == 3 and mask.size(-1) == 1:
+            mask = mask.squeeze(-1)
+        if mask.dim() == 2:
+            weight = (~mask.bool()).to(device=device or mask.device, dtype=dtype)
+            shape = tuple(mask.shape)
+    if weight is None and shape is not None:
+        weight = torch.ones(shape, device=device, dtype=dtype)
+    if weight is None:
+        return None
+
+    if isinstance(voiced_weight, torch.Tensor):
+        if voiced_weight.dim() == 3 and voiced_weight.size(-1) == 1:
+            voiced_weight = voiced_weight.squeeze(-1)
+        if voiced_weight.dim() == 2 and tuple(voiced_weight.shape) == tuple(weight.shape):
+            weight = weight * voiced_weight.to(device=weight.device, dtype=weight.dtype).clamp(0.0, 1.0)
+
+    if isinstance(boundary_mask, torch.Tensor):
+        if boundary_mask.dim() == 3 and boundary_mask.size(-1) == 1:
+            boundary_mask = boundary_mask.squeeze(-1)
+        if boundary_mask.dim() == 2 and tuple(boundary_mask.shape) == tuple(weight.shape):
+            weight = weight * (1.0 - boundary_mask.to(device=weight.device, dtype=weight.dtype).clamp(0.0, 1.0))
+    return weight
+
+
+def _weighted_mean(value, weight=None):
+    if not isinstance(value, torch.Tensor):
+        return None
+    if not isinstance(weight, torch.Tensor):
+        return value.mean()
+    if tuple(value.shape) != tuple(weight.shape):
+        return None
+    denom = weight.sum().clamp_min(1.0)
+    return (value * weight).sum() / denom
+
+
+def _tensor_abs_mean(value):
+    if not isinstance(value, torch.Tensor):
+        return None
+    return value.abs().mean()
+
+
+def _sum_optional_scalars(*values):
+    present = [value for value in values if isinstance(value, torch.Tensor)]
+    if not present:
+        return None
+    total = present[0]
+    for value in present[1:]:
+        total = total + value
+    return total
+
+
 def add_classification_losses(losses, output, sample, *, specs):
     for loss_name, logit_key, target_key, lambda_value in specs:
         if lambda_value <= 0:
@@ -267,6 +340,16 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if timbre_anchor_cos is not None:
             losses["timbre_anchor_cosine"] = timbre_anchor_cos * timbre_anchor_cos_lambda
 
+    output_identity_lambda = float(config.get("lambda_output_identity_cosine", 0.0))
+    if output_identity_lambda > 0:
+        output_identity_embed = _summary_vector(output.get("output_identity_embed"))
+        output_identity_target = _summary_vector(
+            output.get("output_identity_anchor_target", output.get("global_timbre_anchor"))
+        )
+        output_identity_cos = _cosine_distance(output_identity_embed, output_identity_target)
+        if output_identity_cos is not None:
+            losses["output_identity_cosine"] = output_identity_cos * output_identity_lambda
+
     style_timbre_dis_lambda = float(config.get("lambda_style_timbre_disentangle", 0.0))
     if style_timbre_dis_lambda > 0:
         style_timbre_dis = _mean_abs_cosine(style_repr, global_timbre_anchor)
@@ -334,9 +417,75 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         style_decoder_residual = output.get("style_decoder_residual")
         dynamic_timbre_decoder_residual = output.get("dynamic_timbre_decoder_residual")
         if isinstance(style_decoder_residual, torch.Tensor) and isinstance(dynamic_timbre_decoder_residual, torch.Tensor):
-            style_budget = style_decoder_residual.abs().mean()
-            timbre_budget = dynamic_timbre_decoder_residual.abs().mean()
+            style_budget = _sequence_abs_mean(style_decoder_residual.detach())
+            timbre_budget = _sequence_abs_mean(dynamic_timbre_decoder_residual)
             budget_ratio = float(config.get("dynamic_timbre_budget_ratio", 0.75))
-            losses["dynamic_timbre_budget"] = (
-                F.relu(timbre_budget - budget_ratio * style_budget) * dynamic_timbre_budget_lambda
+            budget_margin = float(config.get("dynamic_timbre_budget_margin", 0.02))
+            voiced_weight = None
+            sample_uv = sample.get("uv")
+            if isinstance(sample_uv, torch.Tensor) and sample_uv.dim() == 2 and tuple(sample_uv.shape) == tuple(timbre_budget.shape):
+                voiced_weight = (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(timbre_budget.device)
+            valid_weight = _sequence_weight(
+                output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                reference=timbre_budget,
+                boundary_mask=output.get("dynamic_timbre_boundary_mask"),
+                voiced_weight=voiced_weight,
             )
+            local_budget = F.relu(timbre_budget - budget_ratio * style_budget - budget_margin)
+            reduced_budget = _weighted_mean(local_budget, valid_weight)
+            if reduced_budget is not None:
+                losses["dynamic_timbre_budget"] = reduced_budget * dynamic_timbre_budget_lambda
+
+    dynamic_timbre_boundary_lambda = float(config.get("lambda_dynamic_timbre_boundary", 0.0))
+    if dynamic_timbre_boundary_lambda > 0:
+        dynamic_timbre_decoder_residual = output.get("dynamic_timbre_decoder_residual")
+        boundary_mask = output.get("dynamic_timbre_boundary_mask")
+        if isinstance(dynamic_timbre_decoder_residual, torch.Tensor) and isinstance(boundary_mask, torch.Tensor):
+            boundary_penalty = _sequence_abs_mean(dynamic_timbre_decoder_residual)
+            if isinstance(boundary_penalty, torch.Tensor):
+                nonboundary_weight = _sequence_weight(
+                    output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                    reference=boundary_penalty,
+                )
+                if isinstance(boundary_mask, torch.Tensor):
+                    if boundary_mask.dim() == 3 and boundary_mask.size(-1) == 1:
+                        boundary_mask = boundary_mask.squeeze(-1)
+                    if boundary_mask.dim() == 2 and tuple(boundary_mask.shape) == tuple(boundary_penalty.shape):
+                        boundary_weight = boundary_mask.to(boundary_penalty.device, dtype=boundary_penalty.dtype).clamp(0.0, 1.0)
+                        if isinstance(nonboundary_weight, torch.Tensor):
+                            boundary_weight = boundary_weight * nonboundary_weight
+                        reduced_boundary = _weighted_mean(boundary_penalty, boundary_weight)
+                        if reduced_boundary is not None:
+                            losses["dynamic_timbre_boundary"] = (
+                                reduced_boundary * dynamic_timbre_boundary_lambda
+                            )
+
+    late_owner_lambda = float(config.get("lambda_decoder_late_owner", 0.0))
+    late_anchor_lambda = float(config.get("lambda_decoder_late_anchor_budget", 0.0))
+    if late_owner_lambda > 0 or late_anchor_lambda > 0:
+        stage_outputs = output.get("decoder_style_adapter_stages")
+        late_stage = stage_outputs.get("late") if isinstance(stage_outputs, dict) else None
+        if isinstance(late_stage, dict):
+            late_style_energy = _sum_optional_scalars(
+                _tensor_abs_mean(late_stage.get("global_style_delta")),
+                _tensor_abs_mean(late_stage.get("slow_style_delta")),
+                _tensor_abs_mean(late_stage.get("style_trace_delta")),
+            )
+            late_timbre_energy = _tensor_abs_mean(late_stage.get("dynamic_timbre_delta"))
+            late_anchor_energy = _tensor_abs_mean(late_stage.get("global_timbre_delta"))
+            if late_owner_lambda > 0 and isinstance(late_style_energy, torch.Tensor) and isinstance(late_timbre_energy, torch.Tensor):
+                owner_ratio = float(config.get("decoder_late_timbre_owner_ratio", 0.75))
+                losses["decoder_late_owner"] = (
+                    F.relu(late_timbre_energy - owner_ratio * late_style_energy) * late_owner_lambda
+                )
+            if late_anchor_lambda > 0 and isinstance(late_anchor_energy, torch.Tensor):
+                anchor_reference = late_style_energy
+                if not isinstance(anchor_reference, torch.Tensor):
+                    anchor_reference = _tensor_abs_mean(output.get("style_decoder_residual"))
+                if isinstance(anchor_reference, torch.Tensor):
+                    anchor_ratio = float(config.get("decoder_late_anchor_budget_ratio", 0.35))
+                    anchor_floor = float(config.get("decoder_late_anchor_budget_floor", 0.0))
+                    losses["decoder_late_anchor_budget"] = (
+                        F.relu(late_anchor_energy - anchor_ratio * anchor_reference - anchor_floor)
+                        * late_anchor_lambda
+                    )

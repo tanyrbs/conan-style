@@ -10,9 +10,13 @@ TIMBRE_REGULARIZATION_LAMBDAS = (
     "lambda_tv_timbre_smooth",
     "lambda_tv_timbre_anchor",
     "lambda_timbre_anchor_cosine",
+    "lambda_output_identity_cosine",
     "lambda_style_dynamic_timbre_disentangle",
     "lambda_dynamic_timbre_gate",
     "lambda_dynamic_timbre_budget",
+    "lambda_dynamic_timbre_boundary",
+    "lambda_decoder_late_owner",
+    "lambda_decoder_late_anchor_budget",
 )
 
 DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
@@ -25,9 +29,13 @@ DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
     "lambda_tv_timbre_smooth",
     "lambda_tv_timbre_anchor",
     "lambda_timbre_anchor_cosine",
+    "lambda_output_identity_cosine",
     "lambda_style_dynamic_timbre_disentangle",
     "lambda_dynamic_timbre_gate",
     "lambda_dynamic_timbre_budget",
+    "lambda_dynamic_timbre_boundary",
+    "lambda_decoder_late_owner",
+    "lambda_decoder_late_anchor_budget",
 )
 
 

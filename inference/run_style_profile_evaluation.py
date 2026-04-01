@@ -8,8 +8,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from inference.factorized_swap_report import write_factorized_swap_report
 from inference.profile_sweep_evaluator import StyleProfileSweepEvaluator
+from inference.research.factorized_swap_report import write_factorized_swap_report
 from utils.commons.hparams import hparams, set_hparams
 
 CANONICAL_CONFIG = "egs/conan_mainline_infer.yaml"

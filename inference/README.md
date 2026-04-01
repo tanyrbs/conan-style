@@ -23,6 +23,14 @@ In other words:
 
 > single reference -> stable identity -> stronger style -> bounded material enhancement
 
+Internally the mainline now hardens that hierarchy as:
+
+- `global_timbre_anchor`: identity owner
+- `M_style`: expression owner
+- `M_timbre`: bounded material enhancer
+
+The query path is no longer the old shared `content + condition + anchor` path for both style and timbre.
+
 ## Canonical runnable entrypoints
 
 ### 1. Batch single-reference demo
@@ -60,13 +68,19 @@ python inference/run_style_profile_report.py \
 python inference/run_conan_gradio_demo.py
 ```
 
+If Gradio is not installed yet:
+
+```bash
+pip install gradio
+```
+
 ## Important policy
 
 ### 1. Split references are not part of the mainline surface
 
 `ref_timbre_wav / ref_style_wav / ref_dynamic_timbre_wav` are no longer part of the canonical public surface.
 
-The canonical runners will collapse them back to `ref_wav` unless you explicitly opt into split-reference / research behavior.
+The canonical batch runner and canonical sweep runner will reject them on the mainline path.
 
 ### 2. Advanced label controls are gated
 
@@ -94,13 +108,38 @@ Current streaming semantics are explicit:
 
 So the current path is suitable for streaming-oriented evaluation, but it is not yet a fully stateful end-to-end decoder/vocoder stack.
 
+What is new in the current mainline:
+
+- validation / test now explicitly cover a prefix-online chunked path on the Conan task side
+- `StreamingVoiceConversion.infer_parity_once(...)` can compare online prefix streaming vs offline full pass
+- `inference/streaming_parity_smoke.py` exposes that comparison as a simple CLI
+
+Example:
+
+```bash
+python inference/streaming_parity_smoke.py \
+  --exp_name Conan \
+  --src_wav <src.wav> \
+  --ref_wav <ref.wav> \
+  --style_profile strong_style
+```
+
+For repo-side regression, use:
+
+```bash
+python tasks/Conan/streaming_prefix_online_smoke.py
+```
+
+These smokes compare offline mel against prefix-online chunked mel on the canonical single-reference mainline.
+
 ## Legacy / research-only surfaces
 
 These files still exist, but they are not the Conan mainline:
 
 - `Conan_previous.py`
 - `run_voice_conversion_nvae.py`
-- `factorized_swap_builder.py`
-- `factorized_swap_report.py`
-- `build_libritts_factorized_swap_matrix.py`
+- `research/factorized_swap_builder.py`
+- `research/factorized_swap_report.py`
+- `research/build_libritts_factorized_swap_matrix.py`
+- `research/configs/*`
 - `tts/gradio/*` (legacy NATSpeech/PortaSpeech TTS surface)

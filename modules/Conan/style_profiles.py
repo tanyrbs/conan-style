@@ -26,6 +26,8 @@ STYLE_PROFILE_KEYS = (
     "dynamic_timbre_boundary_suppress_strength",
     "dynamic_timbre_boundary_radius",
     "dynamic_timbre_anchor_preserve_strength",
+    "dynamic_timbre_use_tvt",
+    "dynamic_timbre_tvt_prior_scale",
     "style_query_global_summary_scale",
     "dynamic_timbre_coarse_style_context_scale",
     "dynamic_timbre_query_style_condition_scale",
@@ -57,6 +59,8 @@ STYLE_PROFILES = {
         "dynamic_timbre_boundary_suppress_strength": 0.5,
         "dynamic_timbre_boundary_radius": 2,
         "dynamic_timbre_anchor_preserve_strength": 0.2,
+        "dynamic_timbre_use_tvt": True,
+        "dynamic_timbre_tvt_prior_scale": 1.0,
         "style_query_global_summary_scale": 0.0,
         "dynamic_timbre_coarse_style_context_scale": 0.0,
         "dynamic_timbre_query_style_condition_scale": 0.0,
@@ -85,6 +89,8 @@ STYLE_PROFILES = {
         "dynamic_timbre_boundary_suppress_strength": 0.5,
         "dynamic_timbre_boundary_radius": 2,
         "dynamic_timbre_anchor_preserve_strength": 0.2,
+        "dynamic_timbre_use_tvt": True,
+        "dynamic_timbre_tvt_prior_scale": 1.0,
         "style_query_global_summary_scale": 0.0,
         "dynamic_timbre_coarse_style_context_scale": 0.0,
         "dynamic_timbre_query_style_condition_scale": 0.0,
@@ -113,6 +119,8 @@ STYLE_PROFILES = {
         "dynamic_timbre_boundary_suppress_strength": 0.45,
         "dynamic_timbre_boundary_radius": 2,
         "dynamic_timbre_anchor_preserve_strength": 0.18,
+        "dynamic_timbre_use_tvt": True,
+        "dynamic_timbre_tvt_prior_scale": 1.05,
         "style_query_global_summary_scale": 0.0,
         "dynamic_timbre_coarse_style_context_scale": 0.0,
         "dynamic_timbre_query_style_condition_scale": 0.0,
@@ -188,6 +196,8 @@ def resolve_style_profile(
             or float(resolved.get("dynamic_timbre_coarse_style_context_scale", 0.0)) != 0.0
             or float(resolved.get("dynamic_timbre_query_style_condition_scale", 0.0)) != 0.0
             or not bool(resolved.get("dynamic_timbre_style_context_stopgrad", True))
+            or not bool(resolved.get("dynamic_timbre_use_tvt", True))
+            or float(resolved.get("dynamic_timbre_tvt_prior_scale", 1.0)) != 1.0
             or float(resolved.get("runtime_dynamic_timbre_style_budget_ratio", 0.40)) != 0.40
             or float(resolved.get("runtime_dynamic_timbre_style_budget_margin", 0.0)) != 0.0
             or not bool(resolved.get("runtime_dynamic_timbre_style_budget_enabled", True))
@@ -207,6 +217,8 @@ def resolve_style_profile(
             resolved["dynamic_timbre_coarse_style_context_scale"] = 0.0
             resolved["dynamic_timbre_query_style_condition_scale"] = 0.0
             resolved["dynamic_timbre_style_context_stopgrad"] = True
+            resolved["dynamic_timbre_use_tvt"] = True
+            resolved["dynamic_timbre_tvt_prior_scale"] = 1.0
             resolved["runtime_dynamic_timbre_style_budget_enabled"] = True
             resolved["runtime_dynamic_timbre_style_budget_ratio"] = 0.40
             resolved["runtime_dynamic_timbre_style_budget_margin"] = 0.0

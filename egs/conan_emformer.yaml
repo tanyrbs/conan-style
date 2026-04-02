@@ -160,7 +160,7 @@ lambda_commit: 0.25
 vq_start: 20500
 vae_dropout: 0.0
 nVQ: 128  # aligned to the shipped Conan checkpoint
-forcing: 20000
+forcing: 20000   # canonical legacy hard fallback cut; keep explicit so prep/docs/smokes agree on the old boundary
 forcing_schedule_mode: bernoulli_cosine   # training-only smoothing; legacy hard fallback remains available via `forcing`
 forcing_decay_start_steps: 12000
 forcing_decay_end_steps: 60000
@@ -222,6 +222,12 @@ dynamic_timbre_strength_base: 0.55
 dynamic_timbre_strength_slope: 0.45
 dynamic_timbre_strength_min: 0.50
 dynamic_timbre_strength_max: 1.05
+dynamic_timbre_use_tvt: true
+dynamic_timbre_num_facets: 8
+dynamic_timbre_facet_hidden: 256
+dynamic_timbre_tvt_prior_scale: 1.0
+dynamic_timbre_tvt_mix_bias: -0.25
+dynamic_timbre_tvt_variation_bias: -1.0
 dynamic_timbre_style_condition_scale: 0.35
 dynamic_timbre_query_style_condition_scale: 0.0
 dynamic_timbre_coarse_style_context_scale: 0.0

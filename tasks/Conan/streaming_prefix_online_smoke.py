@@ -122,6 +122,10 @@ def run_smoke(args):
         raise AssertionError("prefix-online path must stay external-reference-only.")
     if str(offline_output.get("reference_curriculum_mode", "")) != "inference_external_only":
         raise AssertionError("offline infer/test path must stay external-reference-only.")
+    if str(streaming_output.get("forcing_schedule_mode", "")) != "inference_disabled":
+        raise AssertionError("prefix-online path must explicitly report forcing_schedule_mode=inference_disabled.")
+    if str(offline_output.get("forcing_schedule_mode", "")) != "inference_disabled":
+        raise AssertionError("offline infer/test path must explicitly report forcing_schedule_mode=inference_disabled.")
     if bool(streaming_output.get("forcing_enabled", True)):
         raise AssertionError("prefix-online path must not use prosody forcing.")
     if bool(offline_output.get("forcing_enabled", True)):
@@ -138,6 +142,10 @@ def run_smoke(args):
         "streaming_chunk_tokens": int(streaming_output.get("streaming_chunk_tokens", args.tokens_per_chunk)),
         "offline_mel_shape": list(offline_output["mel_out"].shape),
         "streaming_mel_shape": list(streaming_output["mel_out"].shape),
+        "reference_curriculum_source_online": streaming_output.get("reference_curriculum_source"),
+        "reference_curriculum_source_offline": offline_output.get("reference_curriculum_source"),
+        "forcing_schedule_mode_online": streaming_output.get("forcing_schedule_mode"),
+        "forcing_schedule_mode_offline": offline_output.get("forcing_schedule_mode"),
         "query_anchor_split_applied": bool(streaming_output.get("query_anchor_split_applied", False)),
         "dynamic_timbre_style_context_owner_safe": bool(
             streaming_output.get("dynamic_timbre_style_context_owner_safe", False)

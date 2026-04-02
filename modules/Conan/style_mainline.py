@@ -154,6 +154,8 @@ class StyleMainlineControls:
     dynamic_timbre_boundary_suppress_strength: float = 0.0
     dynamic_timbre_boundary_radius: int = 2
     dynamic_timbre_anchor_preserve_strength: float = 0.0
+    dynamic_timbre_use_tvt: bool = True
+    dynamic_timbre_tvt_prior_scale: float = 1.0
     enforce_decoder_no_timing_writeback: bool = True
     mainline_owner: str = STYLE_MAINLINE_OWNER
 
@@ -305,6 +307,8 @@ def resolve_style_mainline_controls(
         dynamic_timbre_anchor_preserve_strength=float(
             _value("dynamic_timbre_anchor_preserve_strength", default=0.0)
         ),
+        dynamic_timbre_use_tvt=bool(_value("dynamic_timbre_use_tvt", default=True)),
+        dynamic_timbre_tvt_prior_scale=float(_value("dynamic_timbre_tvt_prior_scale", default=1.0)),
         enforce_decoder_no_timing_writeback=bool(
             _value("enforce_decoder_no_timing_writeback", default=True)
         ),
@@ -362,6 +366,8 @@ def build_style_mainline_surface_payload(
         "dynamic_timbre_anchor_preserve_strength": float(
             controls.dynamic_timbre_anchor_preserve_strength
         ),
+        "dynamic_timbre_use_tvt": bool(controls.dynamic_timbre_use_tvt),
+        "dynamic_timbre_tvt_prior_scale": float(controls.dynamic_timbre_tvt_prior_scale),
         "style_trace_available": bool(style_trace_available),
         "dynamic_timbre_available": bool(dynamic_timbre_available),
         "style_trace_source": str(style_trace_source),

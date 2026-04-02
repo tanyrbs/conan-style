@@ -37,6 +37,12 @@ def parse_args():
     parser.add_argument("--speakers_per_batch", type=int, default=2)
     parser.add_argument("--items_per_speaker", type=int, default=2)
     parser.add_argument(
+        "--global_step",
+        type=int,
+        default=None,
+        help="Optional initial global_step for the train-path dry run. Defaults to the smoke helper's post-warmup step.",
+    )
+    parser.add_argument(
         "--output_path",
         type=str,
         default="smoke_runs/mainline_cpu_dry_run.json",
@@ -57,7 +63,7 @@ def _run_train_steps(args):
         speakers_per_batch=int(args.speakers_per_batch),
         items_per_speaker=int(args.items_per_speaker),
     )
-    task = build_conan_training_task("cpu")
+    task = build_conan_training_task("cpu", global_step=args.global_step)
     optimizer, _ = task.build_optimizer(task.model)
     history = []
     for step_idx in range(int(args.num_steps)):
@@ -79,6 +85,7 @@ def _run_train_steps(args):
         history.append(
             {
                 "step": int(step_idx),
+                "global_step": int(task.global_step),
                 "indices": [int(idx) for idx in indices],
                 "total_loss": scalarize_value(total_loss),
                 "output_identity_cosine": scalar_logs.get("output_identity_cosine"),
@@ -103,6 +110,8 @@ def _run_train_steps(args):
         "num_styles": int(num_styles),
         "batch_shape": batch_shape,
         "num_steps": int(args.num_steps),
+        "requested_global_step": None if args.global_step is None else int(args.global_step),
+        "effective_initial_global_step": int(history[0]["global_step"]) if history else int(task.global_step),
         "history": history,
     }
 
@@ -115,6 +124,11 @@ def run_cpu_dry_run(args):
             output_path=str(Path(args.output_path).with_name("mainline_train_prep.from_dry_run.json")),
         )
     )
+    if not bool(prep_summary.get("ready", False)):
+        raise RuntimeError(
+            "mainline_train_prep reported ready=false; fix prep checks before running the CPU dry run. "
+            f"See {Path(args.output_path).with_name('mainline_train_prep.from_dry_run.json')} for details."
+        )
     train_summary = _run_train_steps(args)
     summary = {
         "config": args.config,

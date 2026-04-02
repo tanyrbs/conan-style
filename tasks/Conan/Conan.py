@@ -72,6 +72,42 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
     def _schedule_end_step(primary_key, fallback_key):
         return int(hparams.get(primary_key, hparams.get(fallback_key, 0)))
 
+    @staticmethod
+    def _attach_reference_curriculum_diagnostics(output, state):
+        state = dict(state or {})
+        use_external_ref = bool(state.get("use_external_ref", False))
+        use_self_ref = bool(state.get("use_self_ref", not use_external_ref))
+        requested_source = state.get(
+            "requested_reference_source",
+            "external_ref" if use_external_ref else "self_target",
+        )
+        effective_source = state.get(
+            "effective_reference_source",
+            state.get("reference_source", requested_source),
+        )
+        output["reference_curriculum"] = state
+        output["reference_curriculum_mode"] = state.get("mode", "unknown")
+        output["reference_curriculum_progress"] = float(state.get("progress", 0.0))
+        output["reference_curriculum_external_prob"] = float(state.get("external_prob", 0.0))
+        output["reference_curriculum_self_prob"] = float(state.get("self_prob", 1.0))
+        output["reference_curriculum_self_ref_floor"] = float(state.get("self_ref_floor", 0.0))
+        output["reference_curriculum_sample_mode"] = state.get("sample_mode", "batch")
+        output["reference_curriculum_requested_source"] = requested_source
+        output["reference_curriculum_use_external_ref"] = use_external_ref
+        output["reference_curriculum_use_self_ref"] = use_self_ref
+        output["reference_curriculum_gloss_scale"] = float(state.get("gloss_scale", 0.0))
+        output["reference_curriculum_source"] = state.get("reference_source", effective_source)
+        output["reference_curriculum_effective_source"] = effective_source
+
+    @staticmethod
+    def _attach_forcing_schedule_diagnostics(output, state):
+        state = dict(state or {})
+        output["forcing_schedule"] = state
+        output["forcing_schedule_mode"] = state.get("mode", "unknown")
+        output["forcing_schedule_progress"] = float(state.get("progress", 0.0))
+        output["forcing_prob"] = float(state.get("forcing_prob", 0.0))
+        output["forcing_enabled"] = bool(state.get("forcing_enabled", False))
+
     def _build_runtime_reference_bundle(self, sample, ref):
         allow_split_reference_inputs = bool(
             sample.get(
@@ -105,11 +141,13 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         return build_reference_bundle_from_inputs(**bundle_kwargs)
 
     def _resolve_reference_inputs(self, sample, target, *, global_step=0, infer=False, test=False):
-        external_ref = sample.get("ref_mels", target)
+        has_external_ref = sample.get("ref_mels", None) is not None
+        external_ref = sample["ref_mels"] if has_external_ref else target
         curriculum_end = self._schedule_end_step("reference_curriculum_end_steps", "random_speaker_steps")
         if infer or test:
+            effective_reference_source = "external_ref" if has_external_ref else "target_fallback"
             state = {
-                "mode": "inference_external_only",
+                "mode": "inference_external_only" if has_external_ref else "inference_external_missing_fallback",
                 "start_steps": int(
                     hparams.get(
                         "reference_curriculum_start_steps",
@@ -122,10 +160,12 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                 "self_prob": 0.0,
                 "self_ref_floor": 0.0,
                 "sample_mode": "inference_fixed",
-                "use_external_ref": True,
-                "use_self_ref": False,
+                "requested_reference_source": "external_ref",
+                "use_external_ref": bool(has_external_ref),
+                "use_self_ref": not bool(has_external_ref),
                 "gloss_scale": 0.0,
-                "reference_source": "external_ref",
+                "reference_source": effective_reference_source,
+                "effective_reference_source": effective_reference_source,
             }
             ref = external_ref
         else:
@@ -216,22 +256,8 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         output = self.model(content,spk_embed=spk_embed, target=target,ref=ref,
                             f0=f0, uv=uv,
                             infer=infer, global_steps=effective_global_step, **model_kwargs)
-        output["reference_curriculum"] = dict(reference_curriculum)
-        output["reference_curriculum_mode"] = reference_curriculum["mode"]
-        output["reference_curriculum_progress"] = float(reference_curriculum["progress"])
-        output["reference_curriculum_external_prob"] = float(reference_curriculum["external_prob"])
-        output["reference_curriculum_self_prob"] = float(reference_curriculum["self_prob"])
-        output["reference_curriculum_self_ref_floor"] = float(reference_curriculum.get("self_ref_floor", 0.0))
-        output["reference_curriculum_sample_mode"] = reference_curriculum.get("sample_mode", "batch")
-        output["reference_curriculum_use_external_ref"] = bool(reference_curriculum["use_external_ref"])
-        output["reference_curriculum_use_self_ref"] = bool(reference_curriculum.get("use_self_ref", False))
-        output["reference_curriculum_gloss_scale"] = float(reference_curriculum["gloss_scale"])
-        output["reference_curriculum_source"] = reference_curriculum["reference_source"]
-        output["forcing_schedule"] = dict(forcing_schedule_state)
-        output["forcing_schedule_mode"] = forcing_schedule_state["mode"]
-        output["forcing_schedule_progress"] = float(forcing_schedule_state["progress"])
-        output["forcing_prob"] = float(forcing_schedule_state["forcing_prob"])
-        output["forcing_enabled"] = bool(forcing_schedule_state["forcing_enabled"])
+        self._attach_reference_curriculum_diagnostics(output, reference_curriculum)
+        self._attach_forcing_schedule_diagnostics(output, forcing_schedule_state)
         
         losses = {}
         
@@ -259,10 +285,23 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
             self._schedule_end_step("forcing_decay_end_steps", "forcing"),
             200000,
         )
-        ref = self._reference_for_inference(sample, global_step=infer_global_steps)
+        ref, runtime_reference_bundle, reference_curriculum = self._resolve_reference_inputs(
+            sample,
+            sample["mels"],
+            global_step=infer_global_steps,
+            infer=True,
+            test=False,
+        )
         model_kwargs = self.build_style_model_kwargs(sample, ref)
-        model_kwargs["reference_bundle"] = self._build_runtime_reference_bundle(sample, ref)
+        model_kwargs["reference_bundle"] = runtime_reference_bundle
         model_kwargs["reference_cache"] = None
+        forcing_schedule_state = self._resolve_forcing_schedule_state(
+            global_step=infer_global_steps,
+            infer=True,
+            test=False,
+            device=content_full.device,
+        )
+        model_kwargs["forcing_schedule_state"] = forcing_schedule_state
         with torch.no_grad():
             reference_cache = self.model.prepare_reference_cache(
                 reference_bundle=model_kwargs["reference_bundle"],
@@ -333,15 +372,8 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         last_output["streaming_total_chunks"] = int(chunk_count)
         last_output["streaming_emitted_chunk_mel_lengths"] = emitted_chunk_mel_lengths
         last_output["streaming_prefix_overlap_frames"] = int(prefix_overlap_frames)
-        last_output["reference_curriculum_mode"] = "inference_external_only"
-        last_output["reference_curriculum_source"] = "external_ref"
-        last_output["reference_curriculum_external_prob"] = 1.0
-        last_output["reference_curriculum_self_prob"] = 0.0
-        last_output["reference_curriculum_use_external_ref"] = True
-        last_output["reference_curriculum_gloss_scale"] = 0.0
-        last_output["forcing_schedule_mode"] = "inference_disabled"
-        last_output["forcing_prob"] = 0.0
-        last_output["forcing_enabled"] = False
+        self._attach_reference_curriculum_diagnostics(last_output, reference_curriculum)
+        self._attach_forcing_schedule_diagnostics(last_output, forcing_schedule_state)
         if prefix_rewrite_l1_values:
             prefix_rewrite_l1 = torch.stack(prefix_rewrite_l1_values)
             last_output["streaming_prefix_rewrite_l1_mean"] = prefix_rewrite_l1.mean()

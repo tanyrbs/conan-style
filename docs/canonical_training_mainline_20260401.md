@@ -95,9 +95,10 @@ Canonical schedule defaults in `egs/conan_emformer.yaml`:
 - `reference_curriculum_end_steps: 100000`
 - `reference_curriculum_sample_mode: batch` because current `gloss/guided_loss` is still batch scalar
 - `forcing_schedule_mode: bernoulli_cosine`
+- `forcing: 20000` remains the canonical legacy hard fallback cut
 - `forcing_decay_start_steps: 12000`
 - `forcing_decay_end_steps: 60000`
-- `forcing: 20000` remains the legacy hard fallback cut used only when schedule state is absent
+- when schedule state is absent, forcing falls back to the legacy hard cut above
 
 These only smooth training exposure and do **not** change:
 
@@ -129,6 +130,11 @@ This dry run performs:
 The dry run intentionally exercises the **training path** at early steps, so it may
 report self-ref / forcing-on diagnostics at step 0. That does **not** redefine the
 inference contract, which remains external-reference-only.
+
+Use the smoke scripts intentionally:
+
+- `style_mainline_smoke --global_step 0` checks the true step-0 train-path contract
+- `mainline_cpu_dry_run` is better for watching mid-schedule probabilities and actual Bernoulli samples on the training path
 
 ## 6. Canonical real training command
 

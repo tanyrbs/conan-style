@@ -666,6 +666,8 @@ class ConanStyleConditioningMixin:
         boundary_radius=2,
         anchor_preserve_strength=0.0,
         style_context_prepared=False,
+        tvt_prior_scale=1.0,
+        use_tvt=None,
     ):
         memory_mode = self._normalize_memory_mode(
             memory_mode,
@@ -751,12 +753,47 @@ class ConanStyleConditioningMixin:
         else:
             style_context = None
             encoder_gate_input = encoder_out
-        gate_prob = self.timbre_gate(torch.cat([encoder_gate_input, aligned, global_timbre_anchor], dim=-1))
-        ret["dynamic_timbre_gate_raw"] = gate_prob.squeeze(-1)
-        gate_logit = torch.logit(gate_prob.clamp(1.0e-5, 1.0 - 1.0e-5))
-        ret["dynamic_timbre_gate_logit_raw"] = gate_logit.squeeze(-1)
-        ret["dynamic_timbre_gate_calibration"] = "logit_affine"
-        gate = torch.sigmoid(gate_logit * float(gate_scale) + float(gate_bias))
+        if use_tvt is None:
+            use_tvt = bool(getattr(self, "dynamic_timbre_use_tvt", False))
+        else:
+            use_tvt = bool(use_tvt)
+        use_tvt = use_tvt and getattr(self, "global_timbre_memory", None) is not None
+        use_tvt = use_tvt and getattr(self, "content_sync_timbre_fuser", None) is not None
+        tvt_payload = None
+        if use_tvt:
+            global_memory = self.global_timbre_memory(first_present(ret, "global_timbre_anchor"))
+            tvt_payload = self.content_sync_timbre_fuser(
+                query=encoder_gate_input,
+                global_anchor=global_timbre_anchor,
+                global_memory=global_memory,
+                local_absolute=aligned,
+                style_context=style_context if style_context_available else None,
+                prior_scale=float(tvt_prior_scale),
+                gate_scale=float(gate_scale),
+                gate_bias=float(gate_bias),
+            )
+            gate = tvt_payload["variation_gate"]
+            ret["dynamic_timbre_gate_raw"] = tvt_payload["variation_gate_raw"].squeeze(-1)
+            ret["dynamic_timbre_gate_logit_raw"] = tvt_payload["variation_logit"].squeeze(-1)
+            ret["dynamic_timbre_gate_calibration"] = "logit_affine"
+            ret["dynamic_timbre_tvt_attn"] = tvt_payload["attn"]
+            ret["dynamic_timbre_tvt_mix"] = tvt_payload["mix"].squeeze(-1)
+            ret["dynamic_timbre_tvt_prior"] = tvt_payload["prior_delta"]
+            ret["dynamic_timbre_tvt_prior_absolute"] = tvt_payload["prior_absolute"]
+            ret["dynamic_timbre_tvt_candidate_absolute"] = tvt_payload["candidate_absolute"]
+            ret["dynamic_timbre_tvt_memory"] = global_memory
+            ret["dynamic_timbre_tvt_gate_logit"] = tvt_payload["variation_logit"].squeeze(-1)
+            ret["dynamic_timbre_tvt_prior_scale"] = float(tvt_prior_scale)
+            ret["dynamic_timbre_tvt_enabled"] = True
+        else:
+            gate_prob = self.timbre_gate(torch.cat([encoder_gate_input, aligned, global_timbre_anchor], dim=-1))
+            ret["dynamic_timbre_gate_raw"] = gate_prob.squeeze(-1)
+            gate_logit = torch.logit(gate_prob.clamp(1.0e-5, 1.0 - 1.0e-5))
+            ret["dynamic_timbre_gate_logit_raw"] = gate_logit.squeeze(-1)
+            ret["dynamic_timbre_gate_calibration"] = "logit_affine"
+            gate = torch.sigmoid(gate_logit * float(gate_scale) + float(gate_bias))
+            ret["dynamic_timbre_tvt_enabled"] = False
+            ret["dynamic_timbre_tvt_prior_scale"] = float(tvt_prior_scale)
         boundary_mask = build_dynamic_timbre_boundary_mask(
             ret.get("content"),
             padding_mask=src_key_padding_mask,
@@ -769,7 +806,12 @@ class ConanStyleConditioningMixin:
             boundary_mask=boundary_mask,
             suppress_strength=control.boundary_suppress_strength,
         )
-        aligned = aligned * gate
+        if use_tvt and tvt_payload is not None:
+            aligned = tvt_payload["candidate_delta"] * gate
+            anchor_target_sequence = tvt_payload["candidate_absolute"]
+        else:
+            aligned = aligned * gate
+            anchor_target_sequence = aligned
         ret["tv_gloss"] = guided_loss
         ret["dynamic_timbre_attn"] = attn
         ret["dynamic_timbre"] = aligned
@@ -788,10 +830,16 @@ class ConanStyleConditioningMixin:
         ret["dynamic_timbre_style_context_owner_safe"] = bool(style_context_available)
         ret["dynamic_timbre_control"] = control.as_dict()
         ret["tv_timbre_smooth"] = self._sequence_smoothness(aligned, src_key_padding_mask)
-        ret["tv_timbre_anchor"] = F.l1_loss(
-            self._masked_mean(aligned, src_key_padding_mask),
-            first_present(ret, "global_timbre_anchor").squeeze(1),
-        )
+        if isinstance(anchor_target_sequence, torch.Tensor):
+            ret["tv_timbre_anchor"] = F.l1_loss(
+                self._masked_mean(anchor_target_sequence, src_key_padding_mask),
+                first_present(ret, "global_timbre_anchor").squeeze(1),
+            )
+        else:
+            ret["tv_timbre_anchor"] = F.l1_loss(
+                self._masked_mean(aligned, src_key_padding_mask),
+                first_present(ret, "global_timbre_anchor").squeeze(1),
+            )
         return aligned
 
     def forward_energy(self, decoder_inp, energy, ret):

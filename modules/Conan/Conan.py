@@ -33,6 +33,7 @@ from modules.Conan.control import (
 from modules.Conan.reference_bundle import resolve_reference_bundle
 from modules.Conan.reference_cache import resolve_reference_cache
 from modules.Conan.decoder_style_adapter import ConanDecoderStyleAdapter
+from modules.Conan.tvt_memory import ContentSynchronousTimbreFuser, GlobalTimbreMemory
 from modules.Conan.decoder_style_bundle import (
     DECODER_STYLE_TIMING_AUTHORITY,
     build_decoder_style_bundle,
@@ -122,6 +123,22 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 self.timbre_gate[2].bias,
                 float(hparams.get("tv_timbre_gate_bias_init", -1.0)),
             )
+            self.dynamic_timbre_use_tvt = bool(hparams.get("dynamic_timbre_use_tvt", True))
+            if self.dynamic_timbre_use_tvt:
+                self.global_timbre_memory = GlobalTimbreMemory(
+                    self.hidden_size,
+                    num_facets=hparams.get("dynamic_timbre_num_facets", 8),
+                    facet_hidden=hparams.get("dynamic_timbre_facet_hidden", self.hidden_size),
+                )
+                self.content_sync_timbre_fuser = ContentSynchronousTimbreFuser(
+                    self.hidden_size,
+                    gate_hidden=gate_hidden,
+                    mix_bias=hparams.get("dynamic_timbre_tvt_mix_bias", -0.25),
+                    variation_bias=hparams.get("dynamic_timbre_tvt_variation_bias", -1.0),
+                )
+            else:
+                self.global_timbre_memory = None
+                self.content_sync_timbre_fuser = None
             self.style_query_proj = nn.Sequential(
                 nn.Linear(self.hidden_size, self.hidden_size),
                 nn.Tanh(),
@@ -151,6 +168,9 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             self.style_query_norm = None
             self.timbre_query_norm = None
             self.dynamic_timbre_style_context_norm = None
+            self.dynamic_timbre_use_tvt = False
+            self.global_timbre_memory = None
+            self.content_sync_timbre_fuser = None
             self.l1 = None
             self.embed_positions = None
 
@@ -366,6 +386,18 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["dynamic_timbre_anchor_preserve_strength_runtime"] = float(
             style_mainline.dynamic_timbre_anchor_preserve_strength
         )
+        ret["dynamic_timbre_use_tvt_runtime"] = bool(
+            kwargs.get(
+                "dynamic_timbre_use_tvt",
+                self.hparams.get("dynamic_timbre_use_tvt", True),
+            )
+        )
+        ret["dynamic_timbre_tvt_prior_scale_runtime"] = float(
+            kwargs.get(
+                "dynamic_timbre_tvt_prior_scale",
+                self.hparams.get("dynamic_timbre_tvt_prior_scale", 1.0),
+            )
+        )
         global_style_anchor_strength = self._resolve_strength(
             style_mainline.global_style_anchor_strength,
             batch_size=content.size(0),
@@ -566,6 +598,13 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 boundary_radius=style_mainline.dynamic_timbre_boundary_radius,
                 anchor_preserve_strength=style_mainline.dynamic_timbre_anchor_preserve_strength,
                 style_context_prepared=True,
+                tvt_prior_scale=float(
+                    kwargs.get(
+                        "dynamic_timbre_tvt_prior_scale",
+                        self.hparams.get("dynamic_timbre_tvt_prior_scale", 1.0),
+                    )
+                ),
+                use_tvt=bool(style_mainline.dynamic_timbre_use_tvt),
             )
             dynamic_timbre_decoder_residual = dynamic_timbre * dynamic_timbre_strength
             dynamic_timbre_decoder_residual = self._apply_runtime_dynamic_timbre_budget(

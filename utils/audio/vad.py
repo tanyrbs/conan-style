@@ -1,11 +1,19 @@
 from skimage.transform import resize
 import struct
-import webrtcvad
-from scipy.ndimage.morphology import binary_dilation
+from scipy.ndimage import binary_dilation
 import librosa
 import numpy as np
-import pyloudnorm as pyln
 import warnings
+
+try:
+    import webrtcvad
+except ImportError:  # optional unless VAD trimming is requested
+    webrtcvad = None
+
+try:
+    import pyloudnorm as pyln
+except ImportError:  # optional unless loudness normalization is requested
+    pyln = None
 
 warnings.filterwarnings("ignore", message="Possible clipped samples in output")
 
@@ -28,6 +36,8 @@ def trim_long_silences(path, sr=None, return_raw_wav=False, norm=True, vad_max_s
     wav_raw, sr = librosa.core.load(path, sr=sr)
 
     if norm:
+        if pyln is None:
+            raise ModuleNotFoundError("pyloudnorm is required when norm=True for trim_long_silences")
         meter = pyln.Meter(sr)  # create BS.1770 meter
         loudness = meter.integrated_loudness(wav_raw)
         wav_raw = pyln.normalize.loudness(wav_raw, loudness, -20.0)
@@ -52,6 +62,8 @@ def trim_long_silences(path, sr=None, return_raw_wav=False, norm=True, vad_max_s
 
     # Perform voice activation detection
     voice_flags = []
+    if webrtcvad is None:
+        raise ModuleNotFoundError("webrtcvad is required for trim_long_silences")
     vad = webrtcvad.Vad(mode=3)
     for window_start in range(0, len(wav), samples_per_window):
         window_end = window_start + samples_per_window
@@ -67,7 +79,7 @@ def trim_long_silences(path, sr=None, return_raw_wav=False, norm=True, vad_max_s
         return ret[width - 1:] / width
 
     audio_mask = moving_average(voice_flags, vad_moving_average_width)
-    audio_mask = np.round(audio_mask).astype(np.bool)
+    audio_mask = np.round(audio_mask).astype(bool)
 
     # Dilate the voiced regions
     audio_mask = binary_dilation(audio_mask, np.ones(vad_max_silence_length + 1))

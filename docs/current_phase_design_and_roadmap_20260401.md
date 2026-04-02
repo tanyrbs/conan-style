@@ -78,8 +78,9 @@ Updated: 2026-04-01
 - 当前 canonical schedule 默认值是：
   - reference curriculum: `bernoulli_cosine`, `20000 -> 100000`
   - forcing soft decay: `bernoulli_cosine`, `12000 -> 60000`
-- `random_speaker_steps` 现在只是 reference curriculum end 的 legacy alias；`forcing` 只保留为 forcing schedule 的 legacy fallback
+- `random_speaker_steps` 现在只是 reference curriculum end 的 legacy alias；`forcing: 20000` 只保留为 forcing schedule 的 legacy fallback cut
 - `gloss` 现在跟 reference source 对齐，而不是直接跟 forcing 绑定
+- 约定上：`style_mainline_smoke --global_step 0` 看 true step-0 contract；`mainline_cpu_dry_run` 更适合看中段 schedule 行为
 
 ## 4. 本阶段已经落实的事
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import importlib
 import json
 import os
 import sys
@@ -116,6 +117,28 @@ def _check_exists(checks, name, path_value):
             "path": str(path_value) if path_value is not None else None,
         }
     )
+
+
+def _check_importable(checks, name, module_name):
+    try:
+        importlib.import_module(module_name)
+        checks.append(
+            {
+                "name": name,
+                "ok": True,
+                "actual": f"import ok: {module_name}",
+                "expected": "importable",
+            }
+        )
+    except Exception as exc:  # pragma: no cover - surfaced through prep output
+        checks.append(
+            {
+                "name": name,
+                "ok": False,
+                "actual": f"{type(exc).__name__}: {exc}",
+                "expected": "importable",
+            }
+        )
 
 
 def run_prep(args):
@@ -254,6 +277,18 @@ def run_prep(args):
         hparams.get("dynamic_timbre_query_style_condition_scale", 0.0),
         0.0,
     )
+    _check_equal(
+        checks,
+        "dynamic_timbre_use_tvt",
+        bool(hparams.get("dynamic_timbre_use_tvt", True)),
+        True,
+    )
+    _check_close(
+        checks,
+        "dynamic_timbre_tvt_prior_scale",
+        hparams.get("dynamic_timbre_tvt_prior_scale", 1.0),
+        1.0,
+    )
     _check_close(
         checks,
         "tv_timbre_gate_bias_init",
@@ -312,6 +347,12 @@ def run_prep(args):
     _check_equal(checks, "forcing_schedule_mode", hparams.get("forcing_schedule_mode"), "bernoulli_cosine")
     _check_close(
         checks,
+        "forcing_legacy_cut",
+        hparams.get("forcing", 0),
+        20000,
+    )
+    _check_close(
+        checks,
         "forcing_decay_start_steps",
         hparams.get("forcing_decay_start_steps", hparams.get("forcing", 0)),
         12000,
@@ -324,6 +365,8 @@ def run_prep(args):
     )
     _check_close(checks, "forcing_prob_init", hparams.get("forcing_prob_init", 1.0), 1.0)
     _check_close(checks, "forcing_prob_final", hparams.get("forcing_prob_final", 0.0), 0.0)
+    _check_importable(checks, "runtime_import_torchaudio", "torchaudio")
+    _check_importable(checks, "runtime_import_tasks.Conan.smoke_utils", "tasks.Conan.smoke_utils")
     _check_close(
         checks,
         "random_speaker_steps_matches_curriculum_end",

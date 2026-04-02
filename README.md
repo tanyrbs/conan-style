@@ -161,7 +161,8 @@ python tasks/Conan/decoder_style_adapter_contract_smoke.py
   - `forcing_schedule_mode: bernoulli_cosine`, `forcing_decay_start_steps: 12000`, `forcing_decay_end_steps: 60000`
 - `reference_curriculum_sample_mode` 目前固定 `batch`，因为当前 `gloss/guided_loss` 仍是 batch scalar
 - `gloss` 的启停现在跟 **reference source** 绑定：self-ref batch 为 1，external-ref batch 为 0；它不再直接跟 forcing schedule 绑定
-- `random_speaker_steps` 现在只是 reference curriculum end 的 legacy alias；`forcing` 则保留为 forcing schedule 的 legacy hard fallback
+- `random_speaker_steps` 现在只是 reference curriculum end 的 legacy alias；`forcing: 20000` 则保留为 forcing schedule 的 legacy hard fallback cut
+- `style_mainline_smoke --global_step 0` 用来验证 true step-0 contract；`mainline_cpu_dry_run` 默认会跑在 post-warmup smoke step，因此更适合观察 schedule 中段状态
 - validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel、prefix rewrite、chunk-boundary mel、identity/style/material/f0 parity
 - mainline style profile 若收到 research 风格 override，默认会告警并收回 canonical mainline；研究态请显式使用 `research_*` 或 opt-in
 

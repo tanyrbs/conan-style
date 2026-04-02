@@ -60,6 +60,17 @@ Expected:
 
 This checks that the mainline contract is still locked to the intended defaults and that the required data dirs exist.
 
+It also enforces that canonical `mainline_minimal` training keeps exactly this
+4-loss control pack active:
+
+- `lambda_output_identity_cosine`
+- `lambda_dynamic_timbre_budget`
+- `lambda_dynamic_timbre_boundary`
+- `lambda_decoder_late_owner`
+
+This 4-loss pack only refers to **control regularization**. Total training loss
+still includes backbone terms such as mel / pitch / VQ losses.
+
 ## 5. Canonical CPU local dry run
 
 Before launching a real run, do one minimal CPU dry run:
@@ -123,6 +134,7 @@ At this stage, “training ready” means:
 - mainline defaults are locked
 - single-reference contract is enforced on the product path
 - style/timbre query hierarchy is owner-aware
+- canonical mainline control regularization is constrained to the 4-loss pack
 - training-prep check passes
 - CPU dry run passes
 - prefix-online parity smoke passes

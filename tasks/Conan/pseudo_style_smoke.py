@@ -29,10 +29,10 @@ def parse_args():
     parser.add_argument("--num_steps", type=int, default=3)
     parser.add_argument("--speakers_per_batch", type=int, default=2)
     parser.add_argument("--items_per_speaker", type=int, default=2)
-    parser.add_argument("--lambda_style_trace_consistency", type=float, default=0.1)
-    parser.add_argument("--lambda_output_identity_cosine", type=float, default=0.01)
-    parser.add_argument("--lambda_dynamic_timbre_budget", type=float, default=0.01)
-    parser.add_argument("--lambda_decoder_late_owner", type=float, default=0.02)
+    parser.add_argument("--lambda_output_identity_cosine", type=float, default=0.02)
+    parser.add_argument("--lambda_dynamic_timbre_budget", type=float, default=0.02)
+    parser.add_argument("--lambda_dynamic_timbre_boundary", type=float, default=0.005)
+    parser.add_argument("--lambda_decoder_late_owner", type=float, default=0.01)
     parser.add_argument("--lambda_mel_adv", type=float, default=0.0)
     return parser.parse_args()
 
@@ -41,9 +41,9 @@ def run_smoke(args):
         config_path=args.config,
         binary_data_dir=args.binary_data_dir,
         extra_hparams={
-            "lambda_style_trace_consistency": args.lambda_style_trace_consistency,
             "lambda_output_identity_cosine": args.lambda_output_identity_cosine,
             "lambda_dynamic_timbre_budget": args.lambda_dynamic_timbre_budget,
+            "lambda_dynamic_timbre_boundary": args.lambda_dynamic_timbre_boundary,
             "lambda_decoder_late_owner": args.lambda_decoder_late_owner,
             "lambda_mel_adv": args.lambda_mel_adv,
         },
@@ -77,9 +77,9 @@ def run_smoke(args):
                 "indices": [int(idx) for idx in indices],
                 "pseudo_style_ids": [],
                 "total_loss": scalarize_value(total_loss),
-                "style_trace_consistency": scalar_logs.get("style_trace_consistency"),
                 "output_identity_cosine": scalar_logs.get("output_identity_cosine"),
                 "dynamic_timbre_budget": scalar_logs.get("dynamic_timbre_budget"),
+                "dynamic_timbre_boundary": scalar_logs.get("dynamic_timbre_boundary"),
                 "decoder_late_owner": scalar_logs.get("decoder_late_owner"),
                 "l1": scalar_logs.get("l1"),
                 "ssim": scalar_logs.get("ssim"),
@@ -97,9 +97,9 @@ def run_smoke(args):
         "speakers_per_batch": int(args.speakers_per_batch),
         "items_per_speaker": int(args.items_per_speaker),
         "control_losses_active": {
-            "lambda_style_trace_consistency": float(hparams.get("lambda_style_trace_consistency", 0.0)),
             "lambda_output_identity_cosine": float(hparams.get("lambda_output_identity_cosine", 0.0)),
             "lambda_dynamic_timbre_budget": float(hparams.get("lambda_dynamic_timbre_budget", 0.0)),
+            "lambda_dynamic_timbre_boundary": float(hparams.get("lambda_dynamic_timbre_boundary", 0.0)),
             "lambda_decoder_late_owner": float(hparams.get("lambda_decoder_late_owner", 0.0)),
         },
         "history": history,

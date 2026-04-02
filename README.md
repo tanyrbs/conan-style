@@ -30,6 +30,12 @@ split reference / factorized swap 仍保留给研究与 ablation，
 - Conan mainline 只使用 `reference_contract_mode: collapsed_reference`
 - 当前内部的 style/timbre 三角色分工是 **single-reference weak internal factorization**
 - `reference_contract.factorization_guaranteed = false` 是主线设计事实，不是 bug
+- canonical mainline 训练默认只保留 **4 个控制正则**：
+  - `lambda_output_identity_cosine`
+  - `lambda_dynamic_timbre_budget`
+  - `lambda_dynamic_timbre_boundary`
+  - `lambda_decoder_late_owner`
+- 这 4 个只约束 control regularization；总训练 loss 仍包含 mel / pitch / VQ 等主干项
 
 ## 直接可跑的 Conan mainline 入口
 
@@ -137,7 +143,11 @@ python tasks/Conan/decoder_style_adapter_contract_smoke.py
 - decoder style bundle 会先按 `effective_signal_epsilon` 过滤近零分支，再进入 adapter owner 判定
 - late-stage 默认会在 local style owner 已存在时跳过 `global_style_summary` 重复注入
 - dynamic timbre 已增加 runtime hard budget，确保 `M_timbre` 受 `M_style` 预算约束
-- decoder-side regularization 已补 owner-centric loss：local budget / boundary / late-owner
+- canonical `mainline_minimal` 已收缩成 4-loss control pack：
+  - identity cosine
+  - dynamic timbre budget
+  - dynamic timbre boundary
+  - decoder late-owner
 - 输出端已补 mel-side identity proxy loss：`mel_out -> global_timbre_anchor`
 - validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel parity
 - mainline style profile 若收到 research 风格 override，默认会告警并收回 canonical mainline；研究态请显式使用 `research_*` 或 opt-in

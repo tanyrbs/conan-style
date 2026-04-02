@@ -97,6 +97,12 @@ Updated: 2026-04-01
   - local mask-aware dynamic timbre budget
   - boundary penalty
   - late-stage owner / anchor budget
+- canonical `mainline_minimal` 默认训练面已进一步收紧为 **4 个 control regularizers**：
+  - `lambda_output_identity_cosine`
+  - `lambda_dynamic_timbre_budget`
+  - `lambda_dynamic_timbre_boundary`
+  - `lambda_decoder_late_owner`
+- 其余 control loss 仍保留给 research / ablation，但不再属于 canonical mainline 开训包
 - 输出端已补一层 mel-side identity proxy：
   - `mel_out -> encode_spk_embed -> global_timbre_anchor.detach()`
 - test / smoke 已开始直接覆盖 prefix-online 路径：

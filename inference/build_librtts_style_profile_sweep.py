@@ -33,7 +33,7 @@ def parse_args():
     parser.add_argument(
         "--output_config",
         type=str,
-        default="inference/libritts_style_profile_sweep.generated.json",
+        default="infer_out_profiles/libritts_style_profile_sweep.generated.json",
         help="Where to save the generated JSON config.",
     )
     parser.add_argument(

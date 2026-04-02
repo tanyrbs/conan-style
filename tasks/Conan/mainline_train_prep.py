@@ -3,6 +3,7 @@ import argparse
 import importlib
 import json
 import os
+import numpy as np
 import sys
 from pathlib import Path
 
@@ -120,6 +121,31 @@ def _check_exists(checks, name, path_value):
             "path": str(path_value) if path_value is not None else None,
         }
     )
+
+
+def _check_npy_count_positive(checks, name, path_value):
+    try:
+        count = int(len(np.load(str(path_value), mmap_mode='r')))
+        ok = count > 0
+        checks.append(
+            {
+                "name": name,
+                "ok": bool(ok),
+                "actual": count,
+                "expected": "> 0",
+                "path": str(path_value),
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": name,
+                "ok": False,
+                "actual": f"{type(exc).__name__}: {exc}",
+                "expected": "> 0",
+                "path": str(path_value),
+            }
+        )
 
 
 def _check_importable(checks, name, module_name):
@@ -461,7 +487,6 @@ def run_prep(args):
     _check_close(checks, "forcing_prob_init", hparams.get("forcing_prob_init", 1.0), 1.0)
     _check_close(checks, "forcing_prob_final", hparams.get("forcing_prob_final", 0.0), 0.0)
     _check_importable(checks, "runtime_import_torchaudio", "torchaudio")
-    _check_importable(checks, "runtime_import_tasks.Conan.smoke_utils", "tasks.Conan.smoke_utils")
     _check_close(
         checks,
         "random_speaker_steps_matches_curriculum_end",
@@ -564,11 +589,21 @@ def run_prep(args):
             "valid.idx",
             "valid_lengths.npy",
             "valid_spk_ids.npy",
+            "test.data",
+            "test.idx",
+            "test_lengths.npy",
+            "test_spk_ids.npy",
         ):
             _check_exists(
                 checks,
                 f"binary_{filename}_exists",
                 os.path.join(str(binary_data_dir), filename),
+            )
+        for split in ("train", "valid", "test"):
+            _check_npy_count_positive(
+                checks,
+                f"binary_{split}_items_nonempty",
+                os.path.join(str(binary_data_dir), f"{split}_lengths.npy"),
             )
 
     reference_preview_steps = (0, 20000, 40000, 70000, 100000)

@@ -85,6 +85,20 @@ class EmformerTask(AuxDecoderMIDITask):
             random_tech = torch.rand_like(tech, dtype=torch.float32)
             tech[random_tech < drop_p] = 2
         return tech
+
+    @staticmethod
+    def _select_distillation_logits(output):
+        if isinstance(output, (tuple, list)):
+            return output[0]
+        return output
+
+    @staticmethod
+    def _align_distillation_targets(content, logits):
+        content_attention_mask = (content != hparams.get('content_padding_idx', 101)).float()
+        if not isinstance(logits, torch.Tensor) or logits.dim() < 2:
+            return content, content_attention_mask, logits
+        target_len = int(logits.size(1))
+        return content[:, :target_len], content_attention_mask[:, :target_len], logits
             
     def run_model(self, sample, infer=False, test=False):
         # txt_tokens = sample["txt_tokens"]
@@ -131,6 +145,7 @@ class EmformerTask(AuxDecoderMIDITask):
                 output = self.model.inference(mel_input)
             else:
                 output = self.model(mel_input, lengths)
+            output = self._select_distillation_logits(output)
             
             # Create a compatible output format
             output_dict = {
@@ -142,18 +157,10 @@ class EmformerTask(AuxDecoderMIDITask):
             
             # Always compute distillation loss (no mode check needed)
             if 'distillation_logits' in output_dict:
-                # Create attention mask from content
-                content_attention_mask = (content != hparams.get('content_padding_idx', 101)).float()  # Assuming -1 is padding
-                
-                # Handle right_context for distillation loss
-                # When using streaming models with right_context, we can't predict the last right_context frames
-                # because they're used as look-ahead, so we need to truncate accordingly
-                # right_context = hparams.get('right_context', 0)
-                
-                # No right_context, use full sequences
-                truncated_content = content
-                truncated_mask = content_attention_mask
-                truncated_logits = output_dict['distillation_logits']
+                truncated_content, truncated_mask, truncated_logits = self._align_distillation_targets(
+                    content,
+                    output_dict['distillation_logits'],
+                )
                 
                 # Compute distillation loss on truncated sequences
                 distill_loss = distillation_loss(
@@ -178,7 +185,7 @@ class EmformerTask(AuxDecoderMIDITask):
             # Training mode - use the forward method
             mel_input = target
             lengths = torch.full((mel_input.size(0),), mel_input.size(1), dtype=torch.int64, device=mel_input.device)
-            output = self.model(mel_input, lengths)[0] # only take the hubert output
+            output = self._select_distillation_logits(self.model(mel_input, lengths))
             
             # Create a compatible output format
             output_dict = {
@@ -190,24 +197,10 @@ class EmformerTask(AuxDecoderMIDITask):
             
             # Always compute distillation loss (no mode check needed)
             if 'distillation_logits' in output_dict:
-                # Create attention mask from content
-                content_attention_mask = (content != hparams.get('content_padding_idx', 101)).float()  # Assuming -1 is padding
-                
-                # Handle right_context for distillation loss
-                # When using streaming models with right_context, we can't predict the last right_context frames
-                # because they're used as look-ahead, so we need to truncate accordingly
-                right_context = hparams.get('right_context', 0)
-                
-                if right_context > 0:
-                    # Truncate the last right_context frames from targets, mask, and outputs
-                    truncated_content = content[:, :-right_context]
-                    truncated_mask = content_attention_mask[:, :-right_context]
-                    truncated_logits = output_dict['distillation_logits']
-                else:
-                    # No right_context, use full sequences
-                    truncated_content = content
-                    truncated_mask = content_attention_mask
-                    truncated_logits = output_dict['distillation_logits']
+                truncated_content, truncated_mask, truncated_logits = self._align_distillation_targets(
+                    content,
+                    output_dict['distillation_logits'],
+                )
                 
                 # Compute distillation loss on truncated sequences
                 distill_loss = distillation_loss(
@@ -373,12 +366,10 @@ class EmformerTask(AuxDecoderMIDITask):
         
         # Log predicted codes and ground truth codes as text in TensorBoard
         if 'distillation_logits' in model_out and 'content' in sample:
-            content = sample['content']
-            content_attention_mask = (content != hparams.get('content_padding_idx', 101)).float()
-            
-            truncated_content = content
-            truncated_mask = content_attention_mask
-            truncated_logits = model_out['distillation_logits']
+            truncated_content, truncated_mask, truncated_logits = self._align_distillation_targets(
+                sample['content'],
+                model_out['distillation_logits'],
+            )
             
             # Log codes as text
             self.log_codes_as_text(
@@ -407,19 +398,10 @@ class EmformerTask(AuxDecoderMIDITask):
         
         # Log predicted codes and ground truth codes as text in TensorBoard
         if 'distillation_logits' in outputs and 'content' in sample:
-            content = sample['content']
-            content_attention_mask = (content != hparams.get('content_padding_idx', 101)).float()
-            
-            # Handle right_context for logging
-            right_context = hparams.get('right_context', 0)
-            if right_context > 0:
-                truncated_content = content[:, :-right_context]
-                truncated_mask = content_attention_mask[:, :-right_context]
-                truncated_logits = outputs['distillation_logits']
-            else:
-                truncated_content = content
-                truncated_mask = content_attention_mask
-                truncated_logits = outputs['distillation_logits']
+            truncated_content, truncated_mask, truncated_logits = self._align_distillation_targets(
+                sample['content'],
+                outputs['distillation_logits'],
+            )
             
             # Log codes as text
             self.log_codes_as_text(

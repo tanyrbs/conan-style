@@ -24,7 +24,7 @@ class EmformerDistillModel(nn.Module):
         # If output dimension differs from HuBERT, add projection layer
         self.proj = nn.Linear(input_dim, output_dim) if input_dim != output_dim else nn.Identity()
         self.right_context_len = hparams['right_context']
-        self.mode = hparams.get('mode', None)
+        self.mode = hparams.get('emformer_mode', hparams.get('mode', None))
         if self.mode == 'both':
             self.proj1 = nn.Linear(input_dim, 100)
             self.proj2 = nn.Linear(input_dim, 768)
@@ -87,12 +87,21 @@ class EmformerDistillModel(nn.Module):
             lengths = torch.full((B,), chunk.size(1), dtype=torch.long, device=device)
             chunk_out, _, state = self.emformer.infer(chunk, lengths, state)
 
-            # Emformer drops the right context in its output; keep only `emit` frames
-            out_chunks.append(chunk_out[:, :emit, :])
+            # Emformer pads the missing tail context on the last chunk.
+            # Those padded positions should not be emitted into the streamed sequence,
+            # otherwise the streamed path can become longer than the offline path.
+            tail_context_deficit = max(0, rc - look)
+            effective_emit = max(0, emit - tail_context_deficit)
+            effective_emit = min(int(chunk_out.size(1)), int(effective_emit))
+            if effective_emit > 0:
+                out_chunks.append(chunk_out[:, :effective_emit, :])
             pos += emit
 
         # ------------------------------------------------------------------ #
-        streamed_out = torch.cat(out_chunks, dim=1)     # (B, T, F')
+        if len(out_chunks) <= 0:
+            streamed_out = mel_input.new_zeros((B, 0, mel_input.size(-1)))
+        else:
+            streamed_out = torch.cat(out_chunks, dim=1)     # (B, T, F')
         if self.mode == 'both':
             return self.proj1(streamed_out), self.proj2(streamed_out)
         return self.proj(streamed_out)
@@ -145,12 +154,18 @@ class EmformerDistillModel(nn.Module):
             latency_list.append(latency)
             rtf_list.append(latency / (seg * 0.02))  # Assuming 50Hz sampling rate (20ms per frame)
             print('latency: {:.4f}, rtf: {:.4f}'.format(latency, rtf_list[-1]))
-            # Emformer drops the right context in its output; keep only `emit` frames
-            out_chunks.append(chunk_out[:, :emit, :])
+            tail_context_deficit = max(0, rc - look)
+            effective_emit = max(0, emit - tail_context_deficit)
+            effective_emit = min(int(chunk_out.size(1)), int(effective_emit))
+            if effective_emit > 0:
+                out_chunks.append(chunk_out[:, :effective_emit, :])
             pos += emit
 
         # ------------------------------------------------------------------ #
-        streamed_out = torch.cat(out_chunks, dim=1)     # (B, T, F')
+        if len(out_chunks) <= 0:
+            streamed_out = mel_input.new_zeros((B, 0, mel_input.size(-1)))
+        else:
+            streamed_out = torch.cat(out_chunks, dim=1)     # (B, T, F')
         if self.mode == 'both':
             return self.proj1(streamed_out), self.proj2(streamed_out), latency_list
         return self.proj(streamed_out), latency_list, rtf_list

@@ -1,9 +1,15 @@
 import random
+import shutil
 import subprocess
 import traceback
 from datetime import datetime
 
-from torch.cuda.amp import GradScaler, autocast
+try:
+    from torch.amp import GradScaler as TorchGradScaler, autocast as torch_autocast
+    AMP_USES_DEVICE_TYPE = True
+except ImportError:  # pragma: no cover - older torch fallback
+    from torch.cuda.amp import GradScaler as TorchGradScaler, autocast as torch_autocast
+    AMP_USES_DEVICE_TYPE = False
 import numpy as np
 import torch.optim
 import torch.utils.data
@@ -107,7 +113,11 @@ class Trainer:
         self.val_check_interval = val_check_interval
         self.tb_log_interval = tb_log_interval
         self.amp = amp
-        self.amp_scalar = GradScaler()
+        amp_enabled = bool(self.amp and self.on_gpu)
+        if AMP_USES_DEVICE_TYPE:
+            self.amp_scalar = TorchGradScaler('cuda', enabled=amp_enabled)
+        else:
+            self.amp_scalar = TorchGradScaler(enabled=amp_enabled)
 
     def test(self, task_cls):
         self.testing = True
@@ -322,7 +332,12 @@ class Trainer:
                         param.requires_grad = True
 
             # forward pass
-            with autocast(enabled=self.amp):
+            amp_enabled = bool(self.amp and self.on_gpu)
+            if AMP_USES_DEVICE_TYPE:
+                amp_context = torch_autocast('cuda', enabled=amp_enabled)
+            else:
+                amp_context = torch_autocast(enabled=amp_enabled)
+            with amp_context:
                 if self.on_gpu:
                     batch = move_to_cuda(copy.copy(batch), self.root_gpu)
                 args = [batch, batch_idx, opt_idx]
@@ -540,20 +555,50 @@ class Trainer:
         os.makedirs(f'{self.work_dir}/terminal_logs', exist_ok=True)
         # Tee(f'{self.work_dir}/terminal_logs/log_{t}.txt', 'w')
 
+    def _copy_code_tree(self, source_path, code_dir):
+        source_path = os.path.normpath(source_path)
+        if os.path.isfile(source_path):
+            rel_path = source_path
+            if rel_path.endswith(('.py', '.yaml')):
+                target_path = os.path.join(code_dir, rel_path)
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                shutil.copy2(source_path, target_path)
+            return
+        for root, dirs, files in os.walk(source_path):
+            dirs[:] = [d for d in dirs if d != '__pycache__']
+            rel_root = os.path.normpath(root)
+            for filename in files:
+                if not filename.endswith(('.py', '.yaml')):
+                    continue
+                src_file = os.path.join(root, filename)
+                rel_file = os.path.join(rel_root, filename)
+                dst_file = os.path.join(code_dir, rel_file)
+                os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+                shutil.copy2(src_file, dst_file)
+
     def save_codes(self):
         if len(hparams['save_codes']) > 0:
             t = datetime.now().strftime('%Y%m%d%H%M%S')
             code_dir = f'{self.work_dir}/codes/{t}'
-            subprocess.check_call(f'mkdir -p "{code_dir}"', shell=True)
+            os.makedirs(code_dir, exist_ok=True)
+            rsync_bin = shutil.which('rsync')
             for c in hparams['save_codes']:
-                if os.path.exists(c):
+                if not os.path.exists(c):
+                    continue
+                if rsync_bin is not None:
                     subprocess.check_call(
-                        f'rsync -aR '
-                        f'--include="*.py" '
-                        f'--include="*.yaml" '
-                        f'--exclude="__pycache__" '
-                        f'--include="*/" '
-                        f'--exclude="*" '
-                        f'"./{c}" "{code_dir}/"',
-                        shell=True)
+                        [
+                            rsync_bin,
+                            '-aR',
+                            '--include=*.py',
+                            '--include=*.yaml',
+                            '--exclude=__pycache__',
+                            '--include=*/',
+                            '--exclude=*',
+                            f'./{c}',
+                            f'{code_dir}/',
+                        ]
+                    )
+                else:
+                    self._copy_code_tree(c, code_dir)
             print(f"| Copied codes to {code_dir}.")

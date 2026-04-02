@@ -1,5 +1,0 @@
-base_config: egs/conan_emformer.yaml
-
-# Legacy compatibility alias.
-# Canonical Conan inference should use:
-#   egs/conan_mainline_infer.yaml

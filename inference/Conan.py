@@ -462,7 +462,13 @@ class StreamingVoiceConversion:
                     chunk_out = self.emformer.proj(chunk_out)
             chunk_out = self._project_emformer_output_to_codes(chunk_out)
 
-            new_codes = chunk_out[:, :emit]
+            tail_context_deficit = max(0, rc - look)
+            effective_emit = max(0, emit - tail_context_deficit)
+            effective_emit = min(int(chunk_out.size(1)), int(effective_emit))
+            if effective_emit <= 0:
+                pos += emit
+                continue
+            new_codes = chunk_out[:, :effective_emit]
             content_code_buffer.append(new_codes.squeeze(0))
             all_codes = torch.cat(content_code_buffer, dim=0).unsqueeze(0)
             final_out = self._run_model_from_content_codes(all_codes, runtime)

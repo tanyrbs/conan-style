@@ -1,150 +1,73 @@
-# Conan canonical training / dry run / eval recipe
+# Conan canonical training mainline
 
-Updated: 2026-04-01
+Updated: 2026-04-03
 
 ## 1. Scope
 
-This document defines the **canonical Conan mainline training surface**.
+This cleaned repo snapshot keeps only the Conan single-reference strong-style mainline.
 
-Current goal is not multi-reference control research.  
-Current goal is:
+Mainline target:
 
-> **single reference -> stable identity -> strong style owner -> bounded timbre enhancer -> decoder-side fusion**
-
-Mainline training therefore assumes:
-
-- `reference_contract_mode: collapsed_reference`
-- `decoder_style_condition_mode: mainline_full`
-- `global_timbre_to_pitch: false`
-- `style_trace_mode: dual` (fast+slow, internally routed)
-- `style_router_enabled: true`
-- `style_to_pitch_residual: true` (bounded, voiced-only)
-- `style_to_pitch_residual_mode: auto`  # source-aligned today, post-rhythm when an executed frame plan is present
-- `allow_split_reference_inputs: false`
-- `emit_collapsed_reference_aliases: false`
+> single reference -> stable identity -> strong style owner -> bounded dynamic timbre enhancement -> decoder-side fusion
 
 ## 2. Canonical configs
 
-### Training config
+Only these two configs remain:
 
-- `egs/conan_emformer.yaml`
+- training: `egs/conan_emformer.yaml`
+- inference: `egs/conan_mainline_infer.yaml`
 
-### Inference / eval config
+Both are aligned to the same mainline semantics, including `style_profile: strong_style`.
 
-- `egs/conan_mainline_infer.yaml`
+## 3. Mainline contract
 
-## 3. Data prerequisites
+Training / inference stay locked to:
 
-Expected mainline training data directories:
+- `reference_contract_mode: collapsed_reference`
+- `decoder_style_condition_mode: mainline_full`
+- `style_trace_mode: dual`
+- `style_router_enabled: true`
+- `style_to_pitch_residual: true`
+- `global_timbre_to_pitch: false`
+- `allow_split_reference_inputs: false`
 
-- `binary_data_dir`
-- `processed_data_dir`
-
-Default repo values point to:
-
-- `data/binary/libritts_single`
-- `data/processed/libritts_single`
-
-For local smoke / CPU dry run, prefer a small smoke dataset such as:
-
-- `data/binary/libritts_single_smoke`
-
-## 4. Training-prep gate
-
-Before the first real-dataset run:
-
-```bash
-python tasks/Conan/mainline_train_prep.py --config egs/conan_emformer.yaml
-```
-
-Expected:
-
-- `MAINLINE_TRAIN_PREP_OK`
-
-This checks that the mainline contract is still locked to the intended defaults and that the required data dirs exist.
-
-It also enforces that canonical `mainline_minimal` training keeps exactly this
-4-loss control pack active:
+Canonical control regularization stays on the 4-loss pack:
 
 - `lambda_output_identity_cosine`
 - `lambda_dynamic_timbre_budget`
 - `lambda_pitch_residual_safe`
 - `lambda_decoder_late_owner`
 
-This 4-loss pack only refers to **control regularization**. Total training loss
-still includes backbone terms such as mel / pitch / VQ losses.
+## 4. Data prerequisites
 
-Current canonical prep also assumes:
+Default repo paths:
 
-- dynamic timbre query-style coupling stays off by default
-- late-stage timbre backfill stays off
-- dynamic timbre uses TVT material track (global memory + content-synchronous prior + slerp + material router)
-- style is dual-scale internally (fast+slow) but still single owner externally
-- bounded style-to-pitch residual is enabled (no global timbre to pitch)
-- training reference uses batchwise Bernoulli curriculum instead of a hard self-ref/external-ref switch
-- prosody forcing uses batchwise Bernoulli soft decay instead of a hard bool cut
-- `gloss` now follows reference source, not forcing:
-  - self-ref batch -> `gloss_scale = 1.0`
-  - external-ref batch -> `gloss_scale = 0.0`
-- streaming parity includes explicit chunk-boundary mel checks
+- `data/binary/libritts_single`
+- `data/processed/libritts_single`
 
-Canonical training schedule keys:
+Current checked-in LibriTTS-single behavior:
 
-- `reference_curriculum_*`
-- `forcing_schedule_*`
+- `valid_prefixes` / `test_prefixes` are intentionally empty
+- binarization falls back to deterministic per-speaker utterance holdout
+- binary `*_ref_indices.npy` use a stable hash, so reference pairing stays reproducible across Python processes
 
-Canonical schedule defaults in `egs/conan_emformer.yaml`:
+## 5. Training-prep gate
 
-- `random_speaker_steps: 100000` is now only a legacy alias for `reference_curriculum_end_steps`
-- `reference_curriculum_mode: bernoulli_cosine`
-- `reference_curriculum_start_steps: 20000`
-- `reference_curriculum_end_steps: 100000`
-- `reference_curriculum_sample_mode: batch` because current `gloss/guided_loss` is still batch scalar
-- `forcing_schedule_mode: bernoulli_cosine`
-- `forcing: 20000` remains the canonical legacy hard fallback cut
-- `forcing_decay_start_steps: 12000`
-- `forcing_decay_end_steps: 60000`
-- when schedule state is absent, forcing falls back to the legacy hard cut above
-
-These only smooth training exposure and do **not** change:
-
-- single-reference product contract
-- owner hierarchy
-- 4-loss control pack
-- infer/test external-reference-only path
-
-## 5. Canonical CPU local dry run
-
-Before launching a real run, do one minimal CPU dry run:
+Before real training, run:
 
 ```bash
-python tasks/Conan/mainline_cpu_dry_run.py ^
-  --config egs/conan_emformer.yaml ^
-  --binary_data_dir data/binary/libritts_single_smoke ^
-  --num_steps 2
+python tasks/Conan/mainline_train_prep.py --config egs/conan_emformer.yaml
 ```
 
-Expected:
+Expected result:
 
-- `MAINLINE_CPU_DRY_RUN_OK`
+- `MAINLINE_TRAIN_PREP_OK`
 
-This dry run performs:
+This prep gate now also checks that style-profile defaults really control mainline runtime strengths instead of silently falling back to neutral values.
 
-1. mainline training-prep check
-2. a tiny CPU training smoke on the canonical mainline config
+It also checks that binary train / valid / test splits exist and are non-empty.
 
-The dry run intentionally exercises the **training path** at early steps, so it may
-report self-ref / forcing-on diagnostics at step 0. That does **not** redefine the
-inference contract, which remains external-reference-only.
-
-Use the smoke scripts intentionally:
-
-- `style_mainline_smoke --global_step 0` checks the true step-0 train-path contract
-- `mainline_cpu_dry_run` is better for watching mid-schedule probabilities and actual Bernoulli samples on the training path
-
-## 6. Canonical real training command
-
-Use the canonical mainline training config with a fresh experiment name:
+## 6. Real training command
 
 ```bash
 python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTrain
@@ -152,74 +75,49 @@ python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTra
 
 Notes:
 
-- do **not** overwrite the shipped inference checkpoint entry `Conan`
-- use a new experiment name for actual training outputs
+- keep shipped inference checkpoint entry `Conan` untouched
+- use a fresh experiment name for real training output
 
-## 7. Canonical regression / eval commands
+## 7. Mainline inference / evaluation after training
 
-### Mainline contract smoke
-
-```bash
-python tasks/Conan/style_mainline_smoke.py --config egs/conan_mainline_infer.yaml
-```
-
-### Prefix-online parity smoke
+Single-reference demo:
 
 ```bash
-python tasks/Conan/streaming_prefix_online_smoke.py --config egs/conan_mainline_infer.yaml
+python inference/run_voice_conversion.py   --pair_config inference/conan_single_reference_demo.example.json
 ```
 
-### Real wav parity smoke
+Style-profile sweep:
 
 ```bash
-python inference/streaming_parity_smoke.py ^
-  --exp_name Conan ^
-  --src_wav <src.wav> ^
-  --ref_wav <ref.wav>
+python inference/run_style_profile_sweep.py   --sweep_config inference/conan_style_profile_sweep.example.json
+
+python inference/run_style_profile_evaluation.py   --sweep_dir infer_out_profiles/conan_mainline_demo
+
+python inference/run_style_profile_report.py   --sweep_dir infer_out_profiles/conan_mainline_demo
 ```
 
-## 8. What “training ready” means in the current repo
+## 8. Verified implementation notes as of 2026-04-03
 
-At this stage, “training ready” means:
+- canonical mainline uses `lambda_pitch_residual_safe`; `lambda_dynamic_timbre_boundary` remains `0.0`
+- `style_to_pitch_residual` smoothing is applied after projection onto the final pitch canvas and is mask-aware
+- streaming inference tail trimming has been aligned with offline decoding, so online/offline mel and wav lengths now match on parity checks
+- `EmformerDistillModel` now reads `emformer_mode` correctly instead of only the legacy `mode` key
+- Emformer distillation train / infer / validation paths now align targets to the actual streamed-logit length
 
-- mainline defaults are locked
-- single-reference contract is enforced on the product path
-- style/timbre query hierarchy is owner-aware
-- canonical mainline control regularization is constrained to the 4-loss pack
-- minimal mainline excludes extra energy regularization, so the control pack stays at 4
-- generator loss assembly sums only trainable loss terms; diagnostics stay logging-only
-- training-prep check passes
-- CPU dry run passes
-- prefix-online parity smoke passes, including mel + prefix rewrite + chunk-boundary mel + identity/style/material proxies
+## 9. Repo cleanup policy in this snapshot
 
-It does **not** yet mean:
+Removed from the repo snapshot:
 
-- fully stateful decoder streaming
-- fully stateful vocoder streaming
-- final product hyperparameters are frozen
+- old / research inference surfaces
+- Gradio demo surface
+- smoke, dry-run, and parity scripts
+- redundant YAML configs
+- non-core historical docs
+- stale generated outputs and cache directories
 
-## 9. Expected artifacts from a real run
+Retained on purpose:
 
-For a normal mainline run you should expect:
-
-- checkpoints under the experiment work dir
-- tensorboard logs / scalar logs
-- generated valid samples
-- style mainline smoke results
-- prefix-online parity smoke results
-
-## 10. Recommended first real-dataset launch sequence
-
-Recommended order:
-
-1. `mainline_train_prep.py`
-2. `mainline_cpu_dry_run.py`
-3. short real-dataset launch
-4. `style_mainline_smoke.py`
-5. `streaming_prefix_online_smoke.py`
-
-This keeps the current stage honest:
-
-- **offline training first**
-- **prefix-online parity as validation target**
-- **no pretending strict streaming is already solved**
+- Conan mainline training path
+- Conan mainline inference path
+- canonical prep gate
+- latest Conan checkpoint plus required Emformer / vocoder checkpoints

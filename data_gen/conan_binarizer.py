@@ -1,5 +1,6 @@
 from resemblyzer import VoiceEncoder
 from utils.audio import librosa_wav2spec, get_energy_librosa, norm_energy
+import hashlib
 import shutil
 import random, os, json
 import traceback
@@ -14,7 +15,6 @@ import numpy as np
 from tqdm import tqdm
 from utils.audio.align import get_mel2ph, mel2token_to_dur
 from utils.text.text_encoder import build_token_encoder
-import json
 from utils.audio.pitch.utils import f0_to_coarse
 np.seterr(divide='ignore', invalid='ignore')
 
@@ -76,6 +76,21 @@ def _coerce_1d_float_array(value):
     if isinstance(value, (float, int, np.floating, np.integer)):
         return np.asarray([float(value)], dtype=np.float32)
     return None
+
+
+def _item_name_speaker_key(item_name):
+    token = str(item_name).strip()
+    if token == "":
+        return token
+    for sep in ("/", "\\", "_"):
+        if sep in token:
+            return token.split(sep, 1)[0]
+    return token
+
+
+def _stable_bucket_seed(value):
+    digest = hashlib.sha1(str(value).encode("utf-8")).hexdigest()
+    return int(digest[:16], 16)
 
 
 CONDITION_FIELDS = ("emotion", "style", "accent")
@@ -311,6 +326,9 @@ class BaseBinarizer:
         return TokenTextEncoder(None, vocab_list=word_set, replace_oov='<UNK>')
 
 class VCBinarizer(BaseBinarizer):
+    _spker_map_cache = None
+    _spker_map_cache_key = None
+
     def __init__(self, processed_data_dir=None):
         super().__init__()
         self.label_maps = {}
@@ -333,9 +351,26 @@ class VCBinarizer(BaseBinarizer):
             if len(candidates) <= 0:
                 ref_indices[idx] = idx
                 continue
-            stable_seed = abs(hash(str(item.get('item_name', idx))))
+            stable_seed = _stable_bucket_seed(item.get('item_name', idx))
             ref_indices[idx] = int(candidates[stable_seed % len(candidates)])
         return ref_indices
+
+    @classmethod
+    def _load_spker_map(cls):
+        processed_data_dir = hparams.get("processed_data_dir", None)
+        if cls._spker_map_cache is not None and cls._spker_map_cache_key == processed_data_dir:
+            return cls._spker_map_cache
+        if not processed_data_dir:
+            raise KeyError(
+                "processed_data_dir is not set in hparams. Call set_hparams(...) before using the binarizer."
+            )
+        spker_path = os.path.join(processed_data_dir, "spker_set.json")
+        if not os.path.exists(spker_path):
+            raise FileNotFoundError(f"Speaker map not found: {spker_path}")
+        with open(spker_path, "r", encoding="utf-8") as f:
+            cls._spker_map_cache = json.load(f)
+        cls._spker_map_cache_key = processed_data_dir
+        return cls._spker_map_cache
 
     @staticmethod
     def _resolve_optional_label(item, base_key):
@@ -411,17 +446,73 @@ class VCBinarizer(BaseBinarizer):
         return label_maps
 
     def split_train_test_set(self, item_names):
-        item_names = deepcopy(item_names)
+        item_names = sorted(deepcopy(item_names))
 
-        # first find test/validation sets
-        test_item_names  = [x for x in item_names if any(ts in x for ts in hparams['test_prefixes'])]
-        valid_item_names = [x for x in item_names if any(ts in x for ts in hparams['valid_prefixes'])]
+        def _speaker_token(name):
+            return _item_name_speaker_key(name)
 
-        # ⚠️ Key: construct set only once
+        def _normalize_prefixes(prefixes):
+            normalized = []
+            for prefix in prefixes or []:
+                prefix = str(prefix).strip()
+                if prefix != "":
+                    normalized.append(prefix)
+            return normalized
+
+        def _match_by_speaker_prefix(names, prefixes):
+            prefix_set = set(_normalize_prefixes(prefixes))
+            if len(prefix_set) <= 0:
+                return []
+            return [name for name in names if _speaker_token(name) in prefix_set]
+
+        test_item_names = _match_by_speaker_prefix(item_names, hparams.get('test_prefixes', []))
+        valid_item_names = _match_by_speaker_prefix(item_names, hparams.get('valid_prefixes', []))
+
+        fallback_needed = len(valid_item_names) <= 0 or len(test_item_names) <= 0
+        if fallback_needed:
+            from collections import defaultdict
+
+            per_speaker = defaultdict(list)
+            for name in item_names:
+                per_speaker[_speaker_token(name)].append(name)
+
+            fallback_valid = max(1, int(hparams.get('fallback_valid_items_per_speaker', 2)))
+            fallback_test = max(1, int(hparams.get('fallback_test_items_per_speaker', 2)))
+
+            reserved_valid = set(valid_item_names)
+            reserved_test = set(test_item_names)
+            used = reserved_valid | reserved_test
+
+            for _, speaker_items in sorted(per_speaker.items()):
+                speaker_items = sorted(speaker_items)
+                available = [name for name in speaker_items if name not in used]
+                if len(available) <= 2:
+                    continue
+
+                test_take = min(fallback_test, max(0, len(available) - 2))
+                speaker_test = available[:test_take]
+                reserved_test.update(speaker_test)
+                used.update(speaker_test)
+                available = available[test_take:]
+
+                valid_take = min(fallback_valid, max(0, len(available) - 1))
+                speaker_valid = available[:valid_take]
+                reserved_valid.update(speaker_valid)
+                used.update(speaker_valid)
+
+            test_item_names = sorted(reserved_test)
+            valid_item_names = sorted(reserved_valid - reserved_test)
+            has_configured_prefixes = bool(_normalize_prefixes(hparams.get('valid_prefixes', []))) or bool(
+                _normalize_prefixes(hparams.get('test_prefixes', []))
+            )
+            log_fn = logging.warning if has_configured_prefixes else logging.info
+            log_fn(
+                "Using deterministic per-speaker utterance holdout for valid/test splits. "
+                f"valid={len(valid_item_names)}, test={len(test_item_names)}"
+            )
+
         test_set = set(test_item_names)
         valid_set = set(valid_item_names)
-
-        # training set = neither in test set nor validation set
         train_item_names = [x for x in item_names if x not in test_set and x not in valid_set]
 
         logging.info(f"train {len(train_item_names)}")
@@ -539,16 +630,22 @@ class VCBinarizer(BaseBinarizer):
         if self.binarization_args['with_spk_embed']:
             voice_encoder = VoiceEncoder().cuda()
 
-        for item_id, item in multiprocess_run_tqdm(
-                process_item, args, desc=f'Processing {prefix}'):
-            # item['spk_embed'] = voice_encoder.embed_utterance(item['wav']) \
-            #     if self.binarization_args['with_spk_embed'] else None
+        if self.num_workers <= 1:
+            iterator = (
+                (item_id, process_item(item=meta_item))
+                for item_id, meta_item in enumerate(tqdm(meta_data, desc=f'Processing {prefix}'))
+            )
+        else:
+            iterator = multiprocess_run_tqdm(process_item, args, desc=f'Processing {prefix}')
+
+        for item_id, item in iterator:
+            # item['spk_embed'] = voice_encoder.embed_utterance(item['wav'])             #     if self.binarization_args['with_spk_embed'] else None
             if item is None:
                 continue
             builder.add_item(item)          # spk_id is already included in item
             kept_items.append(item)
             lengths.append(item['len'])
-            spk_ids.append(item['spk_id'])  # 👈 collect spk_id in consistent order
+            spk_ids.append(item['spk_id'])  # ?? collect spk_id in consistent order
             for field in CONDITION_FIELDS:
                 optional_ids[field].append(int(item.get(f'{field}_id', -1)))
             total_sec += item['sec']
@@ -581,12 +678,13 @@ class VCBinarizer(BaseBinarizer):
     
 class ConanBinarizer(VCBinarizer):
     # ph_encoder = build_token_encoder(os.path.join(hparams["processed_data_dir"], "phone_set.json"))
-    spker_map = json.load(open(os.path.join(hparams["processed_data_dir"], "spker_set.json")))
     _condition_maps = None
+    _condition_maps_key = None
 
     @classmethod
     def _load_condition_maps(cls):
-        if cls._condition_maps is not None:
+        cache_key = (hparams.get("binary_data_dir"), hparams.get("processed_data_dir"))
+        if cls._condition_maps is not None and cls._condition_maps_key == cache_key:
             return cls._condition_maps
         condition_maps = {}
         for field in CONDITION_FIELDS:
@@ -600,6 +698,7 @@ class ConanBinarizer(VCBinarizer):
                     break
             condition_maps[field] = {str(v): idx for idx, v in enumerate(vocab)}
         cls._condition_maps = condition_maps
+        cls._condition_maps_key = cache_key
         return condition_maps
 
     @classmethod
@@ -624,9 +723,11 @@ class ConanBinarizer(VCBinarizer):
         mel=item['mel']
         wav=item['wav']
         content=[int(float(x)) for x in item['hubert'].split()]
-        
+
         # item["ph_token"] = cls.ph_encoder.encode(' '.join(item["ph"]))
-        item["spk_id"] = cls.spker_map[item["item_name"].split("_", 1)[0]]
+        spker_map = cls._load_spker_map()
+        speaker_key = _item_name_speaker_key(item["item_name"])
+        item["spk_id"] = spker_map[speaker_key]
         # item['txt']=" ".join(item['txt'])
         
         # try:
@@ -684,7 +785,11 @@ class ConanBinarizer(VCBinarizer):
         return item
     
     @staticmethod
-    def process_align(ph_durs, mel, item, hop_size=hparams['hop_size'], audio_sample_rate=hparams['audio_sample_rate']):
+    def process_align(ph_durs, mel, item, hop_size=None, audio_sample_rate=None):
+        if hop_size is None:
+            hop_size = hparams['hop_size']
+        if audio_sample_rate is None:
+            audio_sample_rate = hparams['audio_sample_rate']
         mel2ph = np.zeros([mel.shape[0]], int)
         startTime = 0
 
@@ -701,7 +806,6 @@ class ConanBinarizer(VCBinarizer):
 class EmformerBinarizer(VCBinarizer):
     # difference between EmformerBinarizer and ConanBinarizer: No f0 information needed
     # ph_encoder = build_token_encoder(os.path.join(hparams["processed_data_dir"], "phone_set.json"))
-    spker_map = json.load(open(os.path.join(hparams["processed_data_dir"], "spker_set.json")))
     @classmethod
     def process_item(cls, item, binarization_args):
         item_name = item['item_name']
@@ -710,9 +814,11 @@ class EmformerBinarizer(VCBinarizer):
         mel=item['mel']
         wav=item['wav']
         content=[int(float(x)) for x in item['hubert'].split()]
-        
+
         # item["ph_token"] = cls.ph_encoder.encode(' '.join(item["ph"]))
-        item["spk_id"] = cls.spker_map[item["item_name"].split("_", 1)[0]]
+        spker_map = cls._load_spker_map()
+        speaker_key = _item_name_speaker_key(item["item_name"])
+        item["spk_id"] = spker_map[speaker_key]
         # item['txt']=" ".join(item['txt'])
         
         min_length = min(len(content), len(mel))
@@ -763,7 +869,11 @@ class EmformerBinarizer(VCBinarizer):
         return item
     
     @staticmethod
-    def process_align(ph_durs, mel, item, hop_size=hparams['hop_size'], audio_sample_rate=hparams['audio_sample_rate']):
+    def process_align(ph_durs, mel, item, hop_size=None, audio_sample_rate=None):
+        if hop_size is None:
+            hop_size = hparams['hop_size']
+        if audio_sample_rate is None:
+            audio_sample_rate = hparams['audio_sample_rate']
         mel2ph = np.zeros([mel.shape[0]], int)
         startTime = 0
 

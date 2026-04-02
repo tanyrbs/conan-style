@@ -760,10 +760,15 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         return [optimizer_gen, optimizer_disc]
 
     def build_scheduler(self, optimizer):
+        disc_scheduler = None
+        if optimizer[1] is not None:
+            disc_scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer=optimizer[1],
+                **hparams["discriminator_scheduler_params"],
+            )
         return [
-            super().build_scheduler( optimizer[0]), # Generator Scheduler
-            torch.optim.lr_scheduler.StepLR(optimizer=optimizer[1], # Discriminator Scheduler
-                **hparams["discriminator_scheduler_params"]),
+            super().build_scheduler(optimizer[0]),
+            disc_scheduler,
         ]
 
     def on_before_optimization(self, opt_idx):
@@ -773,9 +778,18 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
             nn.utils.clip_grad_norm_(self.disc_params, hparams["clip_grad_norm"])
 
     def on_after_optimization(self, epoch, batch_idx, optimizer, optimizer_idx):
-        if self.scheduler is not None:
-            self.scheduler[0].step(self.global_step // hparams['accumulate_grad_batches'])
-            self.scheduler[1].step(self.global_step // hparams['accumulate_grad_batches'])
+        num_updates = self.global_step // hparams['accumulate_grad_batches']
+
+        def _step_scheduler(scheduler):
+            if scheduler is None:
+                return
+            if scheduler.__class__.__module__.startswith('torch.optim.lr_scheduler'):
+                scheduler.step()
+            else:
+                scheduler.step(num_updates)
+
+        if self.scheduler is not None and 0 <= int(optimizer_idx) < len(self.scheduler):
+            _step_scheduler(self.scheduler[int(optimizer_idx)])
 
 def self_clone(x):
     if x == None:
@@ -839,7 +853,10 @@ class VCPostnetTask(ConanTask):
 
     def on_after_optimization(self, epoch, batch_idx, optimizer, optimizer_idx):
         if self.scheduler is not None:
-            self.scheduler.step(self.global_step // hparams['accumulate_grad_batches'])
+            if self.scheduler.__class__.__module__.startswith('torch.optim.lr_scheduler'):
+                self.scheduler.step()
+            else:
+                self.scheduler.step(self.global_step // hparams['accumulate_grad_batches'])
 
 # class TechSingerTask(RFSingerTask):
 

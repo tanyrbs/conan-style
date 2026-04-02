@@ -1,156 +1,63 @@
-# Conan inference surface
+# Conan inference mainline
 
-## Canonical mainline
+This repo now keeps only the Conan mainline inference surface.
 
-The Conan repo now has one canonical inference config and one canonical checkpoint entrypoint:
+## Canonical files
 
 - config: `egs/conan_mainline_infer.yaml`
-- checkpoint entry: `--exp_name Conan`
-- checkpoint overlay: `checkpoints/Conan/config.yaml`
+- model entry: `checkpoints/Conan/model_ckpt_steps_200000.ckpt`
+- Emformer: `checkpoints/Emformer/model_ckpt_steps_700000.ckpt`
+- vocoder: `checkpoints/hifigan_vc/model_ckpt_steps_1000000.ckpt`
 
-All mainline runners now default to that pair.
+## Public runtime contract
 
-Training / dry run / eval recipe is documented separately in:
-
-- `docs/canonical_training_mainline_20260401.md`
-
-## Mainline product contract
-
-The current Conan mainline only exposes this product-facing surface:
+The retained Conan mainline surface is:
 
 - `src_wav`
 - `ref_wav`
 - optional `style_profile`
 - optional `style_strength`
 
-In other words:
+Mainline semantics stay fixed to:
 
-> single reference -> stable identity -> stronger style -> bounded material enhancement
+> single reference -> stable identity -> strong style owner -> bounded dynamic timbre enhancement
 
-More precisely:
+Notes:
 
-- the shipped mainline contract is `collapsed_reference` only
-- the internal style/timbre split is **weak internal factorization on a single reference**
-- `reference_contract.factorization_guaranteed = false` is expected on the mainline path
-- low-level split-reference compatibility paths still exist for research/ablation, but they do **not** define the Conan mainline contract
+- `collapsed_reference` is the only shipped contract
+- `style_profile: strong_style` is the canonical default surface
+- split-reference / factorized research paths are no longer kept in this repo snapshot
+- online/offline streaming parity is expected to match in mel length and wav length
 
-Internally the mainline now hardens that hierarchy as:
+## Verified inference fixes as of 2026-04-03
 
-- `global_timbre_anchor`: identity owner
-- `M_style`: expression owner
-- `M_timbre`: bounded material enhancer
+- style-profile defaults now flow cleanly into runtime controls
+- streaming prefix inference trims missing tail right-context correctly
+- online/offline parity checks now match on both mel length and wav sample length
+- `EmformerDistillModel` respects `emformer_mode` as the canonical config key
 
-The query path is no longer the old shared `content + condition + anchor` path for both style and timbre.
+## Runnable entrypoints
 
-## Canonical runnable entrypoints
+### Single-reference conversion
 
-### 1. Batch single-reference demo
-
-- runner: `inference/run_voice_conversion.py`
-- manifest example: `inference/conan_single_reference_demo.example.json`
+Edit `inference/conan_single_reference_demo.example.json`, then run:
 
 ```bash
-python inference/run_voice_conversion.py \
-  --pair_config inference/conan_single_reference_demo.example.json
+python inference/run_voice_conversion.py   --pair_config inference/conan_single_reference_demo.example.json
 ```
 
-### 2. Style profile sweep demo
+### Style-profile sweep
 
-- runner: `inference/run_style_profile_sweep.py`
-- sweep example: `inference/conan_style_profile_sweep.example.json`
+Edit `inference/conan_style_profile_sweep.example.json`, then run:
 
 ```bash
-python inference/run_style_profile_sweep.py \
-  --sweep_config inference/conan_style_profile_sweep.example.json
+python inference/run_style_profile_sweep.py   --sweep_config inference/conan_style_profile_sweep.example.json
 
-python inference/run_style_profile_evaluation.py \
-  --sweep_dir infer_out_profiles/conan_mainline_demo
+python inference/run_style_profile_evaluation.py   --sweep_dir infer_out_profiles/conan_mainline_demo
 
-python inference/run_style_profile_report.py \
-  --sweep_dir infer_out_profiles/conan_mainline_demo
+python inference/run_style_profile_report.py   --sweep_dir infer_out_profiles/conan_mainline_demo
 ```
 
-### 3. Conan Gradio demo
+## Related training doc
 
-- launcher: `inference/run_conan_gradio_demo.py`
-- settings: `inference/conan_gradio/gradio_settings.yaml`
-
-```bash
-python inference/run_conan_gradio_demo.py
-```
-
-If Gradio is not installed yet:
-
-```bash
-pip install gradio
-```
-
-## Important policy
-
-### 1. Split references are not part of the mainline surface
-
-`ref_timbre_wav / ref_style_wav / ref_dynamic_timbre_wav` are no longer part of the canonical public surface.
-
-The canonical batch runner and canonical sweep runner will reject them on the mainline path.
-
-### 2. Advanced label controls are gated
-
-`emotion / accent / arousal / valence / energy` are no longer default Conan mainline controls.
-
-The canonical runners will ignore or gate them unless you explicitly opt into a research/ablation flow.
-
-### 3. Factorized reporting is opt-in
-
-`run_style_profile_evaluation.py` will only produce a factorized swap report when explicitly asked:
-
-```bash
-python inference/run_style_profile_evaluation.py \
-  --sweep_dir <dir> \
-  --enable_factorized_report
-```
-
-## Streaming status
-
-Current streaming semantics are explicit:
-
-- Emformer: stateful
-- acoustic model: prefix recompute
-- vocoder: bounded left-context re-synthesis
-
-So the current path is suitable for streaming-oriented evaluation, but it is not yet a fully stateful end-to-end decoder/vocoder stack.
-
-What is new in the current mainline:
-
-- validation / test now explicitly cover a prefix-online chunked path on the Conan task side
-- `StreamingVoiceConversion.infer_parity_once(...)` can compare online prefix streaming vs offline full pass
-- `inference/streaming_parity_smoke.py` exposes that comparison as a simple CLI
-
-Example:
-
-```bash
-python inference/streaming_parity_smoke.py \
-  --exp_name Conan \
-  --src_wav <src.wav> \
-  --ref_wav <ref.wav> \
-  --style_profile strong_style
-```
-
-For repo-side regression, use:
-
-```bash
-python tasks/Conan/streaming_prefix_online_smoke.py
-```
-
-These smokes compare offline mel against prefix-online chunked mel on the canonical single-reference mainline.
-
-## Legacy / research-only surfaces
-
-These files still exist, but they are not the Conan mainline:
-
-- `Conan_previous.py`
-- `run_voice_conversion_nvae.py`
-- `research/factorized_swap_builder.py`
-- `research/factorized_swap_report.py`
-- `research/build_libritts_factorized_swap_matrix.py`
-- `research/configs/*`
-- `tts/gradio/*` (legacy NATSpeech/PortaSpeech TTS surface)
+- `docs/canonical_training_mainline_20260401.md`

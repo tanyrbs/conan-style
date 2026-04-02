@@ -1,215 +1,94 @@
-﻿# Conan (Single-Reference Strong-Style Mainline)
+# Conan canonical mainline
 
-当前仓库主线已经统一为：
+Updated: 2026-04-03
 
-> **单参考输入 → global_timbre_anchor 稳身份 → M_style 主表达 → M_timbre 做材质增强 → decoder-side 合成**
+This repository snapshot keeps only the Conan single-reference strong-style mainline.
 
-## Canonical Conan mainline
+## Canonical configs
 
-唯一 canonical 推理配置：
+- training: `egs/conan_emformer.yaml`
+- inference: `egs/conan_mainline_infer.yaml`
 
-- `egs/conan_mainline_infer.yaml`
+Both are aligned to the same shipped surface:
 
-唯一 canonical checkpoint 入口：
+- `reference_contract_mode: collapsed_reference`
+- `style_profile: strong_style`
+- `style_to_pitch_residual: true`
+- `global_timbre_to_pitch: false`
 
-- `checkpoints/Conan/config.yaml`
-- `--exp_name Conan`
+## Canonical 4-loss pack
 
-当前默认产品面：
+The canonical training mainline keeps exactly these active control losses:
 
-- `src_wav`
-- `ref_wav`
-- optional `style_profile`
-- optional `style_strength`
+- `lambda_output_identity_cosine`
+- `lambda_dynamic_timbre_budget`
+- `lambda_pitch_residual_safe`
+- `lambda_decoder_late_owner`
 
-split reference / factorized swap 仍保留给研究与 ablation，
-但不再代表 Conan 主线产品接口。
+`lambda_dynamic_timbre_boundary` stays off in the canonical mainline.
 
-补充说明：
+## Data layout
 
-- Conan mainline 只使用 `reference_contract_mode: collapsed_reference`
-- 当前内部的 style/timbre 三角色分工是 **single-reference weak internal factorization**
-- `reference_contract.factorization_guaranteed = false` 是主线设计事实，不是 bug
-- canonical mainline 训练默认只保留 **4 个控制正则**：
-  - `lambda_output_identity_cosine`
-  - `lambda_dynamic_timbre_budget`
-  - `lambda_pitch_residual_safe`
-  - `lambda_decoder_late_owner`
-- 这 4 个只约束 control regularization；总训练 loss 仍包含 mel / pitch / VQ 等主干项
+Default repo paths:
 
-## 直接可跑的 Conan mainline 入口
+- processed: `data/processed/libritts_single`
+- binary: `data/binary/libritts_single`
 
-### 1) 单参考 strong-style demo
+The current LibriTTS single-speaker metadata does not use old VCTK-style split prefixes, so the repo now uses:
 
-先编辑：
+- deterministic per-speaker valid/test holdout fallback
+- deterministic reference pairing indices inside binary data
 
-- `inference/conan_single_reference_demo.example.json`
+That removes a real reproduction risk where `ref_indices` could drift across Python processes.
 
-再运行：
+## Verified current state
 
-```bash
-python inference/run_voice_conversion.py
-```
+As of 2026-04-03, this repo snapshot has been checked with:
 
-### 2) Style profile sweep demo
+- real-data binarization
+- prep gate
+- real-data smoke training
+- resume-from-checkpoint smoke
+- online/offline inference parity
 
-先编辑：
+Key validated properties:
 
-- `inference/conan_style_profile_sweep.example.json`
+- training / inference strong-style semantics are aligned
+- canonical config uses `lambda_pitch_residual_safe`, not `lambda_dynamic_timbre_boundary`
+- style-to-pitch residual smoothing is post-canvas and mask-aware
+- streaming inference tail trimming now matches offline length exactly
 
-再运行：
+## Commands
 
-```bash
-python inference/run_style_profile_sweep.py
-python inference/run_style_profile_evaluation.py --sweep_dir infer_out_profiles/conan_mainline_demo
-python inference/run_style_profile_report.py --sweep_dir infer_out_profiles/conan_mainline_demo
-```
-
-### 3) Conan Gradio demo
+### 1) Rebuild binary data
 
 ```bash
-python inference/run_conan_gradio_demo.py
+$env:N_PROC='1'; python data_gen/tts/runs/binarize.py --config egs/conan_emformer.yaml
 ```
 
-对应设置文件：
-
-- `inference/conan_gradio/gradio_settings.yaml`
-
-如果本地没装 Gradio：
-
-```bash
-pip install gradio
-```
-
-默认 runner 已经绑定：
-
-- `--config egs/conan_mainline_infer.yaml`
-- `--exp_name Conan`
-
-## Canonical training / dry run / eval
-
-唯一 canonical 训练配置：
-
-- `egs/conan_emformer.yaml`
-
-训练前检查：
+### 2) Mainline prep gate
 
 ```bash
 python tasks/Conan/mainline_train_prep.py --config egs/conan_emformer.yaml
 ```
 
-本地 CPU 最小 dry run：
+Expected result:
 
-```bash
-python tasks/Conan/mainline_cpu_dry_run.py ^
-  --config egs/conan_emformer.yaml ^
-  --binary_data_dir data/binary/libritts_single_smoke ^
-  --num_steps 2
-```
+- `MAINLINE_TRAIN_PREP_OK`
 
-正式训练命令模板：
+### 3) Real training
 
 ```bash
 python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTrain
 ```
 
-训练后固定回归入口：
+### 4) Mainline inference
 
 ```bash
-python tasks/Conan/style_mainline_smoke.py --config egs/conan_mainline_infer.yaml
-python tasks/Conan/streaming_prefix_online_smoke.py --config egs/conan_mainline_infer.yaml
-python tasks/Conan/decoder_style_adapter_contract_smoke.py
+python inference/run_voice_conversion.py --pair_config inference/conan_single_reference_demo.example.json
 ```
 
-补充说明：
+## Core docs
 
-- `Conan` 保留给仓库内 canonical inference checkpoint 入口
-- 真正训练请使用新的 `--exp_name`
-- 当前 online 口径仍是 **prefix-online parity target**，不是 fully stateful decoder/vocoder
-
-## 当前冻结设计
-
-- 外部默认单参考
-- `reference_contract_mode: collapsed_reference`
-- `global_timbre_to_pitch: false`
-- `timing_writeback_allowed: false`
-- `M_style` 是 expression owner
-- `M_timbre` 是 bounded material enhancer，而不是第二个主风格 owner
-- `mainline_owner` metadata 只是主线层级标记；真正的 owner hierarchy 以
-  `global_timbre_anchor / M_style / M_timbre` 为准
-- style / timbre query 已拆分：不再共享 `content + condition + anchor`
-- `M_style -> M_timbre` 已改成 owner-aware conditioning：`LayerNorm + stopgrad`
-- `M_timbre` 默认只保留 gate-style conditioning；query-style coupling 需要显式 opt-in，避免双重 style 注入
-- decoder adapter 对 zero tensor / 无效分支已做 hard no-op，避免“禁用分支仍偷偷注入”
-- decoder style bundle 会先按 `effective_signal_epsilon` 过滤近零分支，再进入 adapter owner 判定
-- late-stage 默认会在 local style owner 已存在时跳过 `global_style_summary` 重复注入
-- late-stage 不再在“没有 local style owner”时放大 `M_timbre` 去补位；fallback 只留给 `global_style_summary`
-- dynamic timbre 已增加 runtime hard budget，确保 `M_timbre` 受 `M_style` 预算约束
-- dynamic timbre gate 已改成 logit-affine calibration，和 decoder-side gate 诊断口径更一致
-- canonical `mainline_minimal` 已收缩成 4-loss control pack：
-  - identity cosine
-  - dynamic timbre budget
-  - pitch residual safe
-  - decoder late-owner
-- `mainline_minimal` 口径下不再额外启用 energy regularization，避免打破 4-loss control pack
-- generator `total_loss` 现在只汇总真正参与反传的训练项；control diagnostics 保持 logging-only，不再和 adversarial 启停口径混在一起
-- 输出端已补 mel-side identity proxy loss：`mel_out -> global_timbre_anchor`，并预留 frozen external speaker verifier hook
-- canonical mainline training 不再使用 self-ref → external-ref 的硬切换，而是 batchwise stochastic reference curriculum；infer/test 仍固定 external-reference-only
-- prosody forcing 训练已支持 batchwise stochastic soft decay；这只是训练平滑化，不改变 owner hierarchy / 4-loss pack / 推理路径
-- 当前 canonical schedule 默认值是：
-  - `reference_curriculum_mode: bernoulli_cosine`, `reference_curriculum_start_steps: 20000`, `reference_curriculum_end_steps: 100000`
-  - `forcing_schedule_mode: bernoulli_cosine`, `forcing_decay_start_steps: 12000`, `forcing_decay_end_steps: 60000`
-- `reference_curriculum_sample_mode` 目前固定 `batch`，因为当前 `gloss/guided_loss` 仍是 batch scalar
-- `gloss` 的启停现在跟 **reference source** 绑定：self-ref batch 为 1，external-ref batch 为 0；它不再直接跟 forcing schedule 绑定
-- `random_speaker_steps` 现在只是 reference curriculum end 的 legacy alias；`forcing: 20000` 则保留为 forcing schedule 的 legacy hard fallback cut
-- `style_mainline_smoke --global_step 0` 用来验证 true step-0 contract；`mainline_cpu_dry_run` 默认会跑在 post-warmup smoke step，因此更适合观察 schedule 中段状态
-- validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel、prefix rewrite、chunk-boundary mel、identity/style/material/f0 parity
-- mainline style profile 若收到 research 风格 override，默认会告警并收回 canonical mainline；研究态请显式使用 `research_*` 或 opt-in
-
-## 当前阶段重点
-
-1. 继续推进真正增量的 decoder / vocoder streaming
-2. 把 online/offline parity 变成固定 smoke / regression 入口
-3. 继续观察强风格下 speaker drift / intelligibility / boundary stability
-4. 后续再升级到冻结外部 speaker verifier 的更强 identity loss
-
-## 新增 smoke / regression
-
-```bash
-python tasks/Conan/style_mainline_smoke.py
-python tasks/Conan/streaming_prefix_online_smoke.py
-python tasks/Conan/decoder_style_adapter_contract_smoke.py
-```
-
-其中：
-
-- `style_mainline_smoke.py`：检查单参考 mainline contract / query split / decoder-side bundle，以及 disabled branches 不得泄漏到 decoder bundle
-- `streaming_prefix_online_smoke.py`：检查 Conan 任务侧 offline mel vs prefix-online chunked mel，并记录 prefix rewrite / identity/style/material parity
-- `decoder_style_adapter_contract_smoke.py`：检查近零 style/timbre 分支 hard no-op 与 late-stage owner/fallback 语义
-
-用于防止“只在离线路径稳定、在线路径没被回归”的问题。
-
-如果你有真实 `src_wav / ref_wav`，还可以直接检查推理前端的 online/offline parity：
-
-```bash
-python inference/streaming_parity_smoke.py \
-  --exp_name Conan \
-  --src_wav <src.wav> \
-  --ref_wav <ref.wav>
-```
-
-## 文档
-
-- 主线升级说明：`docs/strong_style_mainline_upgrade_20260331.md`
-- 当前阶段 / 设计 / 路线图：`docs/current_phase_design_and_roadmap_20260401.md`
-- canonical training / dry run / eval：`docs/canonical_training_mainline_20260401.md`
-- 推理入口说明：`inference/README.md`
-
-## Legacy / non-Conan surface
-
-以下内容不再代表 Conan 主线：
-
-- `inference/tts/gradio/*`（旧 NATSpeech/PortaSpeech TTS demo）
-- `inference/run_voice_conversion_nvae.py`
-- `inference/research/*`
-- `inference/run_style_profile_evaluation.py --enable_factorized_report`
+- `docs/canonical_training_mainline_20260401.md`
+- `inference/README.md`

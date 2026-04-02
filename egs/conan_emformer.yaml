@@ -6,18 +6,10 @@ binary_data_dir: 'data/binary/libritts_single'
 processed_data_dir: 'data/processed/libritts_single'
 binarizer_cls: data_gen.conan_binarizer.ConanBinarizer
 
-valid_prefixes: [
-  'p231',
-  'p334',
-  'p360',
-  'p362',
-]
-test_prefixes: [
-  'p231',
-  'p334',
-  'p360',
-  'p362',
-]
+valid_prefixes: []  # current LibriTTS single metadata does not use legacy VCTK-style speaker prefixes
+test_prefixes: []
+fallback_valid_items_per_speaker: 2
+fallback_test_items_per_speaker: 2
 test_ids: []
 # training
 ds_workers: 4

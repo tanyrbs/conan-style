@@ -179,6 +179,14 @@ Updated: 2026-04-01
 这意味着现在已经把 **online path 变成了 first-class validation target**，
 但还没有完成 strict incremental decoder / vocoder。
 
+当前 parity 指标已不再只看 mel：
+
+- offline/online mel L1 / L2 / tail L1
+- prefix rewrite L1 / L2 / tail L1
+- offline/online identity cosine distance
+- style owner / dynamic timbre cosine distance
+- offline/online F0 L1
+
 ## 7. 未来拓展边界
 
 允许的未来拓展：

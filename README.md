@@ -148,8 +148,9 @@ python tasks/Conan/decoder_style_adapter_contract_smoke.py
   - dynamic timbre budget
   - dynamic timbre boundary
   - decoder late-owner
+- generator `total_loss` 现在只汇总真正参与反传的训练项；control diagnostics 保持 logging-only，不再和 adversarial 启停口径混在一起
 - 输出端已补 mel-side identity proxy loss：`mel_out -> global_timbre_anchor`
-- validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel parity
+- validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel、prefix rewrite、identity/style/material/f0 parity
 - mainline style profile 若收到 research 风格 override，默认会告警并收回 canonical mainline；研究态请显式使用 `research_*` 或 opt-in
 
 ## 当前阶段重点
@@ -170,7 +171,7 @@ python tasks/Conan/decoder_style_adapter_contract_smoke.py
 其中：
 
 - `style_mainline_smoke.py`：检查单参考 mainline contract / query split / decoder-side bundle，以及 disabled branches 不得泄漏到 decoder bundle
-- `streaming_prefix_online_smoke.py`：检查 Conan 任务侧 offline mel vs prefix-online chunked mel
+- `streaming_prefix_online_smoke.py`：检查 Conan 任务侧 offline mel vs prefix-online chunked mel，并记录 prefix rewrite / identity/style/material parity
 - `decoder_style_adapter_contract_smoke.py`：检查近零 style/timbre 分支 hard no-op 与 late-stage owner/fallback 语义
 
 用于防止“只在离线路径稳定、在线路径没被回归”的问题。

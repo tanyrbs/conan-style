@@ -25,7 +25,7 @@ class ConanDecoderStyleAdapter(nn.Module):
     - apply already-aligned style/timbre states only on decoder-side hidden states
     - split stage responsibilities:
       - mid: slow style trace + dynamic timbre
-      - late: global style summary + slow/fast style trace + dynamic timbre
+      - late: global style summary fallback + style owner + bounded dynamic timbre
     """
 
     def __init__(
@@ -287,7 +287,7 @@ class ConanDecoderStyleAdapter(nn.Module):
             "late": self.global_timbre_scale_late,
         }.get(stage_name, 0.0)
         apply_global_timbre = global_timbre_scale > 0.0
-        apply_slow_style = stage_name in {"mid", "late"}
+        apply_slow_style = stage_name == "mid"
         apply_style = stage_name == "late"
         local_style_owner_present = bool(
             self._has_effective_signal(mid_style_owner)
@@ -400,7 +400,7 @@ class ConanDecoderStyleAdapter(nn.Module):
         else:
             metadata["global_style_scale_used"] = 0.0
 
-        slow_style_branch = mid_style_owner if stage_name == "mid" else slow_style_trace
+        slow_style_branch = mid_style_owner if stage_name == "mid" else None
         if apply_slow_style and _is_sequence_tensor(slow_style_branch):
             (
                 conditioned,

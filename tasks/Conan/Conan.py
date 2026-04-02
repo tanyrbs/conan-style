@@ -148,9 +148,14 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         total_tokens = int(content_full.size(1))
         step = max(1, int(tokens_per_chunk))
         prev_mel_len = 0
+        prev_full_mel = None
         mel_chunks = []
         last_output = None
         chunk_count = 0
+        prefix_rewrite_l1_values = []
+        prefix_rewrite_l2_values = []
+        prefix_tail_rewrite_l1_values = []
+        prefix_overlap_frames = max(0, int(hparams.get("streaming_prefix_overlap_frames", 16)))
         with torch.no_grad():
             for end_idx in range(step, total_tokens + step, step):
                 chunk_count += 1
@@ -167,21 +172,105 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                     **model_kwargs,
                 )
                 mel_out = last_output["mel_out"]
+                if isinstance(prev_full_mel, torch.Tensor):
+                    prefix_len = min(int(prev_full_mel.size(1)), int(mel_out.size(1)))
+                    if prefix_len > 0:
+                        prev_prefix = prev_full_mel[:, :prefix_len, :]
+                        cur_prefix = mel_out[:, :prefix_len, :]
+                        prefix_rewrite_l1_values.append(F.l1_loss(cur_prefix, prev_prefix))
+                        prefix_rewrite_l2_values.append(F.mse_loss(cur_prefix, prev_prefix))
+                        tail_frames = min(prefix_len, prefix_overlap_frames)
+                        if tail_frames > 0:
+                            prefix_tail_rewrite_l1_values.append(
+                                F.l1_loss(
+                                    cur_prefix[:, prefix_len - tail_frames:prefix_len, :],
+                                    prev_prefix[:, prefix_len - tail_frames:prefix_len, :],
+                                )
+                            )
                 mel_new = mel_out[:, prev_mel_len:, :]
                 if mel_new.size(1) > 0:
                     mel_chunks.append(mel_new)
+                prev_full_mel = mel_out
                 prev_mel_len = int(mel_out.size(1))
         if last_output is None:
             raise RuntimeError("Prefix-online inference produced no decoder output.")
         if mel_chunks:
             last_output["mel_out"] = torch.cat(mel_chunks, dim=1)
         last_output["streaming_eval_mode"] = "prefix_online_content_chunked"
+        last_output["streaming_prefix_recompute"] = True
+        last_output["streaming_stateful_decoder"] = False
+        last_output["streaming_stateful_vocoder"] = False
         last_output["streaming_chunk_tokens"] = int(step)
         last_output["streaming_total_chunks"] = int(chunk_count)
+        last_output["streaming_prefix_overlap_frames"] = int(prefix_overlap_frames)
+        if prefix_rewrite_l1_values:
+            prefix_rewrite_l1 = torch.stack(prefix_rewrite_l1_values)
+            last_output["streaming_prefix_rewrite_l1_mean"] = prefix_rewrite_l1.mean()
+            last_output["streaming_prefix_rewrite_l1_max"] = prefix_rewrite_l1.max()
+        if prefix_rewrite_l2_values:
+            prefix_rewrite_l2 = torch.stack(prefix_rewrite_l2_values)
+            last_output["streaming_prefix_rewrite_l2_mean"] = prefix_rewrite_l2.mean()
+            last_output["streaming_prefix_rewrite_l2_max"] = prefix_rewrite_l2.max()
+        if prefix_tail_rewrite_l1_values:
+            prefix_tail_rewrite_l1 = torch.stack(prefix_tail_rewrite_l1_values)
+            last_output["streaming_prefix_tail_rewrite_l1_mean"] = prefix_tail_rewrite_l1.mean()
+            last_output["streaming_prefix_tail_rewrite_l1_max"] = prefix_tail_rewrite_l1.max()
         return last_output
 
     @staticmethod
-    def _streaming_parity_metrics(offline_output, streaming_output):
+    def _masked_sequence_summary(value, mask=None):
+        if not isinstance(value, torch.Tensor):
+            return None
+        if value.dim() == 2:
+            return value
+        if value.dim() != 3:
+            return None
+        if isinstance(mask, torch.Tensor):
+            if mask.dim() == 3 and mask.size(-1) == 1:
+                mask = mask.squeeze(-1)
+            if mask.dim() == 2 and tuple(mask.shape) == tuple(value.shape[:2]):
+                valid = (~mask.bool()).unsqueeze(-1).to(value.dtype)
+                denom = valid.sum(dim=1).clamp_min(1.0)
+                return (value * valid).sum(dim=1) / denom
+        return value.mean(dim=1)
+
+    @classmethod
+    def _cosine_distance_metric(cls, lhs, rhs, *, lhs_mask=None, rhs_mask=None):
+        lhs = cls._masked_sequence_summary(lhs, lhs_mask)
+        rhs = cls._masked_sequence_summary(rhs, rhs_mask)
+        if not isinstance(lhs, torch.Tensor) or not isinstance(rhs, torch.Tensor):
+            return None
+        if tuple(lhs.shape) != tuple(rhs.shape):
+            return None
+        return 1.0 - F.cosine_similarity(lhs, rhs, dim=-1, eps=1e-6).mean()
+
+    def _speaker_summary_from_mel(self, mel):
+        if (
+            not isinstance(mel, torch.Tensor)
+            or mel.dim() != 3
+            or getattr(self, "model", None) is None
+            or not hasattr(self.model, "encode_spk_embed")
+        ):
+            return None
+        with torch.no_grad():
+            embed = self.model.encode_spk_embed(mel.transpose(1, 2))
+        if isinstance(embed, torch.Tensor) and embed.dim() == 3:
+            embed = embed.transpose(1, 2)
+        return self._masked_sequence_summary(embed)
+
+    @staticmethod
+    def _sum_weighted_grad_losses(loss_dict, loss_weights=None):
+        total_loss = None
+        loss_weights = loss_weights or {}
+        for key, value in loss_dict.items():
+            if not isinstance(value, torch.Tensor) or not value.requires_grad:
+                continue
+            weight = float(loss_weights.get(key, 1.0))
+            weighted = value * weight
+            total_loss = weighted if total_loss is None else total_loss + weighted
+        return total_loss
+
+    def _streaming_parity_metrics(self, offline_output, streaming_output, *, reference_mels=None):
         if not isinstance(offline_output, dict) or not isinstance(streaming_output, dict):
             return {}
         offline_mel = offline_output.get("mel_out")
@@ -205,6 +294,67 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                 streaming_aligned[:, -tail_frames:, :],
                 offline_aligned[:, -tail_frames:, :],
             )
+        for key in (
+            "streaming_prefix_rewrite_l1_mean",
+            "streaming_prefix_rewrite_l1_max",
+            "streaming_prefix_rewrite_l2_mean",
+            "streaming_prefix_rewrite_l2_max",
+            "streaming_prefix_tail_rewrite_l1_mean",
+            "streaming_prefix_tail_rewrite_l1_max",
+        ):
+            value = streaming_output.get(key)
+            if isinstance(value, torch.Tensor):
+                metrics[key] = value
+
+        style_owner_distance = self._cosine_distance_metric(
+            offline_output.get("style_decoder_residual"),
+            streaming_output.get("style_decoder_residual"),
+        )
+        if isinstance(style_owner_distance, torch.Tensor):
+            metrics["streaming_style_owner_cosine_distance"] = style_owner_distance
+
+        material_distance = self._cosine_distance_metric(
+            offline_output.get("dynamic_timbre_decoder_residual"),
+            streaming_output.get("dynamic_timbre_decoder_residual"),
+            lhs_mask=offline_output.get("dynamic_timbre_mask"),
+            rhs_mask=streaming_output.get("dynamic_timbre_mask"),
+        )
+        if isinstance(material_distance, torch.Tensor):
+            metrics["streaming_dynamic_timbre_cosine_distance"] = material_distance
+
+        offline_f0 = offline_output.get("f0_denorm_pred")
+        streaming_f0 = streaming_output.get("f0_denorm_pred")
+        if isinstance(offline_f0, torch.Tensor) and isinstance(streaming_f0, torch.Tensor):
+            min_f0_len = min(int(offline_f0.size(1)), int(streaming_f0.size(1)))
+            if min_f0_len > 0:
+                metrics["streaming_f0_l1"] = F.l1_loss(
+                    streaming_f0[:, :min_f0_len],
+                    offline_f0[:, :min_f0_len],
+                )
+
+        offline_identity = self._speaker_summary_from_mel(offline_aligned)
+        streaming_identity = self._speaker_summary_from_mel(streaming_aligned)
+        offline_streaming_identity_distance = self._cosine_distance_metric(
+            offline_identity,
+            streaming_identity,
+        )
+        if isinstance(offline_streaming_identity_distance, torch.Tensor):
+            metrics["streaming_offline_identity_cosine_distance"] = offline_streaming_identity_distance
+
+        reference_identity = self._speaker_summary_from_mel(reference_mels)
+        if isinstance(reference_identity, torch.Tensor):
+            offline_reference_identity_distance = self._cosine_distance_metric(
+                offline_identity,
+                reference_identity,
+            )
+            streaming_reference_identity_distance = self._cosine_distance_metric(
+                streaming_identity,
+                reference_identity,
+            )
+            if isinstance(offline_reference_identity_distance, torch.Tensor):
+                metrics["offline_reference_identity_cosine_distance"] = offline_reference_identity_distance
+            if isinstance(streaming_reference_identity_distance, torch.Tensor):
+                metrics["streaming_reference_identity_cosine_distance"] = streaming_reference_identity_distance
         return metrics
 
     def add_pitch_loss(self, output, sample, losses):
@@ -231,14 +381,14 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
 
             
     def _training_step(self, sample, batch_idx, optimizer_idx):
-        loss_output = {}
-        loss_weights = {}
         disc_start = self.global_step >= hparams["disc_start_steps"] and hparams['lambda_mel_adv'] > 0
         if optimizer_idx == 0:
             #######################
             #      Generator      #
             #######################
-            loss_output, model_out = self.run_model(sample, infer=False)
+            train_loss_output, model_out = self.run_model(sample, infer=False)
+            loss_output = dict(train_loss_output)
+            loss_weights = {}
             self.model_out_gt = self.model_out = \
                 {k: v.detach() for k, v in model_out.items() if isinstance(v, torch.Tensor)}
             if disc_start:
@@ -248,10 +398,12 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                 o_ = self.mel_disc(mel_p)
                 p_, pc_ = o_['y'], o_['y_c']
                 if p_ is not None:
-                    loss_output['a'] = self.mse_loss_fn(p_, p_.new_ones(p_.size()))
+                    train_loss_output['a'] = self.mse_loss_fn(p_, p_.new_ones(p_.size()))
+                    loss_output['a'] = train_loss_output['a']
                     loss_weights['a'] = hparams['lambda_mel_adv']
                 if pc_ is not None:
-                    loss_output['ac'] = self.mse_loss_fn(pc_, pc_.new_ones(pc_.size()))
+                    train_loss_output['ac'] = self.mse_loss_fn(pc_, pc_.new_ones(pc_.size()))
+                    loss_output['ac'] = train_loss_output['ac']
                     loss_weights['ac'] = hparams['lambda_mel_adv']
             loss_output.update(
                 collect_control_diagnostics(
@@ -260,10 +412,12 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                     resolve_control_regularization_config(hparams, self.global_step),
                 )
             )
+            total_loss = self._sum_weighted_grad_losses(train_loss_output, loss_weights)
         else:
             #######################
             #    Discriminator    #
             #######################
+            loss_output = {}
             if disc_start and self.global_step % hparams['disc_interval'] == 0:
                 model_out = self.model_out_gt
                 mel_g = sample['mels']
@@ -280,7 +434,7 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                     loss_output["fc"] = self.mse_loss_fn(pc_, pc_.new_zeros(pc_.size()))
             if len(loss_output) == 0:
                 return None
-        total_loss = sum([loss_weights.get(k, 1) * v for k, v in loss_output.items() if isinstance(v, torch.Tensor) and v.requires_grad])
+            total_loss = self._sum_weighted_grad_losses(loss_output)
         loss_output['batch_size'] = sample['content'].size()[0]
         return total_loss, loss_output
 
@@ -293,15 +447,22 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         outputs = tensors_to_scalars(outputs)
         if batch_idx < hparams['num_valid_plots']:
             outputs['losses'], offline_out = self.run_model(sample, infer=True)
+            valid_loss_terms = dict(outputs['losses'])
             plot_out = offline_out
             if bool(hparams.get("valid_use_streaming_prefix_path", True)):
                 streaming_out = self._run_prefix_online_inference(
                     sample,
                     tokens_per_chunk=int(hparams.get("streaming_eval_tokens_per_chunk", 4)),
                 )
-                outputs['losses'].update(self._streaming_parity_metrics(offline_out, streaming_out))
+                outputs['losses'].update(
+                    self._streaming_parity_metrics(
+                        offline_out,
+                        streaming_out,
+                        reference_mels=self._reference_for_inference(sample),
+                    )
+                )
                 plot_out = streaming_out
-            outputs['total_loss'] = sum(outputs['losses'].values())
+            outputs['total_loss'] = sum(valid_loss_terms.values())
             sr = hparams["audio_sample_rate"]
             gt_f0 = denorm_f0(sample['f0'], sample["uv"])
             wav_gt = self.vocoder.spec2wav(sample["mels"][0].cpu().numpy(), f0=gt_f0[0].cpu().numpy())
@@ -344,7 +505,11 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         mel_pred = outputs['mel_out'][0]
         item_name = sample['item_name'][0]
         base_fn = f'{item_name.replace(" ", "_")}[P]'
-        parity_metrics = self._streaming_parity_metrics(offline_outputs, outputs)
+        parity_metrics = self._streaming_parity_metrics(
+            offline_outputs,
+            outputs,
+            reference_mels=sample.get("ref_mels", sample.get("mels")),
+        )
 
         # Pass through vocoder at once
         wav_pred = self.vocoder.spec2wav(mel_pred.cpu().numpy())
@@ -377,8 +542,12 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         scalar_metrics.update(
             {
                 "streaming_eval_mode": outputs.get("streaming_eval_mode", "prefix_online_content_chunked"),
+                "streaming_prefix_recompute": bool(outputs.get("streaming_prefix_recompute", True)),
+                "streaming_stateful_decoder": bool(outputs.get("streaming_stateful_decoder", False)),
+                "streaming_stateful_vocoder": bool(outputs.get("streaming_stateful_vocoder", False)),
                 "streaming_total_chunks": int(outputs.get("streaming_total_chunks", 0)),
                 "streaming_chunk_tokens": int(outputs.get("streaming_chunk_tokens", tokens_per_chunk)),
+                "streaming_prefix_overlap_frames": int(outputs.get("streaming_prefix_overlap_frames", 0)),
                 "query_anchor_split_applied": bool(outputs.get("query_anchor_split_applied", False)),
                 "dynamic_timbre_style_context_owner_safe": bool(
                     outputs.get("dynamic_timbre_style_context_owner_safe", False)

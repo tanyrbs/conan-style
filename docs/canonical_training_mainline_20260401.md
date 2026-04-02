@@ -135,9 +135,10 @@ At this stage, “training ready” means:
 - single-reference contract is enforced on the product path
 - style/timbre query hierarchy is owner-aware
 - canonical mainline control regularization is constrained to the 4-loss pack
+- generator loss assembly sums only trainable loss terms; diagnostics stay logging-only
 - training-prep check passes
 - CPU dry run passes
-- prefix-online parity smoke passes
+- prefix-online parity smoke passes, including mel + prefix rewrite + identity/style/material proxies
 
 It does **not** yet mean:
 

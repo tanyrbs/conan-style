@@ -81,9 +81,9 @@ def _run_train_steps(args):
                 "step": int(step_idx),
                 "indices": [int(idx) for idx in indices],
                 "total_loss": scalarize_value(total_loss),
-                "style_trace_consistency": scalar_logs.get("style_trace_consistency"),
                 "output_identity_cosine": scalar_logs.get("output_identity_cosine"),
                 "dynamic_timbre_budget": scalar_logs.get("dynamic_timbre_budget"),
+                "dynamic_timbre_boundary": scalar_logs.get("dynamic_timbre_boundary"),
                 "decoder_late_owner": scalar_logs.get("decoder_late_owner"),
                 "l1": scalar_logs.get("l1"),
                 "ssim": scalar_logs.get("ssim"),
@@ -106,6 +106,7 @@ def run_cpu_dry_run(args):
     prep_summary = run_train_prep(
         argparse.Namespace(
             config=args.config,
+            binary_data_dir=args.binary_data_dir,
             output_path=str(Path(args.output_path).with_name("mainline_train_prep.from_dry_run.json")),
         )
     )

@@ -55,6 +55,12 @@ def parse_args():
     )
     parser.add_argument("--config", type=str, default="egs/conan_emformer.yaml")
     parser.add_argument(
+        "--binary_data_dir",
+        type=str,
+        default=None,
+        help="Optional override for validating the actual binary dataset dir used by the run.",
+    )
+    parser.add_argument(
         "--output_path",
         type=str,
         default="smoke_runs/mainline_train_prep.json",
@@ -100,6 +106,8 @@ def _check_exists(checks, name, path_value):
 
 def run_prep(args):
     set_hparams(config=args.config, print_hparams=False)
+    if getattr(args, "binary_data_dir", None):
+        hparams["binary_data_dir"] = str(args.binary_data_dir)
     controls = resolve_style_mainline_controls(hparams=hparams)
     resolved_profile = resolve_style_profile(
         {
@@ -240,6 +248,23 @@ def run_prep(args):
 
     _check_exists(checks, "binary_data_dir_exists", hparams.get("binary_data_dir"))
     _check_exists(checks, "processed_data_dir_exists", hparams.get("processed_data_dir"))
+    binary_data_dir = hparams.get("binary_data_dir")
+    if binary_data_dir:
+        for filename in (
+            "train.data",
+            "train.idx",
+            "train_lengths.npy",
+            "train_spk_ids.npy",
+            "valid.data",
+            "valid.idx",
+            "valid_lengths.npy",
+            "valid_spk_ids.npy",
+        ):
+            _check_exists(
+                checks,
+                f"binary_{filename}_exists",
+                os.path.join(str(binary_data_dir), filename),
+            )
 
     summary = {
         "config": args.config,

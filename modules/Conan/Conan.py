@@ -775,6 +775,129 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             dtype=dtype if dtype is not None else expanded.dtype,
         )
 
+    @staticmethod
+    def _runtime_first_present(mapping, *keys):
+        if not isinstance(mapping, dict):
+            return None
+        for key in keys:
+            value = mapping.get(key)
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _normalize_style_to_pitch_residual_mode(mode) -> str:
+        normalized = str(mode or "auto").strip().lower() or "auto"
+        alias_map = {
+            "source": "source_aligned",
+            "sourcealigned": "source_aligned",
+            "pre_rhythm": "source_aligned",
+            "content": "source_aligned",
+            "post": "post_rhythm",
+            "after_rhythm": "post_rhythm",
+            "joint": "post_rhythm",
+            "post_projector": "post_rhythm",
+        }
+        normalized = alias_map.get(normalized, normalized)
+        if normalized not in {"auto", "source_aligned", "post_rhythm"}:
+            return "auto"
+        return normalized
+
+    def _project_source_sequence_to_pitch_canvas(self, sequence, ret, *, target_shape=None, mode="auto"):
+        meta = {
+            "canvas": "source_aligned",
+            "mask": None,
+            "blank_mask": None,
+            "valid_mask": None,
+        }
+        if not isinstance(sequence, torch.Tensor) or sequence.dim() != 2:
+            return sequence, meta
+
+        mode = self._normalize_style_to_pitch_residual_mode(mode)
+        if mode == "source_aligned":
+            content = ret.get("content")
+            if isinstance(content, torch.Tensor) and tuple(content.shape) == tuple(sequence.shape):
+                meta["mask"] = content.eq(self.content_padding_idx)
+            return sequence, meta
+
+        if target_shape is not None and tuple(sequence.shape) == tuple(target_shape) and mode == "auto":
+            content = ret.get("content")
+            if isinstance(content, torch.Tensor) and tuple(content.shape) == tuple(sequence.shape):
+                meta["mask"] = content.eq(self.content_padding_idx)
+            return sequence, meta
+
+        source_frame_index = self._runtime_first_present(
+            ret,
+            "rhythm_source_frame_index",
+            "source_frame_index",
+            "frame_source_index",
+            "retimed_source_frame_index",
+        )
+        unit_index = self._runtime_first_present(
+            ret,
+            "rhythm_frame_unit_index",
+            "rhythm_slot_unit_index",
+            "frame_unit_index",
+            "slot_unit_index",
+        )
+        frame_valid_mask = self._runtime_first_present(
+            ret,
+            "rhythm_frame_valid_mask",
+            "frame_valid_mask",
+            "slot_mask",
+        )
+        blank_mask = self._runtime_first_present(
+            ret,
+            "rhythm_frame_blank_mask",
+            "frame_blank_mask",
+            "slot_is_blank",
+        )
+
+        projected = None
+        canvas = None
+        if isinstance(source_frame_index, torch.Tensor) and source_frame_index.dim() == 2:
+            gather_index = source_frame_index.long().clamp(min=0, max=max(0, sequence.size(1) - 1))
+            projected = torch.gather(sequence, 1, gather_index)
+            canvas = "post_rhythm_source_frame_index"
+        elif isinstance(unit_index, torch.Tensor) and unit_index.dim() == 2:
+            gather_index = unit_index.long().clamp(min=0, max=max(0, sequence.size(1) - 1))
+            projected = torch.gather(sequence, 1, gather_index)
+            canvas = "post_rhythm_unit_index"
+
+        if isinstance(projected, torch.Tensor):
+            valid_mask = None
+            if isinstance(frame_valid_mask, torch.Tensor):
+                if frame_valid_mask.dim() == 3 and frame_valid_mask.size(-1) == 1:
+                    frame_valid_mask = frame_valid_mask.squeeze(-1)
+                if frame_valid_mask.dim() == 2 and tuple(frame_valid_mask.shape) == tuple(projected.shape):
+                    valid_mask = frame_valid_mask.to(device=projected.device, dtype=projected.dtype).clamp(0.0, 1.0)
+                    projected = projected * valid_mask
+            if isinstance(blank_mask, torch.Tensor):
+                if blank_mask.dim() == 3 and blank_mask.size(-1) == 1:
+                    blank_mask = blank_mask.squeeze(-1)
+                if blank_mask.dim() == 2 and tuple(blank_mask.shape) == tuple(projected.shape):
+                    projected = projected.masked_fill(blank_mask.bool(), 0.0)
+                else:
+                    blank_mask = None
+            if target_shape is None or tuple(projected.shape) == tuple(target_shape):
+                invalid_mask = None
+                if isinstance(valid_mask, torch.Tensor):
+                    invalid_mask = valid_mask <= 0
+                if isinstance(blank_mask, torch.Tensor):
+                    invalid_mask = blank_mask.bool() if invalid_mask is None else (invalid_mask | blank_mask.bool())
+                meta.update({
+                    "canvas": canvas or "post_rhythm",
+                    "mask": invalid_mask,
+                    "blank_mask": blank_mask.bool() if isinstance(blank_mask, torch.Tensor) else None,
+                    "valid_mask": valid_mask,
+                })
+                return projected, meta
+
+        content = ret.get("content")
+        if isinstance(content, torch.Tensor) and tuple(content.shape) == tuple(sequence.shape):
+            meta["mask"] = content.eq(self.content_padding_idx)
+        return sequence, meta
+
     def _apply_runtime_dynamic_timbre_budget(
         self,
         dynamic_timbre_decoder_residual,
@@ -870,7 +993,14 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 self.hparams.get("style_to_pitch_residual", False),
             )
         )
+        residual_mode = self._normalize_style_to_pitch_residual_mode(
+            kwargs.get(
+                "style_to_pitch_residual_mode",
+                self.hparams.get("style_to_pitch_residual_mode", "auto"),
+            )
+        )
         ret["style_to_pitch_residual_enabled"] = enabled
+        ret["style_to_pitch_residual_mode"] = residual_mode
         ret["style_to_pitch_residual_applied"] = False
         if not enabled or self.style_to_pitch_residual_head is None or not isinstance(f0_out, torch.Tensor):
             return f0_out
@@ -883,7 +1013,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             timbre_residual = torch.zeros_like(decoder_inp)
 
         pitch_residual_hidden = torch.cat([decoder_inp, style_residual, timbre_residual], dim=-1)
-        pitch_residual = self.style_to_pitch_residual_head(pitch_residual_hidden).squeeze(-1)
+        pitch_residual_intent = self.style_to_pitch_residual_head(pitch_residual_hidden).squeeze(-1)
         pitch_residual_scale = float(
             kwargs.get(
                 "style_to_pitch_residual_scale",
@@ -897,7 +1027,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             )
         )
         max_log2 = max(0.0, max_semitones / 12.0) * max(0.0, pitch_residual_scale)
-        pitch_residual = torch.tanh(pitch_residual) * max_log2
+        pitch_residual_intent = torch.tanh(pitch_residual_intent) * max_log2
 
         smooth_factor = float(
             kwargs.get(
@@ -905,37 +1035,76 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 self.hparams.get("style_to_pitch_residual_smooth_factor", 0.35),
             )
         )
-        if smooth_factor > 0.0 and pitch_residual.size(1) > 1:
+        if smooth_factor > 0.0 and pitch_residual_intent.size(1) > 1:
             pooled = F.avg_pool1d(
-                pitch_residual.unsqueeze(1),
+                pitch_residual_intent.unsqueeze(1),
                 kernel_size=3,
                 stride=1,
                 padding=1,
             ).squeeze(1)
-            pitch_residual = (1.0 - smooth_factor) * pitch_residual + smooth_factor * pooled
+            pitch_residual_intent = (1.0 - smooth_factor) * pitch_residual_intent + smooth_factor * pooled
 
         content = ret.get("content")
-        if isinstance(content, torch.Tensor) and tuple(content.shape) == tuple(pitch_residual.shape):
-            pitch_residual = pitch_residual.masked_fill(content.eq(self.content_padding_idx), 0.0)
+        if isinstance(content, torch.Tensor) and tuple(content.shape) == tuple(pitch_residual_intent.shape):
+            pitch_residual_intent = pitch_residual_intent.masked_fill(content.eq(self.content_padding_idx), 0.0)
+
+        target_shape = (
+            tuple(uv_out.shape)
+            if isinstance(uv_out, torch.Tensor) and uv_out.dim() == 2
+            else tuple(f0_out.shape)
+        )
+        pitch_residual, canvas_meta = self._project_source_sequence_to_pitch_canvas(
+            pitch_residual_intent,
+            ret,
+            target_shape=target_shape,
+            mode=residual_mode,
+        )
+        ret["style_to_pitch_residual_intent"] = pitch_residual_intent
+
+        voiced_mask = None
         if isinstance(uv_out, torch.Tensor) and tuple(uv_out.shape) == tuple(pitch_residual.shape):
-            pitch_residual = pitch_residual * (uv_out == 0).to(pitch_residual.dtype)
+            voiced_mask = (uv_out == 0)
+            pitch_residual = pitch_residual * voiced_mask.to(pitch_residual.dtype)
 
         ret["style_to_pitch_residual"] = pitch_residual
         ret["style_to_pitch_residual_scale"] = pitch_residual_scale
         ret["style_to_pitch_residual_max_log2"] = max_log2
         ret["style_to_pitch_residual_max_semitones"] = max_semitones
         ret["style_to_pitch_residual_smooth_factor"] = smooth_factor
+        ret["style_to_pitch_residual_canvas"] = canvas_meta.get("canvas", "source_aligned")
+        ret["style_to_pitch_residual_mask"] = canvas_meta.get("mask")
+        ret["style_to_pitch_residual_blank_mask"] = canvas_meta.get("blank_mask")
+        ret["style_to_pitch_residual_voiced_mask"] = voiced_mask
 
         base_pred = ret.get("f0_base_pred")
-        if isinstance(base_pred, torch.Tensor) and tuple(base_pred.shape) == tuple(pitch_residual.shape):
-            ret["style_to_pitch_residual_base_pred"] = base_pred
-        if isinstance(f0_target, torch.Tensor) and isinstance(base_pred, torch.Tensor):
-            if tuple(f0_target.shape) == tuple(base_pred.shape):
-                target = (f0_target - base_pred.detach()).clamp(-max_log2, max_log2)
-                if isinstance(content, torch.Tensor) and tuple(content.shape) == tuple(target.shape):
-                    target = target.masked_fill(content.eq(self.content_padding_idx), 0.0)
-                if isinstance(uv_out, torch.Tensor) and tuple(uv_out.shape) == tuple(target.shape):
-                    target = target * (uv_out == 0).to(target.dtype)
+        if isinstance(base_pred, torch.Tensor):
+            base_pred_canvas, _ = self._project_source_sequence_to_pitch_canvas(
+                base_pred,
+                ret,
+                target_shape=tuple(pitch_residual.shape),
+                mode=residual_mode,
+            )
+        else:
+            base_pred_canvas = None
+        if isinstance(base_pred_canvas, torch.Tensor) and tuple(base_pred_canvas.shape) == tuple(pitch_residual.shape):
+            ret["style_to_pitch_residual_base_pred"] = base_pred_canvas
+
+        target_canvas = None
+        if isinstance(f0_target, torch.Tensor):
+            target_canvas, _ = self._project_source_sequence_to_pitch_canvas(
+                f0_target,
+                ret,
+                target_shape=tuple(pitch_residual.shape),
+                mode=residual_mode,
+            )
+        if isinstance(target_canvas, torch.Tensor) and isinstance(base_pred_canvas, torch.Tensor):
+            if tuple(target_canvas.shape) == tuple(base_pred_canvas.shape):
+                target = (target_canvas - base_pred_canvas.detach()).clamp(-max_log2, max_log2)
+                mask = canvas_meta.get("mask")
+                if isinstance(mask, torch.Tensor) and tuple(mask.shape) == tuple(target.shape):
+                    target = target.masked_fill(mask.bool(), 0.0)
+                if isinstance(voiced_mask, torch.Tensor) and tuple(voiced_mask.shape) == tuple(target.shape):
+                    target = target * voiced_mask.to(target.dtype)
                 ret["style_to_pitch_residual_target"] = target
 
         apply_during_teacher_forcing = bool(
@@ -945,7 +1114,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             )
         )
         should_apply = f0_target is None or apply_during_teacher_forcing
-        if should_apply:
+        if should_apply and tuple(f0_out.shape) == tuple(pitch_residual.shape):
             f0_out = f0_out + pitch_residual
             ret["style_to_pitch_residual_applied"] = True
         return f0_out

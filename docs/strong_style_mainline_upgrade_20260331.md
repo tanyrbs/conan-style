@@ -64,9 +64,9 @@ split reference 仍可保留给 research-only tooling，
 
 ### `M_timbre`
 
-- bounded material enhancer
-- breathiness / brightness / thickness / onset-release
-- 服务于 style realization，而不是第二条主风格通道
+- bounded material track around the identity anchor
+- breathiness / brightness / thickness / resonance / onset-release
+- 在材质子空间内局部主导，但不成为第二个全局 owner
 - TVT material track：content-synchronous prior + slerp + material router
 
 说明：
@@ -82,9 +82,10 @@ split reference 仍可保留给 research-only tooling，
 - no timing writeback
 - `global_timbre_to_pitch = false`
 - `M_style > M_timbre`
-- dynamic timbre = constrained enhancer
+- dynamic timbre = bounded material track, not a second speaker stream
 - `style_trace_mode: dual` + `style_router_enabled`
 - `style_to_pitch_residual: true`（bounded, voiced-only）
+- `style_to_pitch_residual_mode: auto`（style 只输出 pitch intent；若有 rhythm frame plan 则落在 post-rhythm canvas）
 
 ## 6. What changed in this round
 
@@ -103,7 +104,7 @@ split reference 仍可保留给 research-only tooling，
 - dynamic timbre 已增加 runtime hard budget
 - style 内部 dual-scale router 已上线（对外仍是单 owner）
 - timbre 已升级为 TVT material track（global memory + content-synchronous prior + slerp + router）
-- bounded style-to-pitch residual 已加入（不打开 global timbre to pitch）
+- bounded style-to-pitch residual 已加入（语义为 pitch intent → canvas；不打开 global timbre to pitch）
 
 ## 7. Remaining gaps
 

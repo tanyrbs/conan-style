@@ -11,6 +11,7 @@ STYLE_PROFILE_KEYS = (
     "decoder_style_condition_mode",
     "global_timbre_to_pitch",
     "style_to_pitch_residual",
+    "style_to_pitch_residual_mode",
     "style_to_pitch_residual_scale",
     "style_to_pitch_residual_max_semitones",
     "style_to_pitch_residual_smooth_factor",
@@ -49,6 +50,7 @@ STYLE_PROFILES = {
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
         "style_to_pitch_residual": True,
+        "style_to_pitch_residual_mode": "auto",
         "style_to_pitch_residual_scale": 1.0,
         "style_to_pitch_residual_max_semitones": 2.5,
         "style_to_pitch_residual_smooth_factor": 0.35,
@@ -84,6 +86,7 @@ STYLE_PROFILES = {
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
         "style_to_pitch_residual": False,
+        "style_to_pitch_residual_mode": "auto",
         "style_to_pitch_residual_scale": 1.0,
         "style_to_pitch_residual_max_semitones": 2.5,
         "style_to_pitch_residual_smooth_factor": 0.35,
@@ -119,6 +122,7 @@ STYLE_PROFILES = {
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
         "style_to_pitch_residual": True,
+        "style_to_pitch_residual_mode": "auto",
         "style_to_pitch_residual_scale": 1.20,
         "style_to_pitch_residual_max_semitones": 4.0,
         "style_to_pitch_residual_smooth_factor": 0.25,
@@ -231,6 +235,7 @@ def resolve_style_profile(
             resolved["style_trace_mode"] = "dual"
             resolved["style_router_enabled"] = True
             resolved["style_to_pitch_residual"] = True
+            resolved["style_to_pitch_residual_mode"] = "auto"
             resolved["style_to_pitch_residual_scale"] = 1.0
             resolved["style_to_pitch_residual_max_semitones"] = 2.5
             resolved["style_to_pitch_residual_smooth_factor"] = 0.35

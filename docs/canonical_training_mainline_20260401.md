@@ -19,6 +19,7 @@ Mainline training therefore assumes:
 - `style_trace_mode: dual` (fast+slow, internally routed)
 - `style_router_enabled: true`
 - `style_to_pitch_residual: true` (bounded, voiced-only)
+- `style_to_pitch_residual_mode: auto`  # source-aligned today, post-rhythm when an executed frame plan is present
 - `allow_split_reference_inputs: false`
 - `emit_collapsed_reference_aliases: false`
 

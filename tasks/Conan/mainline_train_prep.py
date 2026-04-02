@@ -189,6 +189,7 @@ def run_prep(args):
     _check_equal(checks, "decoder_style_condition_mode", controls.mode, "mainline_full")
     _check_equal(checks, "global_timbre_to_pitch", bool(controls.global_timbre_to_pitch), False)
     _check_equal(checks, "style_to_pitch_residual", bool(controls.style_to_pitch_residual), True)
+    _check_equal(checks, "style_to_pitch_residual_mode", controls.style_to_pitch_residual_mode, "auto")
     _check_equal(checks, "style_trace_mode", controls.style_trace_mode, "dual")
     _check_equal(checks, "style_router_enabled", bool(controls.style_router_enabled), True)
     _check_equal(checks, "style_memory_mode", controls.style_memory_mode, "slow")

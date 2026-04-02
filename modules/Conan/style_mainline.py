@@ -25,6 +25,12 @@ VALID_STYLE_TRACE_MODES = (
     "dual",
 )
 
+VALID_STYLE_TO_PITCH_RESIDUAL_MODES = (
+    "auto",
+    "source_aligned",
+    "post_rhythm",
+)
+
 VALID_STYLE_MEMORY_MODES = (
     "fast",
     "slow",
@@ -115,6 +121,26 @@ def normalize_style_trace_mode(mode, default: str = "slow") -> str:
     return normalized
 
 
+def normalize_style_to_pitch_residual_mode(mode, default: str = "auto") -> str:
+    normalized_default = str(default or "auto").strip().lower() or "auto"
+    normalized = str(mode or normalized_default).strip().lower() or normalized_default
+    alias_map = {
+        "default": normalized_default,
+        "source": "source_aligned",
+        "sourcealigned": "source_aligned",
+        "pre_rhythm": "source_aligned",
+        "content": "source_aligned",
+        "post": "post_rhythm",
+        "after_rhythm": "post_rhythm",
+        "post_projector": "post_rhythm",
+        "joint": "post_rhythm",
+    }
+    normalized = alias_map.get(normalized, normalized)
+    if normalized not in VALID_STYLE_TO_PITCH_RESIDUAL_MODES:
+        return normalized_default
+    return normalized
+
+
 def normalize_style_memory_mode(mode, default: str = "slow") -> str:
     normalized_default = str(default or "slow").strip().lower() or "slow"
     normalized = str(mode or normalized_default).strip().lower() or normalized_default
@@ -137,6 +163,7 @@ class StyleMainlineControls:
     apply_dynamic_timbre: bool = True
     global_timbre_to_pitch: bool = False
     style_to_pitch_residual: bool = False
+    style_to_pitch_residual_mode: str = "auto"
     style_to_pitch_residual_scale: float = 1.0
     style_to_pitch_residual_max_semitones: float = 2.5
     style_to_pitch_residual_smooth_factor: float = 0.35
@@ -276,6 +303,10 @@ def resolve_style_mainline_controls(
                 default=mode == "mainline_full",
             )
         ),
+        style_to_pitch_residual_mode=normalize_style_to_pitch_residual_mode(
+            _value("style_to_pitch_residual_mode", "pitch_residual_mode", default="auto"),
+            default="auto",
+        ),
         style_to_pitch_residual_scale=float(
             _value("style_to_pitch_residual_scale", default=1.0)
         ),
@@ -360,7 +391,11 @@ def build_style_mainline_surface_payload(
         "projector_writeback_allowed": False,
         "timing_authority": "decoder_only_no_timing_writeback",
         "pitch_authority": (
-            "content_plus_bounded_style_residual"
+            "content_plus_style_intent_auto_post_rhythm"
+            if bool(controls.style_to_pitch_residual) and str(controls.style_to_pitch_residual_mode) == "auto"
+            else "content_plus_post_rhythm_style_intent"
+            if bool(controls.style_to_pitch_residual) and str(controls.style_to_pitch_residual_mode) == "post_rhythm"
+            else "content_plus_source_aligned_style_residual"
             if bool(controls.style_to_pitch_residual)
             else "content_only"
         ),
@@ -370,6 +405,7 @@ def build_style_mainline_surface_payload(
         "apply_dynamic_timbre": bool(controls.apply_dynamic_timbre),
         "global_timbre_to_pitch": bool(controls.global_timbre_to_pitch),
         "style_to_pitch_residual": bool(controls.style_to_pitch_residual),
+        "style_to_pitch_residual_mode": str(controls.style_to_pitch_residual_mode),
         "style_to_pitch_residual_scale": float(controls.style_to_pitch_residual_scale),
         "style_to_pitch_residual_max_semitones": float(
             controls.style_to_pitch_residual_max_semitones
@@ -434,11 +470,13 @@ __all__ = [
     "StyleMainlineControls",
     "VALID_DECODER_STYLE_CONDITION_MODES",
     "VALID_STYLE_TRACE_MODES",
+    "VALID_STYLE_TO_PITCH_RESIDUAL_MODES",
     "build_style_mainline_memory_payload",
     "build_style_mainline_surface_payload",
     "derive_dynamic_timbre_strength",
     "normalize_decoder_style_condition_mode",
     "normalize_style_memory_mode",
+    "normalize_style_to_pitch_residual_mode",
     "normalize_style_trace_mode",
     "resolve_style_mainline_controls",
 ]

@@ -514,15 +514,22 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         pitch_residual_target = output.get("style_to_pitch_residual_target")
         if isinstance(pitch_residual, torch.Tensor):
             voiced_weight = None
-            sample_uv = sample.get("uv")
-            if (
-                isinstance(sample_uv, torch.Tensor)
-                and sample_uv.dim() == 2
-                and tuple(sample_uv.shape) == tuple(pitch_residual.shape)
-            ):
-                voiced_weight = (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(pitch_residual.device)
+            voiced_mask = output.get("style_to_pitch_residual_voiced_mask")
+            if isinstance(voiced_mask, torch.Tensor):
+                if voiced_mask.dim() == 3 and voiced_mask.size(-1) == 1:
+                    voiced_mask = voiced_mask.squeeze(-1)
+                if voiced_mask.dim() == 2 and tuple(voiced_mask.shape) == tuple(pitch_residual.shape):
+                    voiced_weight = voiced_mask.to(device=pitch_residual.device, dtype=pitch_residual.dtype).clamp(0.0, 1.0)
+            if voiced_weight is None:
+                sample_uv = sample.get("uv")
+                if (
+                    isinstance(sample_uv, torch.Tensor)
+                    and sample_uv.dim() == 2
+                    and tuple(sample_uv.shape) == tuple(pitch_residual.shape)
+                ):
+                    voiced_weight = (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(pitch_residual.device)
             residual_weight = _sequence_weight(
-                output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                output.get("style_to_pitch_residual_mask", output.get("dynamic_timbre_mask", output.get("style_trace_mask"))),
                 reference=pitch_residual,
                 voiced_weight=voiced_weight,
             )

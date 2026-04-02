@@ -108,7 +108,7 @@ Updated: 2026-04-01
   - 相对 `M_style` 的局部上限在运行时也会生效，而不只依赖训练正则
 - control loss 已补成更接近 owner/stage 的版本：
   - local mask-aware dynamic timbre budget
-  - pitch residual safety (voiced-only + smooth)
+  - pitch residual safety (voiced-only + smooth; future rhythm joint path realizes residual on the executed rhythm canvas)
   - late-stage owner / anchor budget
 - canonical `mainline_minimal` 默认训练面已进一步收紧为 **4 个 control regularizers**：
   - `lambda_output_identity_cosine`

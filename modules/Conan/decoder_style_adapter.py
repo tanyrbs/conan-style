@@ -9,6 +9,7 @@ from modules.Conan.decoder_style_bundle import (
     canonicalize_decoder_style_bundle,
     ensure_decoder_style_bundle_respects_timing,
 )
+from modules.Conan.effective_signal import tensor_has_effective_signal, tensor_signal_max_abs
 
 
 def _is_sequence_tensor(value: Any) -> bool:
@@ -223,16 +224,7 @@ class ConanDecoderStyleAdapter(nn.Module):
         *,
         nonpadding_mask: Optional[torch.Tensor] = None,
     ):
-        if not isinstance(value, torch.Tensor) or value.numel() <= 0:
-            return None
-        if (
-            isinstance(nonpadding_mask, torch.Tensor)
-            and nonpadding_mask.dim() == 3
-            and value.dim() == 3
-            and tuple(nonpadding_mask.shape[:2]) == tuple(value.shape[:2])
-        ):
-            value = value * nonpadding_mask.to(device=value.device, dtype=value.dtype)
-        return value.detach().abs().amax()
+        return tensor_signal_max_abs(value, mask=nonpadding_mask)
 
     def _has_effective_signal(
         self,
@@ -240,10 +232,11 @@ class ConanDecoderStyleAdapter(nn.Module):
         *,
         nonpadding_mask: Optional[torch.Tensor] = None,
     ) -> bool:
-        max_abs = self._signal_max_abs(value, nonpadding_mask=nonpadding_mask)
-        if max_abs is None:
-            return False
-        return bool(torch.isfinite(max_abs).item() and max_abs.item() > self.effective_signal_epsilon)
+        return tensor_has_effective_signal(
+            value,
+            eps=self.effective_signal_epsilon,
+            mask=nonpadding_mask,
+        )
 
     def _apply_branch(
         self,

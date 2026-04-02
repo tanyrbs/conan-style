@@ -147,7 +147,7 @@ def canonicalize_decoder_style_bundle(bundle: Optional[Mapping[str, Any]] = None
 
     for key in ("global_timbre_anchor", "global_timbre_anchor_runtime", "global_style_summary"):
         value = _normalize_single(normalized.get(key))
-        if _tensor_has_effective_signal(value, eps=effective_signal_epsilon):
+        if tensor_has_effective_signal(value, eps=effective_signal_epsilon):
             normalized[key] = value
         else:
             normalized[key] = None
@@ -162,7 +162,7 @@ def canonicalize_decoder_style_bundle(bundle: Optional[Mapping[str, Any]] = None
     )
     for key, mask_key in branch_specs:
         value = normalized.get(key)
-        if _is_sequence_tensor(value) and _tensor_has_effective_signal(value, eps=effective_signal_epsilon):
+        if _is_sequence_tensor(value) and tensor_has_effective_signal(value, eps=effective_signal_epsilon):
             normalized[mask_key] = _coerce_mask(normalized.get(mask_key), value)
         else:
             normalized[key] = None

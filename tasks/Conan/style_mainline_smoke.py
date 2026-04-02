@@ -133,6 +133,15 @@ def _validate_mode_output(mode, output):
     decoder_style_bundle = output.get("decoder_style_bundle")
     if not isinstance(decoder_style_bundle, dict):
         raise AssertionError(f"{mode}: decoder_style_bundle missing.")
+    if "effective_signal_epsilon" not in decoder_style_bundle:
+        raise AssertionError(f"{mode}: decoder_style_bundle.effective_signal_epsilon missing.")
+    if "decoder_style_bundle_effective_signal_epsilon" not in output:
+        raise AssertionError(f"{mode}: decoder_style_bundle_effective_signal_epsilon missing in output.")
+    if abs(
+        float(decoder_style_bundle.get("effective_signal_epsilon", 0.0))
+        - float(output.get("decoder_style_bundle_effective_signal_epsilon", -1.0))
+    ) > 1e-12:
+        raise AssertionError(f"{mode}: decoder style bundle effective_signal_epsilon mismatch.")
     if not bool(decoder_style_bundle.get("decoder_only", False)):
         raise AssertionError(f"{mode}: decoder_style_bundle.decoder_only is false.")
     if bool(decoder_style_bundle.get("planner_writeback_allowed", True)):
@@ -143,11 +152,17 @@ def _validate_mode_output(mode, output):
         raise AssertionError(f"{mode}: unexpected decoder bundle variant {decoder_style_bundle.get('bundle_variant')}")
     if expected["dynamic_timbre"] and not isinstance(decoder_style_bundle.get("M_timbre"), torch.Tensor):
         raise AssertionError(f"{mode}: M_timbre missing from decoder bundle.")
+    if not expected["dynamic_timbre"] and decoder_style_bundle.get("M_timbre") is not None:
+        raise AssertionError(f"{mode}: M_timbre should be None when dynamic timbre is disabled.")
     if expected["style_trace"] and not (
         isinstance(decoder_style_bundle.get("M_style"), torch.Tensor)
         or isinstance(decoder_style_bundle.get("slow_style_trace"), torch.Tensor)
     ):
         raise AssertionError(f"{mode}: style bundle missing M_style/slow_style_trace.")
+    if not expected["style_trace"] and decoder_style_bundle.get("M_style") is not None:
+        raise AssertionError(f"{mode}: M_style should be None when style trace is disabled.")
+    if not expected["global_anchor"] and decoder_style_bundle.get("global_timbre_anchor_runtime") is not None:
+        raise AssertionError(f"{mode}: global_timbre_anchor_runtime should be None when global anchor is disabled.")
     if mode == "mainline_full" and expected["style_trace"]:
         M_style = decoder_style_bundle.get("M_style")
         if not isinstance(M_style, torch.Tensor):

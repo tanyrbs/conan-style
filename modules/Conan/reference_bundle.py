@@ -303,7 +303,11 @@ def build_reference_bundle_from_inputs(
     )
 
 
-def build_control_kwargs(source: Mapping[str, Any], style_strength_default=1.0):
+def build_control_kwargs(
+    source: Mapping[str, Any],
+    style_strength_default=None,
+    dynamic_timbre_strength_default=None,
+):
     return {
         "emotion_id": first_present(source, "emotion_id", "emotion_ids"),
         "accent_id": first_present(source, "accent_id", "accent_ids"),
@@ -320,7 +324,7 @@ def build_control_kwargs(source: Mapping[str, Any], style_strength_default=1.0):
             source,
             "dynamic_timbre_strength",
             "dynamic_timbre_strengths",
-            default=1.0,
+            default=dynamic_timbre_strength_default,
         ),
         "emotion_strength": first_present(
             source,
@@ -339,6 +343,15 @@ def build_control_kwargs(source: Mapping[str, Any], style_strength_default=1.0):
 
 def build_style_runtime_kwargs(source: Mapping[str, Any]):
     return {
+        "style_profile": first_present(
+            source,
+            "style_profile",
+            "style_runtime_preset",
+        ),
+        "allow_mainline_profile_research_overrides": first_present(
+            source,
+            "allow_mainline_profile_research_overrides",
+        ),
         "decoder_style_condition_mode": first_present(
             source,
             "decoder_style_condition_mode",
@@ -415,6 +428,14 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
             source,
             "dynamic_timbre_anchor_preserve_strength",
         ),
+        "dynamic_timbre_use_tvt": first_present(
+            source,
+            "dynamic_timbre_use_tvt",
+        ),
+        "dynamic_timbre_tvt_prior_scale": first_present(
+            source,
+            "dynamic_timbre_tvt_prior_scale",
+        ),
         "style_query_global_summary_scale": first_present(
             source,
             "style_query_global_summary_scale",
@@ -422,6 +443,10 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
         "dynamic_timbre_coarse_style_context_scale": first_present(
             source,
             "dynamic_timbre_coarse_style_context_scale",
+        ),
+        "dynamic_timbre_query_style_condition_scale": first_present(
+            source,
+            "dynamic_timbre_query_style_condition_scale",
         ),
         "dynamic_timbre_style_context_stopgrad": first_present(
             source,

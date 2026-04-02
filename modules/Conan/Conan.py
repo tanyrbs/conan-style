@@ -803,6 +803,51 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             return "auto"
         return normalized
 
+    @staticmethod
+    def _masked_smooth_sequence_1d(sequence, *, valid_mask=None, smooth_factor=0.0, kernel_size=3):
+        if not isinstance(sequence, torch.Tensor) or sequence.dim() != 2:
+            return sequence
+        smooth_factor = float(smooth_factor)
+        if smooth_factor <= 0.0 or sequence.size(1) <= 1:
+            return sequence
+        kernel_size = max(1, int(kernel_size))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        padding = kernel_size // 2
+        if isinstance(valid_mask, torch.Tensor):
+            if valid_mask.dim() == 3 and valid_mask.size(-1) == 1:
+                valid_mask = valid_mask.squeeze(-1)
+            if valid_mask.dim() == 2 and tuple(valid_mask.shape) == tuple(sequence.shape):
+                valid_mask = valid_mask.to(device=sequence.device, dtype=sequence.dtype).clamp(0.0, 1.0)
+            else:
+                valid_mask = None
+        if valid_mask is None:
+            pooled = F.avg_pool1d(
+                sequence.unsqueeze(1),
+                kernel_size=kernel_size,
+                stride=1,
+                padding=padding,
+            ).squeeze(1)
+            return (1.0 - smooth_factor) * sequence + smooth_factor * pooled
+
+        weighted = sequence * valid_mask
+        pooled = F.avg_pool1d(
+            weighted.unsqueeze(1),
+            kernel_size=kernel_size,
+            stride=1,
+            padding=padding,
+        ).squeeze(1)
+        denom = F.avg_pool1d(
+            valid_mask.unsqueeze(1),
+            kernel_size=kernel_size,
+            stride=1,
+            padding=padding,
+        ).squeeze(1).clamp_min(1.0e-6)
+        pooled = pooled / denom
+        smoothed = (1.0 - smooth_factor) * sequence + smooth_factor * pooled
+        smoothed = smoothed * valid_mask + sequence * (1.0 - valid_mask)
+        return smoothed
+
     def _project_source_sequence_to_pitch_canvas(self, sequence, ret, *, target_shape=None, mode="auto"):
         meta = {
             "canvas": "source_aligned",
@@ -1035,14 +1080,6 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 self.hparams.get("style_to_pitch_residual_smooth_factor", 0.35),
             )
         )
-        if smooth_factor > 0.0 and pitch_residual_intent.size(1) > 1:
-            pooled = F.avg_pool1d(
-                pitch_residual_intent.unsqueeze(1),
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            ).squeeze(1)
-            pitch_residual_intent = (1.0 - smooth_factor) * pitch_residual_intent + smooth_factor * pooled
 
         content = ret.get("content")
         if isinstance(content, torch.Tensor) and tuple(content.shape) == tuple(pitch_residual_intent.shape):
@@ -1066,6 +1103,23 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             voiced_mask = (uv_out == 0)
             pitch_residual = pitch_residual * voiced_mask.to(pitch_residual.dtype)
 
+        residual_mask = canvas_meta.get("mask")
+        smoothing_valid_mask = None
+        if isinstance(residual_mask, torch.Tensor) and tuple(residual_mask.shape) == tuple(pitch_residual.shape):
+            smoothing_valid_mask = (~residual_mask.bool()).to(device=pitch_residual.device, dtype=pitch_residual.dtype)
+        if isinstance(voiced_mask, torch.Tensor) and tuple(voiced_mask.shape) == tuple(pitch_residual.shape):
+            voiced_valid = voiced_mask.to(device=pitch_residual.device, dtype=pitch_residual.dtype)
+            smoothing_valid_mask = voiced_valid if smoothing_valid_mask is None else (smoothing_valid_mask * voiced_valid)
+        pitch_residual = self._masked_smooth_sequence_1d(
+            pitch_residual,
+            valid_mask=smoothing_valid_mask,
+            smooth_factor=smooth_factor,
+        )
+        if isinstance(voiced_mask, torch.Tensor) and tuple(voiced_mask.shape) == tuple(pitch_residual.shape):
+            pitch_residual = pitch_residual * voiced_mask.to(pitch_residual.dtype)
+        if isinstance(residual_mask, torch.Tensor) and tuple(residual_mask.shape) == tuple(pitch_residual.shape):
+            pitch_residual = pitch_residual.masked_fill(residual_mask.bool(), 0.0)
+
         ret["style_to_pitch_residual"] = pitch_residual
         ret["style_to_pitch_residual_scale"] = pitch_residual_scale
         ret["style_to_pitch_residual_max_log2"] = max_log2
@@ -1075,6 +1129,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["style_to_pitch_residual_mask"] = canvas_meta.get("mask")
         ret["style_to_pitch_residual_blank_mask"] = canvas_meta.get("blank_mask")
         ret["style_to_pitch_residual_voiced_mask"] = voiced_mask
+        ret["style_to_pitch_residual_smoothing_valid_mask"] = smoothing_valid_mask
 
         base_pred = ret.get("f0_base_pred")
         if isinstance(base_pred, torch.Tensor):

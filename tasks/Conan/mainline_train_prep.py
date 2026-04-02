@@ -12,6 +12,8 @@ if str(ROOT_DIR) not in sys.path:
 
 from modules.Conan.style_mainline import resolve_style_mainline_controls
 from modules.Conan.style_profiles import resolve_style_profile
+from modules.Conan.reference_bundle import build_control_kwargs, build_style_runtime_kwargs
+from tasks.Conan.dataset import ConanDataset
 from tasks.Conan.control_schedule import (
     MAINLINE_MINIMAL_CONTROL_LAMBDAS,
     resolve_control_regularization_config,
@@ -142,6 +144,22 @@ def _check_importable(checks, name, module_name):
         )
 
 
+def _jsonable(value):
+    try:
+        import torch
+    except Exception:  # pragma: no cover - torch is available in normal runs
+        torch = None
+    if torch is not None and isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return float(value.detach().cpu())
+        return value.detach().cpu().tolist()
+    if isinstance(value, dict):
+        return {key: _jsonable(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
 def run_prep(args):
     set_hparams(config=args.config, print_hparams=False)
     if getattr(args, "binary_data_dir", None):
@@ -183,6 +201,21 @@ def run_prep(args):
         preset=hparams.get("style_profile", "strong_style"),
     )
     regularization = resolve_control_regularization_config(hparams, global_step=0)
+    batch_controls = None
+    batch_controls_error = None
+    try:
+        train_dataset = ConanDataset(prefix="train", shuffle=False)
+        if len(train_dataset) > 0:
+            sample = train_dataset[0]
+            batch = train_dataset.collater([sample])
+            batch_kwargs = {}
+            batch_kwargs.update(build_control_kwargs(batch))
+            batch_kwargs.update(build_style_runtime_kwargs(batch))
+            batch_controls = resolve_style_mainline_controls(batch_kwargs, hparams=hparams)
+        else:
+            batch_controls_error = "empty_train_dataset"
+    except Exception as exc:  # pragma: no cover - surfaced through prep output
+        batch_controls_error = f"{type(exc).__name__}: {exc}"
 
     checks = []
     _check_equal(checks, "reference_contract_mode", hparams.get("reference_contract_mode"), "collapsed_reference")
@@ -238,6 +271,64 @@ def run_prep(args):
         resolved_profile.get("style_profile_track", resolved_profile.get("track")),
         "mainline",
     )
+    _check_close(
+        checks,
+        "style_profile_controls_style_strength",
+        controls.style_strength,
+        resolved_profile.get("style_strength", controls.style_strength),
+    )
+    _check_close(
+        checks,
+        "style_profile_controls_dynamic_timbre_strength",
+        controls.dynamic_timbre_strength,
+        resolved_profile.get("dynamic_timbre_strength", controls.dynamic_timbre_strength),
+    )
+    _check_close(
+        checks,
+        "style_profile_controls_style_temperature",
+        controls.style_temperature,
+        resolved_profile.get("style_temperature", controls.style_temperature),
+    )
+    _check_close(
+        checks,
+        "style_profile_controls_dynamic_timbre_temperature",
+        controls.dynamic_timbre_temperature,
+        resolved_profile.get("dynamic_timbre_temperature", controls.dynamic_timbre_temperature),
+    )
+    _check_true(
+        checks,
+        "train_batch_mainline_controls_resolvable",
+        batch_controls is not None,
+        actual=batch_controls_error if batch_controls is None else "resolved",
+        expected="resolved",
+    )
+    if batch_controls is not None:
+        _check_close(
+            checks,
+            "train_batch_style_strength_matches_profile",
+            batch_controls.style_strength,
+            resolved_profile.get("style_strength", batch_controls.style_strength),
+            tol=1e-6,
+        )
+        _check_close(
+            checks,
+            "train_batch_dynamic_timbre_strength_matches_profile",
+            batch_controls.dynamic_timbre_strength,
+            resolved_profile.get("dynamic_timbre_strength", batch_controls.dynamic_timbre_strength),
+            tol=1e-6,
+        )
+        _check_close(
+            checks,
+            "train_batch_style_temperature_matches_profile",
+            batch_controls.style_temperature,
+            resolved_profile.get("style_temperature", batch_controls.style_temperature),
+        )
+        _check_close(
+            checks,
+            "train_batch_dynamic_timbre_temperature_matches_profile",
+            batch_controls.dynamic_timbre_temperature,
+            resolved_profile.get("dynamic_timbre_temperature", batch_controls.dynamic_timbre_temperature),
+        )
     _check_close(
         checks,
         "runtime_dynamic_timbre_style_budget_ratio",
@@ -484,17 +575,18 @@ def run_prep(args):
     forcing_preview_steps = (0, 12000, 20000, 60000, 100000)
     summary = {
         "config": args.config,
-        "mainline_controls": controls.as_dict(),
-        "resolved_profile": resolved_profile,
+        "mainline_controls": _jsonable(controls.as_dict()),
+        "train_batch_mainline_controls": None if batch_controls is None else _jsonable(batch_controls.as_dict()),
+        "resolved_profile": _jsonable(resolved_profile),
         "reference_curriculum_preview": [
-            {"step": int(step), **resolve_reference_curriculum(step, hparams)}
+            _jsonable({"step": int(step), **resolve_reference_curriculum(step, hparams)})
             for step in reference_preview_steps
         ],
         "forcing_schedule_preview": [
-            {"step": int(step), **resolve_forcing_schedule(step, hparams)}
+            _jsonable({"step": int(step), **resolve_forcing_schedule(step, hparams)})
             for step in forcing_preview_steps
         ],
-        "checks": checks,
+        "checks": _jsonable(checks),
         "ready": bool(all(item["ok"] for item in checks)),
     }
     output_path = Path(args.output_path)

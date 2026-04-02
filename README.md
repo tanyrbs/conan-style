@@ -33,7 +33,7 @@ split reference / factorized swap 仍保留给研究与 ablation，
 - canonical mainline 训练默认只保留 **4 个控制正则**：
   - `lambda_output_identity_cosine`
   - `lambda_dynamic_timbre_budget`
-  - `lambda_dynamic_timbre_boundary`
+  - `lambda_pitch_residual_safe`
   - `lambda_decoder_late_owner`
 - 这 4 个只约束 control regularization；总训练 loss 仍包含 mel / pitch / VQ 等主干项
 
@@ -149,7 +149,7 @@ python tasks/Conan/decoder_style_adapter_contract_smoke.py
 - canonical `mainline_minimal` 已收缩成 4-loss control pack：
   - identity cosine
   - dynamic timbre budget
-  - dynamic timbre boundary
+  - pitch residual safe
   - decoder late-owner
 - `mainline_minimal` 口径下不再额外启用 energy regularization，避免打破 4-loss control pack
 - generator `total_loss` 现在只汇总真正参与反传的训练项；control diagnostics 保持 logging-only，不再和 adversarial 启停口径混在一起

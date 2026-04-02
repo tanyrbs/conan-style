@@ -141,6 +141,39 @@ def normalize_style_to_pitch_residual_mode(mode, default: str = "auto") -> str:
     return normalized
 
 
+def _resolve_style_profile_defaults(
+    overrides: Optional[Mapping[str, Any]] = None,
+    *,
+    hparams: Optional[Mapping[str, Any]] = None,
+) -> Mapping[str, Any]:
+    preset = _first_present(
+        overrides,
+        "style_profile",
+        "style_runtime_preset",
+        default=_first_present(
+            hparams,
+            "style_profile",
+            "style_runtime_preset",
+            default=None,
+        ),
+    )
+    if preset is None:
+        return {}
+    try:
+        from modules.Conan.style_profiles import resolve_style_profile
+    except Exception:
+        return {}
+    try:
+        resolved = resolve_style_profile(
+            {"style_profile": preset},
+            preset=preset,
+            default_preset=str(preset),
+        )
+    except Exception:
+        return {}
+    return resolved if isinstance(resolved, Mapping) else {}
+
+
 def normalize_style_memory_mode(mode, default: str = "slow") -> str:
     normalized_default = str(default or "slow").strip().lower() or "slow"
     normalized = str(mode or normalized_default).strip().lower() or normalized_default
@@ -201,6 +234,7 @@ def resolve_style_mainline_controls(
     hparams: Optional[Mapping[str, Any]] = None,
     default_mode: str = "mainline_full",
 ) -> StyleMainlineControls:
+    profile_defaults = _resolve_style_profile_defaults(overrides, hparams=hparams)
     mode = normalize_decoder_style_condition_mode(
         _first_present(
             overrides,
@@ -245,7 +279,11 @@ def resolve_style_mainline_controls(
         return _first_present(
             overrides,
             *keys,
-            default=_first_present(hparams, *keys, default=default),
+            default=_first_present(
+                hparams,
+                *keys,
+                default=_first_present(profile_defaults, *keys, default=default),
+            ),
         )
 
     def _raw_or_float(*keys: str, default=None):

@@ -170,6 +170,7 @@ crop: false
 predictor_grad: 1.0
 
 style: true
+style_profile: strong_style  # canonical mainline training should match the shipped strong-style surface
 silent_token: 57
 content_embedding_dim: 102
 content_vocab_size: 102
@@ -263,6 +264,10 @@ lambda_energy: 0.0
 
 # Optional supervised control heads
 control_loss_profile: mainline_minimal
+# Canonical mainline_minimal 4-loss pack:
+# lambda_output_identity_cosine + lambda_dynamic_timbre_budget
+# + lambda_pitch_residual_safe + lambda_decoder_late_owner
+# lambda_dynamic_timbre_boundary stays off in canonical mainline.
 num_styles: 0
 lambda_style_trace_smooth: 0.0
 lambda_style_trace_consistency: 0.0

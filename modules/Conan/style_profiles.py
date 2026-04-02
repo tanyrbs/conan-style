@@ -192,11 +192,16 @@ def resolve_style_profile(
         )
         preset_name = default_preset
 
-    resolved = dict(STYLE_PROFILES[preset_name])
+    base_profile = dict(STYLE_PROFILES[preset_name])
+    resolved = dict(base_profile)
     profile_track = _style_profile_track(preset_name, resolved)
     allow_mainline_profile_research_overrides = bool(
         overrides.get("allow_mainline_profile_research_overrides", False)
     )
+    explicit_override_keys = {
+        key for key in STYLE_PROFILE_KEYS
+        if overrides.get(key, None) is not None
+    }
     for key in STYLE_PROFILE_KEYS:
         value = overrides.get(key, None)
         if value is not None:
@@ -211,48 +216,58 @@ def resolve_style_profile(
     )
     if profile_track == "mainline":
         research_like_override = (
-            normalized_mode != "mainline_full"
-            or float(resolved.get("global_style_trace_blend", 0.0)) > 0.0
-            or float(resolved.get("style_query_global_summary_scale", 0.0)) != 0.0
-            or str(resolved.get("style_memory_mode", "slow")).strip().lower() != "slow"
-            or str(resolved.get("dynamic_timbre_memory_mode", "slow")).strip().lower() != "slow"
-            or float(resolved.get("dynamic_timbre_coarse_style_context_scale", 0.0)) != 0.0
-            or float(resolved.get("dynamic_timbre_query_style_condition_scale", 0.0)) != 0.0
-            or not bool(resolved.get("dynamic_timbre_style_context_stopgrad", True))
-            or not bool(resolved.get("dynamic_timbre_use_tvt", True))
-            or float(resolved.get("dynamic_timbre_tvt_prior_scale", 1.0)) != 1.0
-            or float(resolved.get("runtime_dynamic_timbre_style_budget_ratio", 0.40)) != 0.40
-            or float(resolved.get("runtime_dynamic_timbre_style_budget_margin", 0.0)) != 0.0
-            or not bool(resolved.get("runtime_dynamic_timbre_style_budget_enabled", True))
+            ("decoder_style_condition_mode" in explicit_override_keys and normalized_mode != "mainline_full")
+            or ("global_style_trace_blend" in explicit_override_keys and float(resolved.get("global_style_trace_blend", 0.0)) > 0.0)
+            or ("style_query_global_summary_scale" in explicit_override_keys and float(resolved.get("style_query_global_summary_scale", 0.0)) != 0.0)
+            or ("style_memory_mode" in explicit_override_keys and str(resolved.get("style_memory_mode", "slow")).strip().lower() != str(base_profile.get("style_memory_mode", "slow")).strip().lower())
+            or ("dynamic_timbre_memory_mode" in explicit_override_keys and str(resolved.get("dynamic_timbre_memory_mode", "slow")).strip().lower() != str(base_profile.get("dynamic_timbre_memory_mode", "slow")).strip().lower())
+            or ("dynamic_timbre_coarse_style_context_scale" in explicit_override_keys and float(resolved.get("dynamic_timbre_coarse_style_context_scale", 0.0)) != float(base_profile.get("dynamic_timbre_coarse_style_context_scale", 0.0)))
+            or ("dynamic_timbre_query_style_condition_scale" in explicit_override_keys and float(resolved.get("dynamic_timbre_query_style_condition_scale", 0.0)) != float(base_profile.get("dynamic_timbre_query_style_condition_scale", 0.0)))
+            or ("dynamic_timbre_style_context_stopgrad" in explicit_override_keys and bool(resolved.get("dynamic_timbre_style_context_stopgrad", True)) != bool(base_profile.get("dynamic_timbre_style_context_stopgrad", True)))
+            or ("dynamic_timbre_use_tvt" in explicit_override_keys and bool(resolved.get("dynamic_timbre_use_tvt", True)) != bool(base_profile.get("dynamic_timbre_use_tvt", True)))
+            or ("dynamic_timbre_tvt_prior_scale" in explicit_override_keys and float(resolved.get("dynamic_timbre_tvt_prior_scale", 1.0)) != float(base_profile.get("dynamic_timbre_tvt_prior_scale", 1.0)))
+            or ("runtime_dynamic_timbre_style_budget_ratio" in explicit_override_keys and float(resolved.get("runtime_dynamic_timbre_style_budget_ratio", 0.40)) != float(base_profile.get("runtime_dynamic_timbre_style_budget_ratio", 0.40)))
+            or ("runtime_dynamic_timbre_style_budget_margin" in explicit_override_keys and float(resolved.get("runtime_dynamic_timbre_style_budget_margin", 0.0)) != float(base_profile.get("runtime_dynamic_timbre_style_budget_margin", 0.0)))
+            or ("runtime_dynamic_timbre_style_budget_enabled" in explicit_override_keys and bool(resolved.get("runtime_dynamic_timbre_style_budget_enabled", True)) != bool(base_profile.get("runtime_dynamic_timbre_style_budget_enabled", True)))
         )
         if research_like_override and not allow_mainline_profile_research_overrides:
             warnings.warn(
-                f"Mainline style_profile '{preset_name}' received research-style overrides; coercing back to canonical mainline defaults. "
+                f"Mainline style_profile '{preset_name}' received research-style overrides; coercing back to the profile's approved mainline defaults. "
                 "Use 'research_dual' or set allow_mainline_profile_research_overrides=True to keep them.",
                 stacklevel=2,
             )
-            resolved["decoder_style_condition_mode"] = "mainline_full"
-            resolved["style_trace_mode"] = "dual"
-            resolved["style_router_enabled"] = True
-            resolved["style_to_pitch_residual"] = True
-            resolved["style_to_pitch_residual_mode"] = "auto"
-            resolved["style_to_pitch_residual_scale"] = 1.0
-            resolved["style_to_pitch_residual_max_semitones"] = 2.5
-            resolved["style_to_pitch_residual_smooth_factor"] = 0.35
-            resolved["global_style_trace_blend"] = 0.0
-            resolved["style_query_global_summary_scale"] = 0.0
-            resolved["style_memory_mode"] = "slow"
-            resolved["dynamic_timbre_memory_mode"] = "slow"
-            resolved["dynamic_timbre_coarse_style_context_scale"] = 0.0
-            resolved["dynamic_timbre_query_style_condition_scale"] = 0.0
-            resolved["dynamic_timbre_style_context_stopgrad"] = True
-            resolved["dynamic_timbre_use_tvt"] = True
-            resolved["dynamic_timbre_tvt_prior_scale"] = 1.0
-            resolved["runtime_dynamic_timbre_style_budget_enabled"] = True
-            resolved["runtime_dynamic_timbre_style_budget_ratio"] = 0.40
-            resolved["runtime_dynamic_timbre_style_budget_margin"] = 0.0
-            normalized_mode = "mainline_full"
-            normalized_trace_mode = "dual"
+            for key in (
+                "decoder_style_condition_mode",
+                "style_trace_mode",
+                "style_router_enabled",
+                "style_to_pitch_residual",
+                "style_to_pitch_residual_mode",
+                "style_to_pitch_residual_scale",
+                "style_to_pitch_residual_max_semitones",
+                "style_to_pitch_residual_smooth_factor",
+                "global_style_trace_blend",
+                "style_query_global_summary_scale",
+                "style_memory_mode",
+                "dynamic_timbre_memory_mode",
+                "dynamic_timbre_coarse_style_context_scale",
+                "dynamic_timbre_query_style_condition_scale",
+                "dynamic_timbre_style_context_stopgrad",
+                "dynamic_timbre_use_tvt",
+                "dynamic_timbre_tvt_prior_scale",
+                "runtime_dynamic_timbre_style_budget_enabled",
+                "runtime_dynamic_timbre_style_budget_ratio",
+                "runtime_dynamic_timbre_style_budget_margin",
+            ):
+                if key in base_profile:
+                    resolved[key] = base_profile[key]
+            normalized_mode = normalize_decoder_style_condition_mode(
+                resolved.get("decoder_style_condition_mode", "mainline_full"),
+                default="mainline_full",
+            )
+            normalized_trace_mode = normalize_style_trace_mode(
+                resolved.get("style_trace_mode", "slow"),
+                default="slow",
+            )
         elif research_like_override:
             warnings.warn(
                 f"Mainline style_profile '{preset_name}' is being used with research-style overrides. "

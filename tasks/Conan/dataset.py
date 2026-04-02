@@ -1,6 +1,7 @@
 from tasks.tts.dataset_utils import FastSpeechDataset
 import torch
 from modules.Conan.reference_bundle import canonicalize_reference_bundle, normalize_reference_contract_mode
+from modules.Conan.style_profiles import resolve_style_profile
 from utils.commons.dataset_utils import collate_1d_or_2d
 
 
@@ -16,7 +17,24 @@ def _scalar_float(value, default=0.0):
     return torch.tensor(float(value), dtype=torch.float32)
 
 
+def _resolve_default_style_strength(hparams):
+    try:
+        resolved = resolve_style_profile(
+            {
+                "style_profile": hparams.get("style_profile", "strong_style"),
+            },
+            preset=hparams.get("style_profile", "strong_style"),
+        )
+        return float(resolved.get("style_strength", 1.0))
+    except Exception:
+        return 1.0
+
+
 class ConanDataset(FastSpeechDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.default_style_strength = _resolve_default_style_strength(self.hparams)
+
     def __getitem__(self, index):
         hparams = self.hparams
         sample = super(ConanDataset, self).__getitem__(index)
@@ -33,7 +51,10 @@ class ConanDataset(FastSpeechDataset):
         else:
             energy = sample["mel"].abs().mean(dim=-1)
         sample["energy"] = energy[: sample["mel"].shape[0]]
-        sample["style_strength"] = _scalar_float(item.get("style_strength", 1.0), default=1.0)
+        sample["style_strength"] = _scalar_float(
+            item.get("style_strength", self.default_style_strength),
+            default=self.default_style_strength,
+        )
         sample["emotion_strength"] = _scalar_float(item.get("emotion_strength", 1.0), default=1.0)
         sample["accent_strength"] = _scalar_float(item.get("accent_strength", 1.0), default=1.0)
         return sample

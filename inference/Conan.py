@@ -19,6 +19,7 @@ from modules.Conan.Conan import Conan
 from modules.Conan.reference_bundle import (
     build_control_kwargs,
     build_reference_bundle_from_inputs,
+    build_style_runtime_kwargs as build_reference_style_runtime_kwargs,
     reference_bundle_to_model_kwargs,
 )
 from modules.Conan.reference_cache import reference_cache_to_model_kwargs
@@ -311,83 +312,14 @@ class StreamingVoiceConversion:
             inp,
             preset=self.hparams.get("style_profile", "strong_style"),
         )
+        runtime_source = dict(style_profile)
+        allow_research_overrides = inp.get("allow_mainline_profile_research_overrides", None)
+        if allow_research_overrides is not None:
+            runtime_source["allow_mainline_profile_research_overrides"] = allow_research_overrides
         return {
-            "decoder_style_condition_mode": style_profile.get(
-                "decoder_style_condition_mode",
-                self.hparams.get("decoder_style_condition_mode", "mainline_full"),
-            ),
-            "global_timbre_to_pitch": bool(
-                style_profile.get(
-                    "global_timbre_to_pitch",
-                    self.hparams.get("global_timbre_to_pitch", False),
-                )
-            ),
-            "global_style_anchor_strength": float(style_profile.get("global_style_anchor_strength", 1.0)),
-            "style_trace_mode": style_profile.get(
-                "style_trace_mode",
-                self.hparams.get("style_trace_mode", "slow"),
-            ),
-            "style_memory_mode": style_profile.get(
-                "style_memory_mode",
-                self.hparams.get("style_reference_memory_mode", "slow"),
-            ),
-            "fast_style_strength_scale": float(style_profile.get("fast_style_strength_scale", 1.0)),
-            "slow_style_strength_scale": float(style_profile.get("slow_style_strength_scale", 1.0)),
-            "style_temperature": float(style_profile.get("style_temperature", 1.0)),
-            "global_style_trace_blend": float(style_profile.get("global_style_trace_blend", 0.0)),
-            "dynamic_timbre_memory_mode": style_profile.get(
-                "dynamic_timbre_memory_mode",
-                self.hparams.get("dynamic_timbre_reference_memory_mode", "slow"),
-            ),
-            "dynamic_timbre_temperature": float(style_profile.get("dynamic_timbre_temperature", 1.0)),
-            "dynamic_timbre_style_condition_scale": float(
-                style_profile.get("dynamic_timbre_style_condition_scale", 0.5)
-            ),
-            "dynamic_timbre_gate_scale": float(style_profile.get("dynamic_timbre_gate_scale", 1.0)),
-            "dynamic_timbre_gate_bias": float(style_profile.get("dynamic_timbre_gate_bias", 0.0)),
-            "dynamic_timbre_boundary_suppress_strength": float(
-                style_profile.get("dynamic_timbre_boundary_suppress_strength", 0.0)
-            ),
-            "dynamic_timbre_boundary_radius": int(style_profile.get("dynamic_timbre_boundary_radius", 2)),
-            "dynamic_timbre_anchor_preserve_strength": float(
-                style_profile.get("dynamic_timbre_anchor_preserve_strength", 0.0)
-            ),
-            "style_query_global_summary_scale": float(
-                style_profile.get(
-                    "style_query_global_summary_scale",
-                    self.hparams.get("style_query_global_summary_scale", 0.0),
-                )
-            ),
-            "dynamic_timbre_coarse_style_context_scale": float(
-                style_profile.get(
-                    "dynamic_timbre_coarse_style_context_scale",
-                    self.hparams.get("dynamic_timbre_coarse_style_context_scale", 0.0),
-                )
-            ),
-            "dynamic_timbre_style_context_stopgrad": bool(
-                style_profile.get(
-                    "dynamic_timbre_style_context_stopgrad",
-                    self.hparams.get("dynamic_timbre_style_context_stopgrad", True),
-                )
-            ),
-            "runtime_dynamic_timbre_style_budget_enabled": bool(
-                style_profile.get(
-                    "runtime_dynamic_timbre_style_budget_enabled",
-                    self.hparams.get("runtime_dynamic_timbre_style_budget_enabled", True),
-                )
-            ),
-            "runtime_dynamic_timbre_style_budget_ratio": float(
-                style_profile.get(
-                    "runtime_dynamic_timbre_style_budget_ratio",
-                    self.hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.40),
-                )
-            ),
-            "runtime_dynamic_timbre_style_budget_margin": float(
-                style_profile.get(
-                    "runtime_dynamic_timbre_style_budget_margin",
-                    self.hparams.get("runtime_dynamic_timbre_style_budget_margin", 0.0),
-                )
-            ),
+            key: value
+            for key, value in build_reference_style_runtime_kwargs(runtime_source).items()
+            if value is not None
         }
 
     def _normalize_spk_embed(self, spk_emb):

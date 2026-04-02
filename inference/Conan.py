@@ -420,6 +420,9 @@ class StreamingVoiceConversion:
             "has_distinct_split_refs": reference_meta["has_distinct_split_refs"],
             "collapsed_split_refs": reference_meta["collapsed_split_refs"],
             "style_profile": resolved_profile.get("style_profile", "strong_style"),
+            "style_profile_track": str(
+                resolved_profile.get("style_profile_track", resolved_profile.get("track", "mainline"))
+            ),
             "style_strength": float(resolved_profile.get("style_strength", 1.0)),
             "style_strength_effective": float(resolved_profile.get("style_strength", 1.0)),
             "dynamic_timbre_strength": float(resolved_profile.get("dynamic_timbre_strength", 1.0)),

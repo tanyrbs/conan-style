@@ -133,11 +133,13 @@ python tasks/Conan/streaming_prefix_online_smoke.py --config egs/conan_mainline_
 - style / timbre query 已拆分：不再共享 `content + condition + anchor`
 - `M_style -> M_timbre` 已改成 owner-aware conditioning：`LayerNorm + stopgrad`
 - decoder adapter 对 zero tensor / 无效分支已做 hard no-op，避免“禁用分支仍偷偷注入”
+- decoder style bundle 会先按 `effective_signal_epsilon` 过滤近零分支，再进入 adapter owner 判定
 - late-stage 默认会在 local style owner 已存在时跳过 `global_style_summary` 重复注入
 - dynamic timbre 已增加 runtime hard budget，确保 `M_timbre` 受 `M_style` 预算约束
 - decoder-side regularization 已补 owner-centric loss：local budget / boundary / late-owner
 - 输出端已补 mel-side identity proxy loss：`mel_out -> global_timbre_anchor`
 - validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel parity
+- mainline style profile 若收到 research 风格 override，默认会告警并收回 canonical mainline；研究态请显式使用 `research_*` 或 opt-in
 
 ## 当前阶段重点
 
@@ -151,12 +153,14 @@ python tasks/Conan/streaming_prefix_online_smoke.py --config egs/conan_mainline_
 ```bash
 python tasks/Conan/style_mainline_smoke.py
 python tasks/Conan/streaming_prefix_online_smoke.py
+python tasks/Conan/decoder_style_adapter_contract_smoke.py
 ```
 
 其中：
 
 - `style_mainline_smoke.py`：检查单参考 mainline contract / query split / decoder-side bundle
 - `streaming_prefix_online_smoke.py`：检查 Conan 任务侧 offline mel vs prefix-online chunked mel
+- `decoder_style_adapter_contract_smoke.py`：检查近零 style/timbre 分支 hard no-op 与 late-stage owner/fallback 语义
 
 用于防止“只在离线路径稳定、在线路径没被回归”的问题。
 

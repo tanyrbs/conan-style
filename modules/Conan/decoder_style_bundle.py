@@ -5,6 +5,8 @@ from typing import Any, Mapping, Optional
 
 import torch
 
+from modules.Conan.effective_signal import tensor_has_effective_signal
+
 
 DECODER_STYLE_TIMING_AUTHORITY = "decoder_only_no_timing_writeback"
 
@@ -83,6 +85,7 @@ class DecoderStyleBundle:
     timing_writeback_allowed: bool = False
     enforce_no_timing_writeback: bool = True
     factorization_guaranteed: bool = False
+    effective_signal_epsilon: float = 1e-8
     global_timbre_anchor: Optional[torch.Tensor] = None
     global_timbre_anchor_runtime: Optional[torch.Tensor] = None
     global_timbre_source: str = "none"
@@ -139,11 +142,15 @@ def canonicalize_decoder_style_bundle(bundle: Optional[Mapping[str, Any]] = None
     normalized["timing_writeback_allowed"] = bool(normalized.get("timing_writeback_allowed", False))
     normalized["enforce_no_timing_writeback"] = bool(normalized.get("enforce_no_timing_writeback", True))
     normalized["factorization_guaranteed"] = bool(normalized.get("factorization_guaranteed", False))
+    normalized["effective_signal_epsilon"] = float(normalized.get("effective_signal_epsilon", 1e-8))
+    effective_signal_epsilon = max(0.0, float(normalized["effective_signal_epsilon"]))
 
     for key in ("global_timbre_anchor", "global_timbre_anchor_runtime", "global_style_summary"):
         value = _normalize_single(normalized.get(key))
-        if value is not None:
+        if _tensor_has_effective_signal(value, eps=effective_signal_epsilon):
             normalized[key] = value
+        else:
+            normalized[key] = None
     if normalized.get("global_timbre_anchor_runtime") is None:
         normalized["global_timbre_anchor_runtime"] = normalized.get("global_timbre_anchor")
     normalized["global_timbre"] = normalized.get("global_timbre_anchor_runtime")
@@ -155,7 +162,7 @@ def canonicalize_decoder_style_bundle(bundle: Optional[Mapping[str, Any]] = None
     )
     for key, mask_key in branch_specs:
         value = normalized.get(key)
-        if _is_sequence_tensor(value):
+        if _is_sequence_tensor(value) and _tensor_has_effective_signal(value, eps=effective_signal_epsilon):
             normalized[mask_key] = _coerce_mask(normalized.get(mask_key), value)
         else:
             normalized[key] = None
@@ -227,6 +234,7 @@ def build_decoder_style_bundle(
     timing_writeback_allowed: bool = False,
     enforce_no_timing_writeback: bool = True,
     factorization_guaranteed: bool = False,
+    effective_signal_epsilon: float = 1e-8,
 ):
     bundle = DecoderStyleBundle(
         bundle_variant=normalize_decoder_style_bundle_variant(bundle_variant),
@@ -239,6 +247,7 @@ def build_decoder_style_bundle(
         timing_writeback_allowed=bool(timing_writeback_allowed),
         enforce_no_timing_writeback=bool(enforce_no_timing_writeback),
         factorization_guaranteed=bool(factorization_guaranteed),
+        effective_signal_epsilon=float(effective_signal_epsilon),
         global_timbre_anchor=global_timbre_anchor,
         global_timbre_anchor_runtime=global_timbre_anchor_runtime,
         global_timbre_source=str(global_timbre_source),

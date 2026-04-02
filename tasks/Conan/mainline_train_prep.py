@@ -156,6 +156,12 @@ def run_prep(args):
         False,
     )
     _check_equal(checks, "control_loss_profile", regularization.get("control_loss_profile"), "mainline_minimal")
+    _check_equal(
+        checks,
+        "style_profile_track",
+        resolved_profile.get("style_profile_track", resolved_profile.get("track")),
+        "mainline",
+    )
     _check_close(
         checks,
         "runtime_dynamic_timbre_style_budget_ratio",

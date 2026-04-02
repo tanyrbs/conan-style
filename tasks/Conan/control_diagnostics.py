@@ -69,6 +69,17 @@ def _safe_mean_std(value):
     return value.mean(), value.std(unbiased=False)
 
 
+def _safe_scalar_ratio(numerator, denominator, *, eps=1e-8):
+    if not isinstance(numerator, torch.Tensor) or not isinstance(denominator, torch.Tensor):
+        return None
+    denominator = denominator.float()
+    numerator = numerator.float()
+    valid = denominator.abs() > float(eps)
+    safe_denominator = torch.where(valid, denominator, torch.ones_like(denominator))
+    ratio = numerator / safe_denominator
+    return torch.where(valid, ratio, torch.zeros_like(ratio))
+
+
 def _cosine_mean(a, b):
     a = summary_vector(a)
     b = summary_vector(b)
@@ -349,27 +360,33 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     if (
         "diag_decoder_style_total_residual_norm" in stats
         and dynamic_norm is not None
-        and float(dynamic_norm.item()) > 1e-8
     ):
-        stats["diag_style_to_timbre_residual_ratio"] = (
-            stats["diag_decoder_style_total_residual_norm"] / dynamic_norm
+        ratio = _safe_scalar_ratio(
+            stats["diag_decoder_style_total_residual_norm"],
+            dynamic_norm,
         )
+        if ratio is not None:
+            stats["diag_style_to_timbre_residual_ratio"] = ratio
     if (
         "diag_decoder_fast_style_residual_norm" in stats
         and dynamic_norm is not None
-        and float(dynamic_norm.item()) > 1e-8
     ):
-        stats["diag_fast_style_to_timbre_ratio"] = (
-            stats["diag_decoder_fast_style_residual_norm"] / dynamic_norm
+        ratio = _safe_scalar_ratio(
+            stats["diag_decoder_fast_style_residual_norm"],
+            dynamic_norm,
         )
+        if ratio is not None:
+            stats["diag_fast_style_to_timbre_ratio"] = ratio
     if (
         "diag_decoder_slow_style_residual_norm" in stats
         and dynamic_norm is not None
-        and float(dynamic_norm.item()) > 1e-8
     ):
-        stats["diag_slow_style_to_timbre_ratio"] = (
-            stats["diag_decoder_slow_style_residual_norm"] / dynamic_norm
+        ratio = _safe_scalar_ratio(
+            stats["diag_decoder_slow_style_residual_norm"],
+            dynamic_norm,
         )
+        if ratio is not None:
+            stats["diag_slow_style_to_timbre_ratio"] = ratio
     late_style_norm = _delta_norm(late_style_delta)
     late_timbre_norm = _delta_norm(late_timbre_delta)
     late_anchor_norm = _delta_norm(late_anchor_delta)
@@ -379,10 +396,12 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
         stats["diag_decoder_late_timbre_delta_norm"] = late_timbre_norm
     if late_anchor_norm is not None:
         stats["diag_decoder_late_anchor_delta_norm"] = late_anchor_norm
-    if late_style_norm is not None and late_timbre_norm is not None and float(late_timbre_norm.item()) > 1e-8:
-        stats["diag_decoder_late_style_to_timbre_ratio"] = late_style_norm / late_timbre_norm
-    if late_style_norm is not None and late_anchor_norm is not None and float(late_style_norm.item()) > 1e-8:
-        stats["diag_decoder_late_anchor_to_style_ratio"] = late_anchor_norm / late_style_norm
+    ratio = _safe_scalar_ratio(late_style_norm, late_timbre_norm)
+    if ratio is not None:
+        stats["diag_decoder_late_style_to_timbre_ratio"] = ratio
+    ratio = _safe_scalar_ratio(late_anchor_norm, late_style_norm)
+    if ratio is not None:
+        stats["diag_decoder_late_anchor_to_style_ratio"] = ratio
     return stats
 
 

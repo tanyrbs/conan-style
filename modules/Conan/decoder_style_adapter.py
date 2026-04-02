@@ -217,6 +217,34 @@ class ConanDecoderStyleAdapter(nn.Module):
             return value
         return value * nonpadding_mask
 
+    def _signal_max_abs(
+        self,
+        value: Any,
+        *,
+        nonpadding_mask: Optional[torch.Tensor] = None,
+    ):
+        if not isinstance(value, torch.Tensor) or value.numel() <= 0:
+            return None
+        if (
+            isinstance(nonpadding_mask, torch.Tensor)
+            and nonpadding_mask.dim() == 3
+            and value.dim() == 3
+            and tuple(nonpadding_mask.shape[:2]) == tuple(value.shape[:2])
+        ):
+            value = value * nonpadding_mask.to(device=value.device, dtype=value.dtype)
+        return value.detach().abs().amax()
+
+    def _has_effective_signal(
+        self,
+        value: Any,
+        *,
+        nonpadding_mask: Optional[torch.Tensor] = None,
+    ) -> bool:
+        max_abs = self._signal_max_abs(value, nonpadding_mask=nonpadding_mask)
+        if max_abs is None:
+            return False
+        return bool(torch.isfinite(max_abs).item() and max_abs.item() > self.effective_signal_epsilon)
+
     def _apply_branch(
         self,
         hidden_btc: torch.Tensor,
@@ -231,11 +259,13 @@ class ConanDecoderStyleAdapter(nn.Module):
             return hidden_btc, None, None, None, False
         branch = projector(branch)
         branch = self._apply_mask(branch, nonpadding_mask)
-        if branch.numel() <= 0:
+        if branch.numel() <= 0 or not self._has_effective_signal(branch):
             return hidden_btc, None, None, None, False
         branch_gate = gate(torch.cat([hidden_btc, branch], dim=-1))
         branch_gate = self._apply_mask(branch_gate, nonpadding_mask)
         branch_delta = branch_gate * branch * float(scale)
+        if not self._has_effective_signal(branch_delta):
+            return hidden_btc, None, None, None, False
         hidden_btc = hidden_btc + branch_delta
         return hidden_btc, branch, branch_gate, branch_delta, True
 
@@ -275,9 +305,10 @@ class ConanDecoderStyleAdapter(nn.Module):
         apply_slow_style = stage_name in {"mid", "late"}
         apply_style = stage_name == "late"
         local_style_owner_present = bool(
-            _is_sequence_tensor(mid_style_owner) or _is_sequence_tensor(style_trace)
+            self._has_effective_signal(mid_style_owner)
+            or self._has_effective_signal(style_trace)
         )
-        global_style_present = isinstance(global_style_summary, torch.Tensor)
+        global_style_present = self._has_effective_signal(global_style_summary)
         late_stage = stage_name == "late"
         # Enforce clear owner hierarchy: global summary is fallback-only in late stage.
         skip_global_style_due_to_local_owner = bool(
@@ -304,6 +335,7 @@ class ConanDecoderStyleAdapter(nn.Module):
         metadata = {
             "stage_name": stage_name,
             "applied": False,
+            "effective_signal_epsilon": float(self.effective_signal_epsilon),
             "local_style_owner_present": bool(local_style_owner_present),
             "global_style_present": bool(global_style_present),
             "global_style_apply_policy": (

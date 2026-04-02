@@ -38,6 +38,7 @@ from modules.Conan.decoder_style_bundle import (
     build_decoder_style_bundle,
     validate_decoder_style_bundle,
 )
+from modules.Conan.effective_signal import maybe_effective_sequence, maybe_effective_singleton
 from modules.Conan.style_mainline import (
     build_style_mainline_memory_payload,
     build_style_mainline_surface_payload,
@@ -567,23 +568,41 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["dynamic_timbre_decoder_residual"] = dynamic_timbre_decoder_residual
         ret["global_style_summary_runtime"] = global_style_summary_runtime
         ret["global_style_summary_runtime_source"] = global_style_summary_runtime_source
+        decoder_signal_eps = float(
+            getattr(self.decoder_style_adapter, "effective_signal_epsilon", 1e-8)
+            if self.decoder_style_adapter is not None
+            else 1e-8
+        )
+        ret["decoder_style_bundle_effective_signal_epsilon"] = decoder_signal_eps
         decoder_global_timbre_anchor = global_timbre_anchor if style_mainline.apply_global_style_anchor else None
         decoder_global_timbre_anchor_runtime = (
             global_timbre_anchor_runtime if style_mainline.apply_global_style_anchor else None
         )
         ret["decoder_style_bundle"] = build_decoder_style_bundle(
-            global_timbre_anchor=decoder_global_timbre_anchor,
-            global_timbre_anchor_runtime=decoder_global_timbre_anchor_runtime,
+            global_timbre_anchor=maybe_effective_singleton(
+                decoder_global_timbre_anchor,
+                eps=decoder_signal_eps,
+            ),
+            global_timbre_anchor_runtime=maybe_effective_singleton(
+                decoder_global_timbre_anchor_runtime,
+                eps=decoder_signal_eps,
+            ),
             global_timbre_source=reference_cache.get("global_timbre_anchor_source", "reference_cache"),
-            global_style_summary=global_style_summary_runtime,
+            global_style_summary=maybe_effective_singleton(
+                global_style_summary_runtime,
+                eps=decoder_signal_eps,
+            ),
             global_style_summary_source=global_style_summary_runtime_source,
             slow_style_trace=None,
             slow_style_trace_mask=None,
             slow_style_source="retained_in_logs_only",
-            M_style=self._maybe_decoder_sequence(M_style_final),
+            M_style=maybe_effective_sequence(M_style_final, eps=decoder_signal_eps),
             M_style_mask=M_style_mask,
             M_style_source="combined_style_owner",
-            M_timbre=self._maybe_decoder_sequence(dynamic_timbre_decoder_residual),
+            M_timbre=maybe_effective_sequence(
+                dynamic_timbre_decoder_residual,
+                eps=decoder_signal_eps,
+            ),
             M_timbre_mask=ret.get("dynamic_timbre_mask"),
             M_timbre_source=dynamic_timbre_source,
             factorization_guaranteed=bool(
@@ -594,6 +613,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             bundle_source="decoder_style_mainline",
             timing_authority=DECODER_STYLE_TIMING_AUTHORITY,
             enforce_no_timing_writeback=style_mainline.enforce_decoder_no_timing_writeback,
+            effective_signal_epsilon=decoder_signal_eps,
         )
         validate_decoder_style_bundle(ret["decoder_style_bundle"])
         ret["style_mainline_surface"] = build_style_mainline_surface_payload(
@@ -663,17 +683,6 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             device=device if device is not None else expanded.device,
             dtype=dtype if dtype is not None else expanded.dtype,
         )
-
-    @staticmethod
-    def _maybe_decoder_sequence(sequence, eps: float = 1e-8):
-        if not isinstance(sequence, torch.Tensor):
-            return None
-        if sequence.dim() != 3 or sequence.size(1) <= 0:
-            return None
-        max_abs = sequence.detach().abs().amax()
-        if not torch.isfinite(max_abs) or max_abs.item() <= float(eps):
-            return None
-        return sequence
 
     def _apply_runtime_dynamic_timbre_budget(
         self,

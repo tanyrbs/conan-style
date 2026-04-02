@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import glob
 import warnings
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -64,6 +65,27 @@ class StreamingVoiceConversion:
             except (TypeError, ValueError):
                 continue
         return 48, "default"
+
+    @staticmethod
+    def _resolve_checkpoint_artifacts(path_value) -> List[str]:
+        if path_value is None:
+            return []
+        path = str(path_value)
+        if os.path.isfile(path):
+            basename = os.path.basename(path)
+            if path.endswith(".ckpt") or basename == "generator_v1":
+                return [path]
+            return []
+        if not os.path.isdir(path):
+            return []
+        artifacts = []
+        for pattern in (
+            "model_ckpt_steps_*.ckpt",
+            "*.ckpt",
+            "generator_v1",
+        ):
+            artifacts.extend(glob.glob(os.path.join(path, pattern)))
+        return sorted({artifact for artifact in artifacts if os.path.isfile(artifact)})
     
     def __init__(self, hp: Dict):
         if hp is None:
@@ -109,6 +131,18 @@ class StreamingVoiceConversion:
             raise FileNotFoundError(
                 "Conan inference layout is incomplete. Missing required path(s): "
                 + ", ".join(missing)
+            )
+        missing_checkpoint_artifacts = [
+            f"{name}={path}"
+            for name, path in required_paths.items()
+            if not self._resolve_checkpoint_artifacts(path)
+        ]
+        if missing_checkpoint_artifacts:
+            raise FileNotFoundError(
+                "Conan inference layout is missing actual checkpoint artifact(s). "
+                "Expected a concrete checkpoint file or a directory containing model_ckpt_steps_*.ckpt "
+                "(or generator_v1 for legacy NSF vocoders): "
+                + ", ".join(missing_checkpoint_artifacts)
             )
         optional_dirs = [
             self.hparams.get("binary_data_dir"),
@@ -167,7 +201,9 @@ class StreamingVoiceConversion:
 
     @staticmethod
     def _write_json(path: str, payload: Dict):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -341,6 +377,15 @@ class StreamingVoiceConversion:
             inp,
             preset=self.hparams.get("style_profile", "strong_style"),
         )
+        try:
+            requested_style_strength = float(
+                resolved_profile.get(
+                    "style_strength_requested",
+                    resolved_profile.get("style_strength", 1.0),
+                )
+            )
+        except (TypeError, ValueError):
+            requested_style_strength = float(resolved_profile.get("style_strength", 1.0))
         spk_embed = self._normalize_spk_embed(spk_emb)
         metadata = {
             "streaming_impl": self.streaming_impl,
@@ -355,14 +400,25 @@ class StreamingVoiceConversion:
             "style_profile_track": str(
                 resolved_profile.get("style_profile_track", resolved_profile.get("track", "mainline"))
             ),
-            "style_strength": float(resolved_profile.get("style_strength", 1.0)),
-            "style_strength_effective": float(resolved_profile.get("style_strength", 1.0)),
+            "style_strength": requested_style_strength,
+            "style_strength_effective": float(
+                resolved_profile.get(
+                    "style_strength_effective",
+                    resolved_profile.get("style_strength", 1.0),
+                )
+            ),
+            "style_strength_was_clamped": bool(
+                resolved_profile.get("style_strength_was_clamped", False)
+            ),
             "dynamic_timbre_strength": float(resolved_profile.get("dynamic_timbre_strength", 1.0)),
             "dynamic_timbre_strength_effective": float(
                 resolved_profile.get("dynamic_timbre_strength", 1.0)
             ),
             "dynamic_timbre_strength_source": str(
                 resolved_profile.get("dynamic_timbre_strength_source", "derived_from_style_strength")
+            ),
+            "style_to_pitch_residual_include_timbre": bool(
+                resolved_profile.get("style_to_pitch_residual_include_timbre", False)
             ),
             "vocoder_left_context_frames": int(self.vocoder_left_context_frames),
             "vocoder_left_context_frames_effective": int(self.vocoder_left_context_frames),
@@ -427,8 +483,8 @@ class StreamingVoiceConversion:
 
     def _infer_prefix_online_from_mel(self, src_mel: torch.Tensor, runtime: Dict):
         total_frames = src_mel.shape[1]
-        chunk_size = self.hparams["chunk_size"] // 20
-        right_context = self.hparams["right_context"]
+        chunk_size = max(1, int(self.hparams.get("chunk_size", 20)) // 20)
+        right_context = max(0, int(self.hparams.get("right_context", 0)))
         seg = chunk_size
         rc = right_context
 

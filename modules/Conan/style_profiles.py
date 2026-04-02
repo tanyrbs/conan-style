@@ -4,6 +4,8 @@ from modules.Conan.style_mainline import (
     derive_dynamic_timbre_strength,
     normalize_decoder_style_condition_mode,
     normalize_style_trace_mode,
+    sanitize_mainline_style_strength,
+    sanitize_scalar_range,
 )
 
 
@@ -11,6 +13,7 @@ STYLE_PROFILE_KEYS = (
     "decoder_style_condition_mode",
     "global_timbre_to_pitch",
     "style_to_pitch_residual",
+    "style_to_pitch_residual_include_timbre",
     "style_to_pitch_residual_mode",
     "style_to_pitch_residual_scale",
     "style_to_pitch_residual_max_semitones",
@@ -50,6 +53,7 @@ STYLE_PROFILES = {
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
         "style_to_pitch_residual": True,
+        "style_to_pitch_residual_include_timbre": False,
         "style_to_pitch_residual_mode": "auto",
         "style_to_pitch_residual_scale": 1.0,
         "style_to_pitch_residual_max_semitones": 2.5,
@@ -86,6 +90,7 @@ STYLE_PROFILES = {
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
         "style_to_pitch_residual": False,
+        "style_to_pitch_residual_include_timbre": False,
         "style_to_pitch_residual_mode": "auto",
         "style_to_pitch_residual_scale": 1.0,
         "style_to_pitch_residual_max_semitones": 2.5,
@@ -122,6 +127,7 @@ STYLE_PROFILES = {
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
         "style_to_pitch_residual": True,
+        "style_to_pitch_residual_include_timbre": False,
         "style_to_pitch_residual_mode": "auto",
         "style_to_pitch_residual_scale": 1.20,
         "style_to_pitch_residual_max_semitones": 4.0,
@@ -206,6 +212,26 @@ def resolve_style_profile(
         value = overrides.get(key, None)
         if value is not None:
             resolved[key] = value
+    requested_style_strength = resolved.get("style_strength", base_profile.get("style_strength", 1.0))
+    resolved["style_strength_requested"] = requested_style_strength
+    resolved["style_strength"] = sanitize_mainline_style_strength(
+        requested_style_strength,
+        default=float(base_profile.get("style_strength", 1.0)),
+    )
+    resolved["style_strength_effective"] = resolved["style_strength"]
+    try:
+        style_strength_was_clamped = (
+            abs(float(requested_style_strength) - float(resolved["style_strength"])) > 1e-8
+        )
+    except (TypeError, ValueError):
+        style_strength_was_clamped = False
+    resolved["style_strength_was_clamped"] = bool(style_strength_was_clamped)
+    if style_strength_was_clamped:
+        warnings.warn(
+            f"style_strength={requested_style_strength} is outside the approved mainline range "
+            f"and was clamped to {resolved['style_strength']:.3f}.",
+            stacklevel=2,
+        )
     normalized_mode = normalize_decoder_style_condition_mode(
         resolved.get("decoder_style_condition_mode", "mainline_full"),
         default="mainline_full",
@@ -217,6 +243,11 @@ def resolve_style_profile(
     if profile_track == "mainline":
         research_like_override = (
             ("decoder_style_condition_mode" in explicit_override_keys and normalized_mode != "mainline_full")
+            or (
+                "style_to_pitch_residual_include_timbre" in explicit_override_keys
+                and bool(resolved.get("style_to_pitch_residual_include_timbre", False))
+                != bool(base_profile.get("style_to_pitch_residual_include_timbre", False))
+            )
             or ("global_style_trace_blend" in explicit_override_keys and float(resolved.get("global_style_trace_blend", 0.0)) > 0.0)
             or ("style_query_global_summary_scale" in explicit_override_keys and float(resolved.get("style_query_global_summary_scale", 0.0)) != 0.0)
             or ("style_memory_mode" in explicit_override_keys and str(resolved.get("style_memory_mode", "slow")).strip().lower() != str(base_profile.get("style_memory_mode", "slow")).strip().lower())
@@ -241,6 +272,7 @@ def resolve_style_profile(
                 "style_trace_mode",
                 "style_router_enabled",
                 "style_to_pitch_residual",
+                "style_to_pitch_residual_include_timbre",
                 "style_to_pitch_residual_mode",
                 "style_to_pitch_residual_scale",
                 "style_to_pitch_residual_max_semitones",
@@ -280,7 +312,12 @@ def resolve_style_profile(
     )
     explicit_dynamic_timbre_strength = overrides.get("dynamic_timbre_strength", None)
     if allow_explicit_dynamic_timbre_strength and explicit_dynamic_timbre_strength is not None:
-        resolved["dynamic_timbre_strength"] = explicit_dynamic_timbre_strength
+        resolved["dynamic_timbre_strength"] = sanitize_scalar_range(
+            explicit_dynamic_timbre_strength,
+            default=float(resolved.get("dynamic_timbre_strength", 1.0)),
+            min_value=0.50,
+            max_value=1.05,
+        )
         resolved["dynamic_timbre_strength_source"] = "explicit_runtime_override"
     else:
         resolved["dynamic_timbre_strength"] = derive_dynamic_timbre_strength(

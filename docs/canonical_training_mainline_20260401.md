@@ -27,7 +27,9 @@ Training / inference stay locked to:
 - `decoder_style_condition_mode: mainline_full`
 - `style_trace_mode: dual`
 - `style_router_enabled: true`
+- `style_strength` stays inside the shipped mainline range `0.50 .. 1.80`
 - `style_to_pitch_residual: true`
+- `style_to_pitch_residual_include_timbre: false`
 - `global_timbre_to_pitch: false`
 - `allow_split_reference_inputs: false`
 
@@ -99,6 +101,8 @@ python inference/run_style_profile_report.py   --sweep_dir infer_out_profiles/co
 ## 8. Verified implementation notes as of 2026-04-03
 
 - canonical mainline uses `lambda_pitch_residual_safe`; `lambda_dynamic_timbre_boundary` remains `0.0`
+- requested vs effective `style_strength` is now surfaced explicitly, so clamp events are observable
+- `style_to_pitch_residual` is style-led on the shipped path; dynamic timbre is not allowed to enter that residual unless a research override is enabled
 - `style_to_pitch_residual` smoothing is applied after projection onto the final pitch canvas and is mask-aware
 - streaming inference tail trimming has been aligned with offline decoding, so online/offline mel and wav lengths now match on parity checks
 - `EmformerDistillModel` now reads `emformer_mode` correctly instead of only the legacy `mode` key

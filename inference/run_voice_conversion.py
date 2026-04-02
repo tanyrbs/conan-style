@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+import traceback
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -104,20 +105,63 @@ class VoiceConversionRunner:
             )
 
         conversion_pairs = config.get("conversion_pairs", [])
+        if not isinstance(conversion_pairs, list):
+            raise TypeError("'conversion_pairs' must be a JSON list.")
         config["total_pairs"] = int(config.get("total_pairs", len(conversion_pairs)))
+        if config["total_pairs"] != len(conversion_pairs):
+            warnings.warn(
+                f"Manifest total_pairs={config['total_pairs']} does not match actual conversion_pairs={len(conversion_pairs)}; using the actual list length for execution.",
+                stacklevel=2,
+            )
+            config["total_pairs"] = len(conversion_pairs)
         print(f"Loaded {config['total_pairs']} conversion pairs")
         return config
 
     def setup_output_dir(self, *, output_dir=None):
         output_dir = output_dir or self.config.get("output_dir", "voice_conversion_output")
         os.makedirs(output_dir, exist_ok=True)
-        print(f"Output directory: {output_dir}")
-        return output_dir
+        resolved_output_dir = os.path.abspath(output_dir)
+        print(f"Output directory: {resolved_output_dir}")
+        return resolved_output_dir
 
     @staticmethod
     def _has_distinct_split_refs(pair):
         ref_wav = pair.get("ref_wav")
         return any(pair.get(key) not in (None, "", ref_wav) for key in SPLIT_REFERENCE_KEYS)
+
+    def _validate_conversion_pair(self, pair, pair_idx):
+        if not isinstance(pair, dict):
+            raise TypeError(f"Pair {pair_idx} must be a JSON object, got {type(pair).__name__}.")
+        for key in ("ref_wav", "src_wav"):
+            value = pair.get(key)
+            if not value:
+                raise ValueError(f"Pair {pair_idx} is missing required field '{key}'.")
+            if not os.path.exists(str(value)):
+                raise FileNotFoundError(f"Pair {pair_idx} references missing {key}: {value}")
+
+    def _resolve_output_path(self, output_name, pair_idx):
+        raw_name = str(output_name or f"pair_{pair_idx:05d}.wav").strip()
+        if not raw_name:
+            raw_name = f"pair_{pair_idx:05d}.wav"
+        normalized = os.path.normpath(raw_name)
+        if os.path.isabs(normalized) or normalized.startswith(".."):
+            sanitized_name = f"pair_{pair_idx:05d}.wav"
+            warnings.warn(
+                f"Unsafe output_name='{raw_name}' for pair {pair_idx}; falling back to '{sanitized_name}'.",
+                stacklevel=2,
+            )
+            normalized = sanitized_name
+        if normalized in ("", "."):
+            normalized = f"pair_{pair_idx:05d}.wav"
+        if not os.path.splitext(normalized)[1]:
+            normalized = f"{normalized}.wav"
+        output_path = os.path.abspath(os.path.join(self.output_dir, normalized))
+        if os.path.commonpath([self.output_dir, output_path]) != self.output_dir:
+            raise ValueError(
+                f"Resolved output path escapes output_dir for pair {pair_idx}: {output_path}"
+            )
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        return normalized, output_path
 
     def _build_infer_input(self, pair):
         if pair.get("allow_split_reference_inputs") or self._has_distinct_split_refs(pair):
@@ -153,11 +197,11 @@ class VoiceConversionRunner:
 
     def run_single_conversion(self, pair, pair_idx):
         try:
+            self._validate_conversion_pair(pair, pair_idx)
             inp = self._build_infer_input(pair)
             wav_pred, _ = self.engine.infer_once(inp)
 
-            output_name = pair.get("output_name") or f"pair_{pair_idx:05d}.wav"
-            output_path = os.path.join(self.output_dir, output_name)
+            output_name, output_path = self._resolve_output_path(pair.get("output_name"), pair_idx)
             save_wav(wav_pred, output_path, hparams["audio_sample_rate"])
             infer_metadata = getattr(self.engine, "last_infer_metadata", None)
             if infer_metadata is not None:
@@ -174,12 +218,18 @@ class VoiceConversionRunner:
                         ensure_ascii=False,
                         indent=2,
                     )
-            return True, output_path
+            return True, {"output_path": output_path, "output_name": output_name}
         except Exception as e:
             print(f"ERROR in pair {pair_idx}: {e}")
-            return False, str(e)
+            return False, {
+                "message": str(e),
+                "type": type(e).__name__,
+                "traceback": traceback.format_exc(),
+            }
 
     def run_all_conversions(self, start_idx=0, end_idx=None, batch_size=50):
+        if int(batch_size) <= 0:
+            raise ValueError("batch_size must be a positive integer.")
         pairs = self.config["conversion_pairs"]
         total_pairs = len(pairs)
         if end_idx is None or int(end_idx) < 0:
@@ -193,22 +243,39 @@ class VoiceConversionRunner:
         failed = 0
         start_time = time.time()
         errors = []
+        error_details = []
         progress_file = os.path.join(self.output_dir, "conversion_progress.json")
 
         for i in range(start_idx, end_idx):
             pair = pairs[i]
-            print(f"\nProcessing [{i + 1}/{total_pairs}] {pair.get('output_name', f'pair_{i:05d}.wav')}")
-            print(f"  Ref: {os.path.basename(pair['ref_wav'])}")
-            print(f"  Src: {os.path.basename(pair['src_wav'])}")
+            if isinstance(pair, dict):
+                pair_name = pair.get("output_name", f"pair_{i:05d}.wav")
+                ref_name = os.path.basename(str(pair.get("ref_wav", "")))
+                src_name = os.path.basename(str(pair.get("src_wav", "")))
+            else:
+                pair_name = f"pair_{i:05d}.wav"
+                ref_name = "<invalid-pair>"
+                src_name = "<invalid-pair>"
+            print(f"\nProcessing [{i + 1}/{total_pairs}] {pair_name}")
+            print(f"  Ref: {ref_name}")
+            print(f"  Src: {src_name}")
 
             success, result = self.run_single_conversion(pair, i)
             if success:
                 successful += 1
-                print(f"  Saved: {result}")
+                print(f"  Saved: {result['output_path']}")
             else:
                 failed += 1
-                errors.append(f"Pair {i}: {result}")
-                print(f"  Failed: {result}")
+                error_message = result["message"] if isinstance(result, dict) else str(result)
+                errors.append(f"Pair {i}: {error_message}")
+                error_details.append(
+                    {
+                        "pair_index": int(i),
+                        "output_name": pair.get("output_name") if isinstance(pair, dict) else None,
+                        **(result if isinstance(result, dict) else {"message": error_message}),
+                    }
+                )
+                print(f"  Failed: {error_message}")
 
             processed = i - start_idx + 1
             if processed % batch_size == 0:
@@ -256,6 +323,7 @@ class VoiceConversionRunner:
             "avg_time_per_file_seconds": total_time / total_processed,
             "output_directory": self.output_dir,
             "errors": errors,
+            "error_details": error_details,
             "timestamp": datetime.now().isoformat(),
             "streaming_impl": getattr(self.engine, "streaming_impl", None),
         }

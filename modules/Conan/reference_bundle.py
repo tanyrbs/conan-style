@@ -15,6 +15,7 @@ STYLE_RUNTIME_KEYS = (
     "decoder_style_condition_mode",
     "global_timbre_to_pitch",
     "style_to_pitch_residual",
+    "style_to_pitch_residual_include_timbre",
     "style_to_pitch_residual_mode",
     "style_to_pitch_residual_scale",
     "style_to_pitch_residual_max_semitones",
@@ -368,6 +369,10 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
             source,
             "style_to_pitch_residual",
             "use_style_to_pitch_residual",
+        ),
+        "style_to_pitch_residual_include_timbre": first_present(
+            source,
+            "style_to_pitch_residual_include_timbre",
         ),
         "style_to_pitch_residual_mode": first_present(
             source,

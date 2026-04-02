@@ -196,6 +196,10 @@ def run_prep(args):
             "style_profile": hparams.get("style_profile", "strong_style"),
             "style_trace_mode": hparams.get("style_trace_mode", None),
             "style_strength": hparams.get("style_strength", None),
+            "style_to_pitch_residual_include_timbre": hparams.get(
+                "style_to_pitch_residual_include_timbre",
+                None,
+            ),
             "global_style_trace_blend": hparams.get("global_style_trace_blend", None),
             "style_query_global_summary_scale": hparams.get("style_query_global_summary_scale", None),
             "dynamic_timbre_style_condition_scale": hparams.get("dynamic_timbre_style_condition_scale", None),
@@ -248,6 +252,12 @@ def run_prep(args):
     _check_equal(checks, "decoder_style_condition_mode", controls.mode, "mainline_full")
     _check_equal(checks, "global_timbre_to_pitch", bool(controls.global_timbre_to_pitch), False)
     _check_equal(checks, "style_to_pitch_residual", bool(controls.style_to_pitch_residual), True)
+    _check_equal(
+        checks,
+        "style_to_pitch_residual_include_timbre",
+        bool(getattr(controls, "style_to_pitch_residual_include_timbre", False)),
+        False,
+    )
     _check_equal(checks, "style_to_pitch_residual_mode", controls.style_to_pitch_residual_mode, "auto")
     _check_equal(checks, "style_trace_mode", controls.style_trace_mode, "dual")
     _check_equal(checks, "style_router_enabled", bool(controls.style_router_enabled), True)

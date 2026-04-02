@@ -1,6 +1,7 @@
 from tasks.tts.dataset_utils import FastSpeechDataset
 import torch
 from modules.Conan.reference_bundle import canonicalize_reference_bundle, normalize_reference_contract_mode
+from modules.Conan.style_mainline import sanitize_mainline_style_strength
 from modules.Conan.style_profiles import resolve_style_profile
 from utils.commons.dataset_utils import collate_1d_or_2d
 
@@ -52,7 +53,10 @@ class ConanDataset(FastSpeechDataset):
             energy = sample["mel"].abs().mean(dim=-1)
         sample["energy"] = energy[: sample["mel"].shape[0]]
         sample["style_strength"] = _scalar_float(
-            item.get("style_strength", self.default_style_strength),
+            sanitize_mainline_style_strength(
+                item.get("style_strength", self.default_style_strength),
+                default=self.default_style_strength,
+            ),
             default=self.default_style_strength,
         )
         sample["emotion_strength"] = _scalar_float(item.get("emotion_strength", 1.0), default=1.0)

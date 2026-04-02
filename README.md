@@ -13,7 +13,9 @@ Both are aligned to the same shipped surface:
 
 - `reference_contract_mode: collapsed_reference`
 - `style_profile: strong_style`
+- `style_strength` is clamped to the shipped mainline range `0.50 .. 1.80`
 - `style_to_pitch_residual: true`
+- `style_to_pitch_residual_include_timbre: false`
 - `global_timbre_to_pitch: false`
 
 ## Canonical 4-loss pack
@@ -55,6 +57,8 @@ Key validated properties:
 
 - training / inference strong-style semantics are aligned
 - canonical config uses `lambda_pitch_residual_safe`, not `lambda_dynamic_timbre_boundary`
+- mainline `style_strength` requests are now clamped and surfaced as requested/effective metadata
+- dynamic timbre is not allowed to leak into `style_to_pitch_residual` on the shipped mainline path
 - style-to-pitch residual smoothing is post-canvas and mask-aware
 - streaming inference tail trimming now matches offline length exactly
 

@@ -36,6 +36,9 @@ VALID_STYLE_MEMORY_MODES = (
     "slow",
 )
 
+MAINLINE_STYLE_STRENGTH_MIN = 0.50
+MAINLINE_STYLE_STRENGTH_MAX = 1.80
+
 
 def _first_present(source: Optional[Mapping[str, Any]], *keys: str, default=None):
     if not isinstance(source, Mapping):
@@ -44,6 +47,40 @@ def _first_present(source: Optional[Mapping[str, Any]], *keys: str, default=None
         if key in source and source[key] is not None:
             return source[key]
     return default
+
+
+def sanitize_scalar_range(
+    value,
+    *,
+    default: float,
+    min_value: Optional[float] = None,
+    max_value: Optional[float] = None,
+):
+    if isinstance(value, torch.Tensor):
+        sanitized = value.to(dtype=torch.float32)
+        if min_value is not None or max_value is not None:
+            min_arg = float(min_value) if min_value is not None else None
+            max_arg = float(max_value) if max_value is not None else None
+            sanitized = sanitized.clamp(min=min_arg, max=max_arg)
+        return sanitized
+    try:
+        sanitized = float(value)
+    except (TypeError, ValueError):
+        sanitized = float(default)
+    if min_value is not None:
+        sanitized = max(float(min_value), sanitized)
+    if max_value is not None:
+        sanitized = min(float(max_value), sanitized)
+    return sanitized
+
+
+def sanitize_mainline_style_strength(value, *, default: float = 1.0):
+    return sanitize_scalar_range(
+        value,
+        default=default,
+        min_value=MAINLINE_STYLE_STRENGTH_MIN,
+        max_value=MAINLINE_STYLE_STRENGTH_MAX,
+    )
 
 
 def normalize_decoder_style_condition_mode(mode, default: str = "mainline_full") -> str:
@@ -196,6 +233,7 @@ class StyleMainlineControls:
     apply_dynamic_timbre: bool = True
     global_timbre_to_pitch: bool = False
     style_to_pitch_residual: bool = False
+    style_to_pitch_residual_include_timbre: bool = False
     style_to_pitch_residual_mode: str = "auto"
     style_to_pitch_residual_scale: float = 1.0
     style_to_pitch_residual_max_semitones: float = 2.5
@@ -299,7 +337,10 @@ def resolve_style_mainline_controls(
     if not apply_style_trace:
         resolved_style_trace_mode = "none"
 
-    style_strength_value = _raw_or_float("style_strength", "style_strengths", default=1.0)
+    style_strength_value = sanitize_mainline_style_strength(
+        _raw_or_float("style_strength", "style_strengths", default=1.0),
+        default=1.0,
+    )
     allow_explicit_dynamic_timbre_strength = bool(
         _value("allow_explicit_dynamic_timbre_strength", default=False)
     )
@@ -309,7 +350,12 @@ def resolve_style_mainline_controls(
         default=None,
     )
     if allow_explicit_dynamic_timbre_strength and explicit_dynamic_timbre_strength is not None:
-        dynamic_timbre_strength_value = explicit_dynamic_timbre_strength
+        dynamic_timbre_strength_value = sanitize_scalar_range(
+            explicit_dynamic_timbre_strength,
+            default=1.0,
+            min_value=0.50,
+            max_value=1.05,
+        )
         dynamic_timbre_strength_source = "explicit_runtime_override"
     else:
         dynamic_timbre_strength_value = derive_dynamic_timbre_strength(
@@ -340,6 +386,9 @@ def resolve_style_mainline_controls(
                 "use_style_to_pitch_residual",
                 default=mode == "mainline_full",
             )
+        ),
+        style_to_pitch_residual_include_timbre=bool(
+            _value("style_to_pitch_residual_include_timbre", default=False)
         ),
         style_to_pitch_residual_mode=normalize_style_to_pitch_residual_mode(
             _value("style_to_pitch_residual_mode", "pitch_residual_mode", default="auto"),
@@ -443,6 +492,9 @@ def build_style_mainline_surface_payload(
         "apply_dynamic_timbre": bool(controls.apply_dynamic_timbre),
         "global_timbre_to_pitch": bool(controls.global_timbre_to_pitch),
         "style_to_pitch_residual": bool(controls.style_to_pitch_residual),
+        "style_to_pitch_residual_include_timbre": bool(
+            controls.style_to_pitch_residual_include_timbre
+        ),
         "style_to_pitch_residual_mode": str(controls.style_to_pitch_residual_mode),
         "style_to_pitch_residual_scale": float(controls.style_to_pitch_residual_scale),
         "style_to_pitch_residual_max_semitones": float(
@@ -505,6 +557,8 @@ __all__ = [
     "STYLE_MAINLINE_MEMORY",
     "STYLE_MAINLINE_OWNER",
     "STYLE_MAINLINE_SURFACE",
+    "MAINLINE_STYLE_STRENGTH_MAX",
+    "MAINLINE_STYLE_STRENGTH_MIN",
     "StyleMainlineControls",
     "VALID_DECODER_STYLE_CONDITION_MODES",
     "VALID_STYLE_TRACE_MODES",
@@ -517,4 +571,6 @@ __all__ = [
     "normalize_style_to_pitch_residual_mode",
     "normalize_style_trace_mode",
     "resolve_style_mainline_controls",
+    "sanitize_mainline_style_strength",
+    "sanitize_scalar_range",
 ]

@@ -180,6 +180,7 @@ global_style_trace_blend: 0.0
 style_query_global_summary_scale: 0.0
 global_timbre_to_pitch: false
 style_to_pitch_residual: true
+style_to_pitch_residual_include_timbre: false
 style_to_pitch_residual_mode: auto
 style_to_pitch_residual_scale: 1.0
 style_to_pitch_residual_max_semitones: 2.5

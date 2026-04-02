@@ -1044,8 +1044,15 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 self.hparams.get("style_to_pitch_residual_mode", "auto"),
             )
         )
+        include_timbre = bool(
+            kwargs.get(
+                "style_to_pitch_residual_include_timbre",
+                self.hparams.get("style_to_pitch_residual_include_timbre", False),
+            )
+        )
         ret["style_to_pitch_residual_enabled"] = enabled
         ret["style_to_pitch_residual_mode"] = residual_mode
+        ret["style_to_pitch_residual_include_timbre"] = include_timbre
         ret["style_to_pitch_residual_applied"] = False
         if not enabled or self.style_to_pitch_residual_head is None or not isinstance(f0_out, torch.Tensor):
             return f0_out
@@ -1054,8 +1061,14 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         timbre_residual = ret.get("dynamic_timbre_decoder_residual")
         if not isinstance(style_residual, torch.Tensor) or tuple(style_residual.shape) != tuple(decoder_inp.shape):
             style_residual = torch.zeros_like(decoder_inp)
-        if not isinstance(timbre_residual, torch.Tensor) or tuple(timbre_residual.shape) != tuple(decoder_inp.shape):
+        timbre_residual_valid = isinstance(timbre_residual, torch.Tensor) and tuple(timbre_residual.shape) == tuple(decoder_inp.shape)
+        if not timbre_residual_valid:
             timbre_residual = torch.zeros_like(decoder_inp)
+        if not include_timbre:
+            timbre_residual = torch.zeros_like(decoder_inp)
+        ret["style_to_pitch_residual_uses_timbre_context"] = bool(
+            include_timbre and timbre_residual_valid
+        )
 
         pitch_residual_hidden = torch.cat([decoder_inp, style_residual, timbre_residual], dim=-1)
         pitch_residual_intent = self.style_to_pitch_residual_head(pitch_residual_hidden).squeeze(-1)

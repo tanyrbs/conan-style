@@ -28,6 +28,7 @@ DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
 MAINLINE_MINIMAL_CONTROL_LAMBDAS = (
     "lambda_style_trace_consistency",
     "lambda_output_identity_cosine",
+    "lambda_dynamic_timbre_gate",
     "lambda_dynamic_timbre_budget",
     "lambda_dynamic_timbre_boundary",
     "lambda_dynamic_timbre_anchor",

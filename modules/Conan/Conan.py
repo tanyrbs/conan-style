@@ -500,17 +500,32 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["dynamic_timbre_style_context_raw"] = M_style_final
         ret["dynamic_timbre_style_context"] = dynamic_timbre_style_context
         ret["dynamic_timbre_coarse_style_context_scale"] = dynamic_timbre_coarse_style_context_scale
+        ret["dynamic_timbre_coarse_style_context_scale_requested"] = dynamic_timbre_coarse_style_context_scale
         ret["dynamic_timbre_coarse_style_context_applied"] = False
+        ret["timbre_query_style_context_applied"] = False
         ret["dynamic_timbre_style_context_stopgrad"] = dynamic_timbre_style_context_stopgrad
         ret["dynamic_timbre_style_context_owner_safe"] = isinstance(dynamic_timbre_style_context, torch.Tensor)
         ret["dynamic_timbre_style_context_bridge"] = (
             "layernorm_stopgrad" if dynamic_timbre_style_context_stopgrad else "layernorm"
         )
-        timbre_query_style_scale = float(style_mainline.dynamic_timbre_style_condition_scale)
+        timbre_query_style_scale = dynamic_timbre_coarse_style_context_scale
+        timbre_query_style_scale_source = "coarse_style_context"
+        if timbre_query_style_scale == 0.0:
+            fallback = float(style_mainline.dynamic_timbre_style_condition_scale)
+            if fallback != 0.0:
+                timbre_query_style_scale = fallback
+                timbre_query_style_scale_source = "style_condition_fallback"
+            else:
+                timbre_query_style_scale_source = "disabled"
         ret["timbre_query_style_scale"] = timbre_query_style_scale
+        ret["timbre_query_style_scale_source"] = timbre_query_style_scale_source
         timbre_query_base = base_condition_inp
         if isinstance(dynamic_timbre_style_context, torch.Tensor) and timbre_query_style_scale != 0.0:
             timbre_query_base = timbre_query_base + timbre_query_style_scale * dynamic_timbre_style_context
+            ret["timbre_query_style_context_applied"] = True
+            ret["dynamic_timbre_coarse_style_context_applied"] = bool(
+                timbre_query_style_scale_source == "coarse_style_context"
+            )
         if self.timbre_query_norm is not None:
             timbre_query_base = self.timbre_query_norm(timbre_query_base)
         timbre_query_inp = (

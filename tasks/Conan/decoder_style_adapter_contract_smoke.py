@@ -110,12 +110,24 @@ def run_smoke(args):
         raise AssertionError("owner_hierarchy: global summary should not be applied alongside active local owner.")
     if not bool(owner_meta.get("style_trace_applied", False)):
         raise AssertionError("owner_hierarchy: style_trace branch should be applied for active M_style.")
+    if float(owner_meta.get("effective_signal_epsilon", 0.0)) != eps:
+        raise AssertionError("owner_hierarchy: decoded metadata should preserve effective_signal_epsilon.")
 
     fallback_bundle = build_decoder_style_bundle(
         global_style_summary=nonzero_global,
         bundle_variant="global_only",
         effective_signal_epsilon=eps,
     )
+
+    for bundle_name, bundle in [
+        ("zero_like_bundle", zero_like_bundle),
+        ("owner_bundle", owner_bundle),
+        ("fallback_bundle", fallback_bundle),
+    ]:
+        if float(bundle.get("effective_signal_epsilon", -1.0)) != eps:
+            raise AssertionError(
+                f"{bundle_name}: effective_signal_epsilon {bundle.get('effective_signal_epsilon')} != {eps}"
+            )
     _, fallback_meta = adapter.forward_stage(
         "late",
         hidden.clone(),
@@ -126,6 +138,8 @@ def run_smoke(args):
         raise AssertionError("global_fallback: local_style_owner_present should be false without local style owner.")
     if not bool(fallback_meta.get("global_style_applied", False)):
         raise AssertionError("global_fallback: global summary should be applied as fallback.")
+    if not bool(fallback_meta.get("global_style_candidate", False)):
+        raise AssertionError("global_fallback: fallback branch should be marked as candidate.")
 
     summary = {
         "effective_signal_epsilon": eps,

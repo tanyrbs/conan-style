@@ -139,6 +139,12 @@ def run_prep(args):
     )
     _check_equal(
         checks,
+        "dynamic_timbre_style_context_stopgrad",
+        bool(hparams.get("dynamic_timbre_style_context_stopgrad", True)),
+        True,
+    )
+    _check_equal(
+        checks,
         "allow_explicit_dynamic_timbre_strength",
         bool(hparams.get("allow_explicit_dynamic_timbre_strength", False)),
         False,
@@ -167,6 +173,18 @@ def run_prep(args):
         "runtime_dynamic_timbre_style_budget_ratio",
         hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.50),
         0.50,
+    )
+    _check_equal(
+        checks,
+        "runtime_dynamic_timbre_style_budget_enabled",
+        bool(hparams.get("runtime_dynamic_timbre_style_budget_enabled", True)),
+        True,
+    )
+    _check_close(
+        checks,
+        "runtime_dynamic_timbre_style_budget_margin",
+        hparams.get("runtime_dynamic_timbre_style_budget_margin", 0.0),
+        0.0,
     )
     _check_close(checks, "dynamic_timbre_budget_ratio", hparams.get("dynamic_timbre_budget_ratio", 0.50), 0.50)
     _check_close(

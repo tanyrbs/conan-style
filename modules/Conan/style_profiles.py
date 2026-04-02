@@ -181,6 +181,11 @@ def resolve_style_profile(
             or float(resolved.get("style_query_global_summary_scale", 0.0)) != 0.0
             or str(resolved.get("style_memory_mode", "slow")).strip().lower() != "slow"
             or str(resolved.get("dynamic_timbre_memory_mode", "slow")).strip().lower() != "slow"
+            or float(resolved.get("dynamic_timbre_coarse_style_context_scale", 0.0)) != 0.0
+            or not bool(resolved.get("dynamic_timbre_style_context_stopgrad", True))
+            or float(resolved.get("runtime_dynamic_timbre_style_budget_ratio", 0.50)) != 0.50
+            or float(resolved.get("runtime_dynamic_timbre_style_budget_margin", 0.0)) != 0.0
+            or not bool(resolved.get("runtime_dynamic_timbre_style_budget_enabled", True))
         )
         if research_like_override and not allow_mainline_profile_research_overrides:
             warnings.warn(
@@ -194,6 +199,11 @@ def resolve_style_profile(
             resolved["style_query_global_summary_scale"] = 0.0
             resolved["style_memory_mode"] = "slow"
             resolved["dynamic_timbre_memory_mode"] = "slow"
+            resolved["dynamic_timbre_coarse_style_context_scale"] = 0.0
+            resolved["dynamic_timbre_style_context_stopgrad"] = True
+            resolved["runtime_dynamic_timbre_style_budget_enabled"] = True
+            resolved["runtime_dynamic_timbre_style_budget_ratio"] = 0.50
+            resolved["runtime_dynamic_timbre_style_budget_margin"] = 0.0
             normalized_mode = "mainline_full"
             normalized_trace_mode = "slow"
         elif research_like_override:

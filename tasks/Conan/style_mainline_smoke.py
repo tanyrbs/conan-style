@@ -124,6 +124,60 @@ def _validate_mode_output(mode, output):
             f"{mode}: dynamic_timbre_style_context_owner_safe mismatch, "
             f"expected {expected_owner_safe}, got {output.get('dynamic_timbre_style_context_owner_safe')}"
         )
+    if expected_owner_safe:
+        bridge_flag = str(output.get("dynamic_timbre_style_context_bridge", ""))
+        stopgrad_flag = bool(output.get("dynamic_timbre_style_context_stopgrad", True))
+        expected_bridge = "layernorm_stopgrad" if stopgrad_flag else "layernorm"
+        if bridge_flag != expected_bridge:
+            raise AssertionError(
+                f"{mode}: dynamic_timbre_style_context_bridge expected {expected_bridge}, got {bridge_flag}"
+            )
+        style_raw = output.get("dynamic_timbre_style_context_raw")
+        style_dec = output.get("style_decoder_residual")
+        if isinstance(style_raw, torch.Tensor) and isinstance(style_dec, torch.Tensor):
+            if not torch.allclose(style_raw, style_dec, atol=1e-5, rtol=1e-4):
+                raise AssertionError(
+                    f"{mode}: dynamic_timbre_style_context_raw must match style_decoder_residual for owner-aware conditioning."
+                )
+    coarse_style_scale = float(output.get("dynamic_timbre_coarse_style_context_scale", 0.0))
+    style_condition_scale = float(output.get("dynamic_timbre_style_condition_scale_runtime", 0.0))
+    actual_query_style_scale = float(output.get("timbre_query_style_scale", 0.0))
+    actual_query_style_scale_source = str(output.get("timbre_query_style_scale_source", ""))
+    if coarse_style_scale != 0.0:
+        if abs(actual_query_style_scale - coarse_style_scale) > 1e-12:
+            raise AssertionError(
+                f"{mode}: timbre_query_style_scale must match explicit coarse style scale."
+            )
+        if actual_query_style_scale_source != "coarse_style_context":
+            raise AssertionError(
+                f"{mode}: expected timbre_query_style_scale_source=coarse_style_context, got {actual_query_style_scale_source}"
+            )
+    elif style_condition_scale != 0.0:
+        if abs(actual_query_style_scale - style_condition_scale) > 1e-12:
+            raise AssertionError(
+                f"{mode}: timbre_query_style_scale should fall back to dynamic_timbre_style_condition_scale."
+            )
+        if actual_query_style_scale_source != "style_condition_fallback":
+            raise AssertionError(
+                f"{mode}: expected timbre_query_style_scale_source=style_condition_fallback, got {actual_query_style_scale_source}"
+            )
+    else:
+        if abs(actual_query_style_scale) > 1e-12 or actual_query_style_scale_source != "disabled":
+            raise AssertionError(
+                f"{mode}: timbre_query_style_scale should be disabled when both coarse and fallback scales are zero."
+            )
+    expected_coarse_applied = bool(expected_owner_safe and coarse_style_scale != 0.0)
+    if bool(output.get("dynamic_timbre_coarse_style_context_applied", False)) != expected_coarse_applied:
+        raise AssertionError(
+            f"{mode}: dynamic_timbre_coarse_style_context_applied mismatch, "
+            f"expected {expected_coarse_applied}, got {output.get('dynamic_timbre_coarse_style_context_applied')}"
+        )
+    expected_query_style_applied = bool(expected_owner_safe and actual_query_style_scale != 0.0)
+    if bool(output.get("timbre_query_style_context_applied", False)) != expected_query_style_applied:
+        raise AssertionError(
+            f"{mode}: timbre_query_style_context_applied mismatch, "
+            f"expected {expected_query_style_applied}, got {output.get('timbre_query_style_context_applied')}"
+        )
     if not bool(output.get("decoder_style_adapter_enabled", False)):
         raise AssertionError(f"{mode}: decoder_style_adapter_enabled is false.")
     if not isinstance(output.get("output_identity_embed"), torch.Tensor):

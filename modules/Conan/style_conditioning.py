@@ -80,8 +80,8 @@ class ConanStyleConditioningMixin:
             slow_style_weight=slow_style_weight,
         )
 
-    @staticmethod
     def _prepare_dynamic_timbre_style_context(
+        self,
         style_context,
         *,
         padding_mask=None,
@@ -90,7 +90,11 @@ class ConanStyleConditioningMixin:
         if not isinstance(style_context, torch.Tensor) or style_context.dim() != 3:
             return None
         prepared = style_context.detach() if bool(stopgrad) else style_context
-        prepared = F.layer_norm(prepared, (prepared.size(-1),))
+        norm = getattr(self, "dynamic_timbre_style_context_norm", None)
+        if norm is not None:
+            prepared = norm(prepared)
+        else:
+            prepared = F.layer_norm(prepared, (prepared.size(-1),))
         if isinstance(padding_mask, torch.Tensor):
             if padding_mask.dim() == 3 and padding_mask.size(-1) == 1:
                 padding_mask = padding_mask.squeeze(-1)

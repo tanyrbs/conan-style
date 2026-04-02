@@ -96,6 +96,14 @@ def run_smoke(args):
         raise AssertionError("global_timbre_to_pitch_applied unexpectedly true on the offline path.")
     if int(streaming_output.get("streaming_total_chunks", 0)) <= 0:
         raise AssertionError("streaming_total_chunks must be positive.")
+    if streaming_output.get("streaming_eval_mode") != "prefix_online_content_chunked":
+        raise AssertionError(
+            "streaming_eval_mode must be prefix_online_content_chunked when using prefix-online smoke."
+        )
+    if int(streaming_output.get("streaming_chunk_tokens", 0)) != int(args.tokens_per_chunk):
+        raise AssertionError(
+            "streaming_chunk_tokens must match the requested chunk size in prefix-online smoke."
+        )
 
     summary = {
         "device": device,

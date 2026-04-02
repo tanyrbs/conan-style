@@ -9,7 +9,7 @@ from modules.Conan.decoder_style_bundle import (
     canonicalize_decoder_style_bundle,
     ensure_decoder_style_bundle_respects_timing,
 )
-from modules.Conan.effective_signal import tensor_has_effective_signal, tensor_signal_max_abs
+from modules.Conan.effective_signal import tensor_has_effective_signal
 
 
 def _is_sequence_tensor(value: Any) -> bool:
@@ -217,14 +217,6 @@ class ConanDecoderStyleAdapter(nn.Module):
         if nonpadding_mask is None:
             return value
         return value * nonpadding_mask
-
-    def _signal_max_abs(
-        self,
-        value: Any,
-        *,
-        nonpadding_mask: Optional[torch.Tensor] = None,
-    ):
-        return tensor_signal_max_abs(value, mask=nonpadding_mask)
 
     def _has_effective_signal(
         self,

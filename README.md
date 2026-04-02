@@ -112,6 +112,7 @@ python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTra
 ```bash
 python tasks/Conan/style_mainline_smoke.py --config egs/conan_mainline_infer.yaml
 python tasks/Conan/streaming_prefix_online_smoke.py --config egs/conan_mainline_infer.yaml
+python tasks/Conan/decoder_style_adapter_contract_smoke.py
 ```
 
 补充说明：
@@ -158,7 +159,7 @@ python tasks/Conan/decoder_style_adapter_contract_smoke.py
 
 其中：
 
-- `style_mainline_smoke.py`：检查单参考 mainline contract / query split / decoder-side bundle
+- `style_mainline_smoke.py`：检查单参考 mainline contract / query split / decoder-side bundle，以及 disabled branches 不得泄漏到 decoder bundle
 - `streaming_prefix_online_smoke.py`：检查 Conan 任务侧 offline mel vs prefix-online chunked mel
 - `decoder_style_adapter_contract_smoke.py`：检查近零 style/timbre 分支 hard no-op 与 late-stage owner/fallback 语义
 

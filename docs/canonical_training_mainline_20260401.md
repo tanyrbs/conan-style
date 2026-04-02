@@ -75,7 +75,36 @@ Current canonical prep also assumes:
 
 - dynamic timbre query-style coupling stays off by default
 - late-stage timbre backfill stays off
+- training reference uses batchwise Bernoulli curriculum instead of a hard self-ref/external-ref switch
+- prosody forcing uses batchwise Bernoulli soft decay instead of a hard bool cut
+- `gloss` now follows reference source, not forcing:
+  - self-ref batch -> `gloss_scale = 1.0`
+  - external-ref batch -> `gloss_scale = 0.0`
 - streaming parity includes explicit chunk-boundary mel checks
+
+Canonical training schedule keys:
+
+- `reference_curriculum_*`
+- `forcing_schedule_*`
+
+Canonical schedule defaults in `egs/conan_emformer.yaml`:
+
+- `random_speaker_steps: 100000` is now only a legacy alias for `reference_curriculum_end_steps`
+- `reference_curriculum_mode: bernoulli_cosine`
+- `reference_curriculum_start_steps: 20000`
+- `reference_curriculum_end_steps: 100000`
+- `reference_curriculum_sample_mode: batch` because current `gloss/guided_loss` is still batch scalar
+- `forcing_schedule_mode: bernoulli_cosine`
+- `forcing_decay_start_steps: 12000`
+- `forcing_decay_end_steps: 60000`
+- `forcing: 20000` remains the legacy hard fallback cut used only when schedule state is absent
+
+These only smooth training exposure and do **not** change:
+
+- single-reference product contract
+- owner hierarchy
+- 4-loss control pack
+- infer/test external-reference-only path
 
 ## 5. Canonical CPU local dry run
 
@@ -96,6 +125,10 @@ This dry run performs:
 
 1. mainline training-prep check
 2. a tiny CPU training smoke on the canonical mainline config
+
+The dry run intentionally exercises the **training path** at early steps, so it may
+report self-ref / forcing-on diagnostics at step 0. That does **not** redefine the
+inference contract, which remains external-reference-only.
 
 ## 6. Canonical real training command
 

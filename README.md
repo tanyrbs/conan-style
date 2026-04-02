@@ -154,6 +154,14 @@ python tasks/Conan/decoder_style_adapter_contract_smoke.py
 - `mainline_minimal` 口径下不再额外启用 energy regularization，避免打破 4-loss control pack
 - generator `total_loss` 现在只汇总真正参与反传的训练项；control diagnostics 保持 logging-only，不再和 adversarial 启停口径混在一起
 - 输出端已补 mel-side identity proxy loss：`mel_out -> global_timbre_anchor`，并预留 frozen external speaker verifier hook
+- canonical mainline training 不再使用 self-ref → external-ref 的硬切换，而是 batchwise stochastic reference curriculum；infer/test 仍固定 external-reference-only
+- prosody forcing 训练已支持 batchwise stochastic soft decay；这只是训练平滑化，不改变 owner hierarchy / 4-loss pack / 推理路径
+- 当前 canonical schedule 默认值是：
+  - `reference_curriculum_mode: bernoulli_cosine`, `reference_curriculum_start_steps: 20000`, `reference_curriculum_end_steps: 100000`
+  - `forcing_schedule_mode: bernoulli_cosine`, `forcing_decay_start_steps: 12000`, `forcing_decay_end_steps: 60000`
+- `reference_curriculum_sample_mode` 目前固定 `batch`，因为当前 `gloss/guided_loss` 仍是 batch scalar
+- `gloss` 的启停现在跟 **reference source** 绑定：self-ref batch 为 1，external-ref batch 为 0；它不再直接跟 forcing schedule 绑定
+- `random_speaker_steps` 现在只是 reference curriculum end 的 legacy alias；`forcing` 则保留为 forcing schedule 的 legacy hard fallback
 - validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel、prefix rewrite、chunk-boundary mel、identity/style/material/f0 parity
 - mainline style profile 若收到 research 风格 override，默认会告警并收回 canonical mainline；研究态请显式使用 `research_*` 或 opt-in
 

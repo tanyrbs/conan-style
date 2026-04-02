@@ -582,6 +582,7 @@ class ConanStyleConditioningMixin:
         reference_cache=None,
         memory_mode="fast",
         style_temperature=1.0,
+        forcing_schedule_state=None,
     ):
         memory_mode = self._normalize_memory_mode(
             memory_mode,
@@ -618,7 +619,19 @@ class ConanStyleConditioningMixin:
             prosody_embedding = prosody_embedding * style_temperature
 
         src_key_padding_mask = ret["content"].eq(self.content_padding_idx)
-        forcing = bool(global_steps < self._get_hparam("forcing", hparams["forcing"]))
+        if isinstance(forcing_schedule_state, dict):
+            forcing = bool(forcing_schedule_state.get("forcing_enabled", False))
+            ret["prosody_forcing_schedule_mode"] = forcing_schedule_state.get("mode", "unknown")
+            ret["prosody_forcing_prob"] = float(forcing_schedule_state.get("forcing_prob", 0.0))
+            ret["prosody_forcing_progress"] = float(forcing_schedule_state.get("progress", 0.0))
+            ret["prosody_forcing_source"] = "schedule_state"
+        else:
+            forcing = bool(global_steps < self._get_hparam("forcing", hparams["forcing"]))
+            ret["prosody_forcing_schedule_mode"] = "legacy_hard"
+            ret["prosody_forcing_prob"] = 1.0 if forcing else 0.0
+            ret["prosody_forcing_progress"] = 0.0 if forcing else 1.0
+            ret["prosody_forcing_source"] = "legacy_global_step"
+        ret["prosody_forcing_enabled"] = bool(forcing)
         output, guided_loss, attn_emo = self.align(
             encoder_out.transpose(0, 1),
             prosody_embedding.transpose(0, 1),

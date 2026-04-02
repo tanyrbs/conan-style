@@ -543,6 +543,29 @@ def collect_control_diagnostics(output, sample, config):
             diagnostics["diag_runtime_dynamic_timbre_style_budget_clip_frac"] = runtime_budget_clip_frac.to(
                 **tensor_kwargs
             )
+        for output_key, diag_key in (
+            ("reference_curriculum_progress", "diag_reference_curriculum_progress"),
+            ("reference_curriculum_external_prob", "diag_reference_curriculum_external_prob"),
+            ("reference_curriculum_self_prob", "diag_reference_curriculum_self_prob"),
+            ("reference_curriculum_gloss_scale", "diag_reference_curriculum_gloss_scale"),
+            ("forcing_prob", "diag_prosody_forcing_prob"),
+            ("forcing_schedule_progress", "diag_prosody_forcing_progress"),
+        ):
+            value = output.get(output_key)
+            if isinstance(value, torch.Tensor):
+                diagnostics[diag_key] = value.to(**tensor_kwargs)
+            elif isinstance(value, (int, float)):
+                diagnostics[diag_key] = torch.tensor(float(value), **tensor_kwargs)
+        for output_key, diag_key in (
+            ("reference_curriculum_use_external_ref", "diag_reference_curriculum_use_external_ref"),
+            ("forcing_enabled", "diag_prosody_forcing_enabled"),
+        ):
+            value = output.get(output_key, None)
+            if value is not None:
+                diagnostics[diag_key] = torch.tensor(
+                    1.0 if bool(value) else 0.0,
+                    **tensor_kwargs,
+                )
 
         diagnostics.update(
             _decoder_style_adapter_statistics(

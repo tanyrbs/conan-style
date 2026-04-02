@@ -456,6 +456,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             controls=style_mainline,
             global_style_summary=global_style_summary,
             style_strength=style_strength,
+            forcing_schedule_state=kwargs.get("forcing_schedule_state"),
         )
         style_trace_available = bool(style_payload.get("style_trace_available", False))
         style_trace_source = str(style_payload.get("style_trace_source", style_trace_source))

@@ -143,7 +143,14 @@ discriminator_optimizer_params:
   eps: 1.0e-06
   weight_decay: 0.0
 
-random_speaker_steps: 100000
+random_speaker_steps: 100000  # legacy alias for reference_curriculum_end_steps; no longer a hard switch
+reference_curriculum_mode: bernoulli_cosine
+reference_curriculum_start_steps: 20000
+reference_curriculum_end_steps: 100000
+reference_curriculum_external_prob_init: 0.0
+reference_curriculum_external_prob_final: 1.0
+reference_curriculum_self_ref_floor: 0.0
+reference_curriculum_sample_mode: batch   # keep batchwise while gloss/guided_loss remains a batch scalar
 
 num_valid_plots: 10      # Maximum number of visualizations per epoch
 valid_plot_prob: 0.1     # Probability of triggering visualization per batch
@@ -154,6 +161,11 @@ vq_start: 20500
 vae_dropout: 0.0
 nVQ: 128  # aligned to the shipped Conan checkpoint
 forcing: 20000
+forcing_schedule_mode: bernoulli_cosine   # training-only smoothing; legacy hard fallback remains available via `forcing`
+forcing_decay_start_steps: 12000
+forcing_decay_end_steps: 60000
+forcing_prob_init: 1.0
+forcing_prob_final: 0.0
 crop: false
 predictor_grad: 1.0
 

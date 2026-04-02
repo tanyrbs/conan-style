@@ -44,10 +44,10 @@ def _curriculum_window(config: Optional[Mapping[str, Any]] = None) -> Tuple[int,
 def curriculum_progress(global_step: int, config: Optional[Mapping[str, Any]] = None) -> float:
     start, end = _curriculum_window(config)
     step = max(int(global_step), 0)
+    if end <= start:
+        return 1.0 if step >= end else 0.0
     if step <= start:
         return 0.0
-    if end <= start:
-        return 1.0
     return _clamp01(float(step - start) / float(end - start))
 
 

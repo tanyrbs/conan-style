@@ -74,6 +74,12 @@ Updated: 2026-04-01
 - 当前 mainline 是 **single-reference weak internal factorization**
 - `mainline_owner` 只是 metadata；真正 owner hierarchy 以
   `global_timbre_anchor -> M_style -> bounded M_timbre` 为准
+- reference curriculum / forcing schedule 只是 training stabilization，不改变 mainline owner hierarchy 或 inference contract
+- 当前 canonical schedule 默认值是：
+  - reference curriculum: `bernoulli_cosine`, `20000 -> 100000`
+  - forcing soft decay: `bernoulli_cosine`, `12000 -> 60000`
+- `random_speaker_steps` 现在只是 reference curriculum end 的 legacy alias；`forcing` 只保留为 forcing schedule 的 legacy fallback
+- `gloss` 现在跟 reference source 对齐，而不是直接跟 forcing 绑定
 
 ## 4. 本阶段已经落实的事
 

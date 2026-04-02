@@ -118,6 +118,14 @@ def run_smoke(args):
         raise AssertionError(
             "streaming_chunk_tokens must match the requested chunk size in prefix-online smoke."
         )
+    if str(streaming_output.get("reference_curriculum_mode", "")) != "inference_external_only":
+        raise AssertionError("prefix-online path must stay external-reference-only.")
+    if str(offline_output.get("reference_curriculum_mode", "")) != "inference_external_only":
+        raise AssertionError("offline infer/test path must stay external-reference-only.")
+    if bool(streaming_output.get("forcing_enabled", True)):
+        raise AssertionError("prefix-online path must not use prosody forcing.")
+    if bool(offline_output.get("forcing_enabled", True)):
+        raise AssertionError("offline infer/test path must not use prosody forcing.")
 
     summary = {
         "device": device,

@@ -53,6 +53,7 @@ def _run_style_trace(
     reference_cache: Optional[Mapping[str, Any]],
     memory_mode: str,
     style_temperature: float,
+    forcing_schedule_state=None,
 ):
     trace_ret = {"content": content}
     style_trace = model.get_prosody(
@@ -64,6 +65,7 @@ def _run_style_trace(
         reference_cache=reference_cache,
         memory_mode=memory_mode,
         style_temperature=style_temperature,
+        forcing_schedule_state=forcing_schedule_state,
     )
     return {
         "trace": style_trace,
@@ -130,6 +132,7 @@ def build_style_realization_payload(
     controls,
     global_style_summary,
     style_strength,
+    forcing_schedule_state=None,
 ):
     style_trace_mode = _style_trace_mode_from_controls(controls)
     payload = {
@@ -195,6 +198,7 @@ def build_style_realization_payload(
             reference_cache=reference_cache,
             memory_mode=fast_memory_mode,
             style_temperature=style_temperature,
+            forcing_schedule_state=forcing_schedule_state,
         )
         fast_trace_result["source"] = _trace_source_label(
             has_cached_prosody=has_cached_prosody,
@@ -224,6 +228,7 @@ def build_style_realization_payload(
             reference_cache=reference_cache,
             memory_mode="slow",
             style_temperature=style_temperature,
+            forcing_schedule_state=forcing_schedule_state,
         )
         slow_trace_result["source"] = _trace_source_label(
             has_cached_prosody=has_cached_prosody,

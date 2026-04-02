@@ -15,6 +15,8 @@ from tasks.Conan.control_schedule import (
     MAINLINE_MINIMAL_CONTROL_LAMBDAS,
     resolve_control_regularization_config,
 )
+from tasks.Conan.reference_curriculum import resolve_reference_curriculum
+from tasks.Conan.forcing_schedule import resolve_forcing_schedule
 from utils.commons.hparams import hparams, set_hparams
 
 
@@ -90,6 +92,17 @@ def _check_close(checks, name, actual, expected, tol=1e-8):
             "actual": float(actual),
             "expected": float(expected),
             "tolerance": float(tol),
+        }
+    )
+
+
+def _check_true(checks, name, condition, *, actual=None, expected=True):
+    checks.append(
+        {
+            "name": name,
+            "ok": bool(condition),
+            "actual": actual if actual is not None else bool(condition),
+            "expected": expected,
         }
     )
 
@@ -259,6 +272,106 @@ def run_prep(args):
         bool(hparams.get("speaker_verifier_detach_input", False)),
         False,
     )
+    _check_equal(checks, "reference_curriculum_mode", hparams.get("reference_curriculum_mode"), "bernoulli_cosine")
+    _check_close(
+        checks,
+        "reference_curriculum_start_steps",
+        hparams.get("reference_curriculum_start_steps", hparams.get("forcing", 0)),
+        20000,
+    )
+    _check_close(
+        checks,
+        "reference_curriculum_end_steps",
+        hparams.get("reference_curriculum_end_steps", hparams.get("random_speaker_steps", 0)),
+        100000,
+    )
+    _check_close(
+        checks,
+        "reference_curriculum_external_prob_init",
+        hparams.get("reference_curriculum_external_prob_init", 0.0),
+        0.0,
+    )
+    _check_close(
+        checks,
+        "reference_curriculum_external_prob_final",
+        hparams.get("reference_curriculum_external_prob_final", 1.0),
+        1.0,
+    )
+    _check_close(
+        checks,
+        "reference_curriculum_self_ref_floor",
+        hparams.get("reference_curriculum_self_ref_floor", 0.0),
+        0.0,
+    )
+    _check_equal(
+        checks,
+        "reference_curriculum_sample_mode",
+        str(hparams.get("reference_curriculum_sample_mode", "batch")).strip().lower(),
+        "batch",
+    )
+    _check_equal(checks, "forcing_schedule_mode", hparams.get("forcing_schedule_mode"), "bernoulli_cosine")
+    _check_close(
+        checks,
+        "forcing_decay_start_steps",
+        hparams.get("forcing_decay_start_steps", hparams.get("forcing", 0)),
+        12000,
+    )
+    _check_close(
+        checks,
+        "forcing_decay_end_steps",
+        hparams.get("forcing_decay_end_steps", hparams.get("forcing", 0)),
+        60000,
+    )
+    _check_close(checks, "forcing_prob_init", hparams.get("forcing_prob_init", 1.0), 1.0)
+    _check_close(checks, "forcing_prob_final", hparams.get("forcing_prob_final", 0.0), 0.0)
+    _check_close(
+        checks,
+        "random_speaker_steps_matches_curriculum_end",
+        hparams.get("random_speaker_steps", 0),
+        hparams.get("reference_curriculum_end_steps", hparams.get("random_speaker_steps", 0)),
+    )
+    reference_start = int(hparams.get("reference_curriculum_start_steps", hparams.get("forcing", 0)))
+    reference_end = int(hparams.get("reference_curriculum_end_steps", hparams.get("random_speaker_steps", 0)))
+    forcing_start = int(hparams.get("forcing_decay_start_steps", hparams.get("forcing", 0)))
+    forcing_end = int(hparams.get("forcing_decay_end_steps", hparams.get("forcing", 0)))
+    _check_true(
+        checks,
+        "forcing_decay_starts_no_later_than_reference_curriculum",
+        forcing_start <= reference_start,
+        actual={"forcing_decay_start_steps": forcing_start, "reference_curriculum_start_steps": reference_start},
+        expected="forcing_decay_start_steps <= reference_curriculum_start_steps",
+    )
+    _check_true(
+        checks,
+        "forcing_decay_ends_no_later_than_reference_curriculum",
+        forcing_end <= reference_end,
+        actual={"forcing_decay_end_steps": forcing_end, "reference_curriculum_end_steps": reference_end},
+        expected="forcing_decay_end_steps <= reference_curriculum_end_steps",
+    )
+    reference_preview_40000 = resolve_reference_curriculum(40000, hparams)
+    reference_preview_70000 = resolve_reference_curriculum(70000, hparams)
+    forcing_preview_20000 = resolve_forcing_schedule(20000, hparams)
+    _check_close(
+        checks,
+        "reference_curriculum_external_prob_step_40000",
+        reference_preview_40000.get("external_prob", 0.0),
+        0.1464466094,
+        tol=1e-6,
+    )
+    _check_close(
+        checks,
+        "reference_curriculum_external_prob_step_70000",
+        reference_preview_70000.get("external_prob", 0.0),
+        0.6913417162,
+        tol=1e-6,
+    )
+    _check_close(
+        checks,
+        "forcing_prob_step_20000",
+        forcing_preview_20000.get("forcing_prob", 0.0),
+        0.9330127019,
+        tol=1e-6,
+    )
     active_mainline_control_keys = tuple(
         key for key in MAINLINE_MINIMAL_CONTROL_LAMBDAS if float(hparams.get(key, 0.0)) > 0.0
     )
@@ -320,10 +433,20 @@ def run_prep(args):
                 os.path.join(str(binary_data_dir), filename),
             )
 
+    reference_preview_steps = (0, 20000, 40000, 70000, 100000)
+    forcing_preview_steps = (0, 12000, 20000, 60000, 100000)
     summary = {
         "config": args.config,
         "mainline_controls": controls.as_dict(),
         "resolved_profile": resolved_profile,
+        "reference_curriculum_preview": [
+            {"step": int(step), **resolve_reference_curriculum(step, hparams)}
+            for step in reference_preview_steps
+        ],
+        "forcing_schedule_preview": [
+            {"step": int(step), **resolve_forcing_schedule(step, hparams)}
+            for step in forcing_preview_steps
+        ],
         "checks": checks,
         "ready": bool(all(item["ok"] for item in checks)),
     }

@@ -48,6 +48,12 @@ def parse_args():
     )
     parser.add_argument("--speakers_per_batch", type=int, default=2)
     parser.add_argument("--items_per_speaker", type=int, default=2)
+    parser.add_argument(
+        "--global_step",
+        type=int,
+        default=0,
+        help="Global step used for the train-path contract smoke. Defaults to true step 0.",
+    )
     parser.add_argument("--output_path", type=str, default="smoke_runs/style_mainline_smoke_mainline_full.json")
     return parser.parse_args()
 
@@ -118,6 +124,16 @@ def _validate_mode_output(mode, output):
         raise AssertionError(f"{mode}: style/timbre query shape mismatch.")
     if not bool(output.get("query_anchor_split_applied", False)):
         raise AssertionError(f"{mode}: query_anchor_split_applied is false.")
+    if "reference_curriculum_use_external_ref" in output:
+        if bool(output.get("reference_curriculum_use_external_ref", True)):
+            raise AssertionError(f"{mode}: train-path style_mainline smoke should start in self-ref mode.")
+        if abs(float(output.get("reference_curriculum_gloss_scale", 0.0)) - 1.0) > 1e-12:
+            raise AssertionError(f"{mode}: self-ref train-path smoke must keep gloss_scale=1.0 at step 0.")
+    if "forcing_enabled" in output:
+        if not bool(output.get("forcing_enabled", False)):
+            raise AssertionError(f"{mode}: train-path style_mainline smoke should start with forcing enabled.")
+        if abs(float(output.get("forcing_prob", 0.0)) - 1.0) > 1e-12:
+            raise AssertionError(f"{mode}: train-path style_mainline smoke must keep forcing_prob=1.0 at step 0.")
     expected_owner_safe = bool(expected["style_trace"])
     if bool(output.get("dynamic_timbre_style_context_owner_safe", False)) != expected_owner_safe:
         raise AssertionError(
@@ -310,7 +326,7 @@ def run_smoke(args):
                 speakers_per_batch=int(args.speakers_per_batch),
                 items_per_speaker=int(args.items_per_speaker),
             )
-        task = build_conan_training_task(device)
+        task = build_conan_training_task(device, global_step=int(args.global_step))
         optimizer, _ = task.build_optimizer(task.model)
         indices = select_speaker_batch_indices(
             dataset,
@@ -334,6 +350,7 @@ def run_smoke(args):
         results.append(
             {
                 "mode": mode,
+                "global_step": int(task.global_step),
                 "total_loss": scalarize_value(total_loss),
                 "reference_contract_mode": output.get("reference_contract_mode"),
                 "reference_contract": output.get("reference_contract"),
@@ -380,6 +397,7 @@ def run_smoke(args):
         "device": device,
         "config": args.config,
         "binary_data_dir": args.binary_data_dir,
+        "global_step": int(args.global_step),
         "batch_shape": batch_shape_info,
         "results": results,
     }

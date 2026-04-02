@@ -36,9 +36,9 @@ def resolve_forcing_schedule(
     mode = str(cfg.get("forcing_schedule_mode", "legacy_hard")).strip().lower()
     mode = FORCING_SCHEDULE_ALIASES.get(mode, "legacy_hard")
 
-    legacy_cut = int(cfg.get("forcing", 0))
-    start = int(cfg.get("forcing_decay_start_steps", legacy_cut))
-    end = int(cfg.get("forcing_decay_end_steps", legacy_cut))
+    legacy_cut = max(int(cfg.get("forcing", 0)), 0)
+    start = max(int(cfg.get("forcing_decay_start_steps", legacy_cut)), 0)
+    end = max(int(cfg.get("forcing_decay_end_steps", legacy_cut)), 0)
     p_init = float(cfg.get("forcing_prob_init", 1.0))
     p_final = float(cfg.get("forcing_prob_final", 0.0))
 
@@ -49,7 +49,9 @@ def resolve_forcing_schedule(
         forcing_prob = 1.0 if int(global_step) < legacy_cut else 0.0
         progress = 0.0 if forcing_prob > 0.0 else 1.0
     else:
-        if int(global_step) <= start:
+        if end <= start:
+            alpha = 1.0 if int(global_step) >= end else 0.0
+        elif int(global_step) <= start:
             alpha = 0.0
         elif int(global_step) >= end:
             alpha = 1.0

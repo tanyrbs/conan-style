@@ -20,6 +20,12 @@ DEFAULT_SMOKE_HPARAMS = {
     "lambda_mel_adv": 0.0,
 }
 
+# Generic training-oriented smoke helpers intentionally default to a post-warmup
+# step so VQ / regularization / mainline losses are active unless a caller
+# explicitly requests a different point on the schedule. Contract-style smokes
+# that must assert true step-0 behavior should pass `global_step=0`.
+DEFAULT_SMOKE_TRAIN_GLOBAL_STEP = 50000
+
 
 def default_smoke_binary_data_dir():
     candidates = (
@@ -167,7 +173,7 @@ def build_conan_training_task(device, *, global_step=None):
     task.global_step = (
         int(global_step)
         if global_step is not None
-        else max(int(hparams.get("vq_start", 0)) + 1, 50000)
+        else max(int(hparams.get("vq_start", 0)) + 1, DEFAULT_SMOKE_TRAIN_GLOBAL_STEP)
     )
     return task
 

@@ -10,12 +10,17 @@ from modules.Conan.style_mainline import (
 STYLE_PROFILE_KEYS = (
     "decoder_style_condition_mode",
     "global_timbre_to_pitch",
+    "style_to_pitch_residual",
+    "style_to_pitch_residual_scale",
+    "style_to_pitch_residual_max_semitones",
+    "style_to_pitch_residual_smooth_factor",
     "global_style_anchor_strength",
     "style_trace_mode",
     "style_memory_mode",
     "style_strength",
     "fast_style_strength_scale",
     "slow_style_strength_scale",
+    "style_router_enabled",
     "style_temperature",
     "global_style_trace_blend",
     "dynamic_timbre_memory_mode",
@@ -43,12 +48,17 @@ STYLE_PROFILES = {
         "track": "mainline",
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
+        "style_to_pitch_residual": True,
+        "style_to_pitch_residual_scale": 1.0,
+        "style_to_pitch_residual_max_semitones": 2.5,
+        "style_to_pitch_residual_smooth_factor": 0.35,
         "global_style_anchor_strength": 1.0,
-        "style_trace_mode": "slow",
+        "style_trace_mode": "dual",
         "style_memory_mode": "slow",
         "style_strength": 1.35,
-        "fast_style_strength_scale": 1.0,
-        "slow_style_strength_scale": 1.45,
+        "fast_style_strength_scale": 1.10,
+        "slow_style_strength_scale": 1.20,
+        "style_router_enabled": True,
         "style_temperature": 1.2,
         "global_style_trace_blend": 0.0,
         "dynamic_timbre_memory_mode": "slow",
@@ -73,12 +83,17 @@ STYLE_PROFILES = {
         "track": "research",
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
+        "style_to_pitch_residual": False,
+        "style_to_pitch_residual_scale": 1.0,
+        "style_to_pitch_residual_max_semitones": 2.5,
+        "style_to_pitch_residual_smooth_factor": 0.35,
         "global_style_anchor_strength": 1.0,
         "style_trace_mode": "dual",
         "style_memory_mode": "slow",
         "style_strength": 1.35,
         "fast_style_strength_scale": 1.0,
         "slow_style_strength_scale": 1.35,
+        "style_router_enabled": True,
         "style_temperature": 1.2,
         "global_style_trace_blend": 0.25,
         "dynamic_timbre_memory_mode": "slow",
@@ -103,12 +118,17 @@ STYLE_PROFILES = {
         "track": "mainline",
         "decoder_style_condition_mode": "mainline_full",
         "global_timbre_to_pitch": False,
+        "style_to_pitch_residual": True,
+        "style_to_pitch_residual_scale": 1.20,
+        "style_to_pitch_residual_max_semitones": 4.0,
+        "style_to_pitch_residual_smooth_factor": 0.25,
         "global_style_anchor_strength": 1.15,
-        "style_trace_mode": "slow",
+        "style_trace_mode": "dual",
         "style_memory_mode": "slow",
         "style_strength": 1.55,
-        "fast_style_strength_scale": 1.0,
-        "slow_style_strength_scale": 1.45,
+        "fast_style_strength_scale": 1.20,
+        "slow_style_strength_scale": 1.25,
+        "style_router_enabled": True,
         "style_temperature": 1.3,
         "global_style_trace_blend": 0.0,
         "dynamic_timbre_memory_mode": "slow",
@@ -188,7 +208,6 @@ def resolve_style_profile(
     if profile_track == "mainline":
         research_like_override = (
             normalized_mode != "mainline_full"
-            or normalized_trace_mode == "dual"
             or float(resolved.get("global_style_trace_blend", 0.0)) > 0.0
             or float(resolved.get("style_query_global_summary_scale", 0.0)) != 0.0
             or str(resolved.get("style_memory_mode", "slow")).strip().lower() != "slow"
@@ -209,7 +228,12 @@ def resolve_style_profile(
                 stacklevel=2,
             )
             resolved["decoder_style_condition_mode"] = "mainline_full"
-            resolved["style_trace_mode"] = "slow"
+            resolved["style_trace_mode"] = "dual"
+            resolved["style_router_enabled"] = True
+            resolved["style_to_pitch_residual"] = True
+            resolved["style_to_pitch_residual_scale"] = 1.0
+            resolved["style_to_pitch_residual_max_semitones"] = 2.5
+            resolved["style_to_pitch_residual_smooth_factor"] = 0.35
             resolved["global_style_trace_blend"] = 0.0
             resolved["style_query_global_summary_scale"] = 0.0
             resolved["style_memory_mode"] = "slow"
@@ -223,7 +247,7 @@ def resolve_style_profile(
             resolved["runtime_dynamic_timbre_style_budget_ratio"] = 0.40
             resolved["runtime_dynamic_timbre_style_budget_margin"] = 0.0
             normalized_mode = "mainline_full"
-            normalized_trace_mode = "slow"
+            normalized_trace_mode = "dual"
         elif research_like_override:
             warnings.warn(
                 f"Mainline style_profile '{preset_name}' is being used with research-style overrides. "

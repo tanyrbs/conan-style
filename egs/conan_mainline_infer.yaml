@@ -11,10 +11,17 @@ vocoder_ckpt: checkpoints/hifigan_vc
 vocoder_left_context_frames: 48
 nVQ: 128
 use_dynamic_timbre: true
+dynamic_timbre_use_tvt: true
+dynamic_timbre_material_router_bias: 1.0
 reference_contract_mode: collapsed_reference  # canonical mainline = single-reference weak internal factorization
 global_timbre_to_pitch: false
+style_to_pitch_residual: true
+style_to_pitch_residual_scale: 1.0
+style_to_pitch_residual_max_semitones: 2.5
+style_to_pitch_residual_smooth_factor: 0.35
 style_profile: strong_style
-style_trace_mode: slow
+style_trace_mode: dual
+style_router_enabled: true
 global_style_trace_blend: 0.0
 style_query_global_summary_scale: 0.0
 dynamic_timbre_coarse_style_context_scale: 0.0

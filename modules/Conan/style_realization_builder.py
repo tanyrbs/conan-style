@@ -120,6 +120,94 @@ def _branch_strength(style_strength, branch_scale: float):
     return float(style_strength) * branch_scale
 
 
+def _merge_style_masks(*masks, reference=None):
+    normalized = []
+    for mask in masks:
+        if not isinstance(mask, torch.Tensor):
+            continue
+        if mask.dim() == 3 and mask.size(-1) == 1:
+            mask = mask.squeeze(-1)
+        if mask.dim() != 2:
+            continue
+        if reference is not None and tuple(mask.shape) != tuple(reference.shape[:2]):
+            continue
+        normalized.append(mask.bool())
+    if not normalized:
+        return None
+    merged = normalized[0]
+    for mask in normalized[1:]:
+        merged = merged | mask.to(device=merged.device)
+    return merged
+
+
+def _route_style_owner(
+    model,
+    *,
+    query,
+    fast_trace,
+    slow_trace,
+    fast_mask=None,
+    slow_mask=None,
+    router_enabled: bool = True,
+):
+    has_fast = isinstance(fast_trace, torch.Tensor) and fast_trace.dim() == 3
+    has_slow = isinstance(slow_trace, torch.Tensor) and slow_trace.dim() == 3
+
+    if has_fast and has_slow and tuple(fast_trace.shape) == tuple(slow_trace.shape):
+        merged_mask = _merge_style_masks(fast_mask, slow_mask, reference=fast_trace)
+        router = getattr(model, "style_router", None)
+        if (
+            bool(router_enabled)
+            and router is not None
+            and isinstance(query, torch.Tensor)
+            and tuple(query.shape) == tuple(fast_trace.shape)
+        ):
+            router_input = torch.cat([query, slow_trace, fast_trace], dim=-1)
+            gate = torch.sigmoid(router(router_input))
+            routed = slow_trace + gate * (fast_trace - slow_trace)
+            burst_score = gate.squeeze(-1) * (fast_trace - slow_trace).abs().mean(dim=-1)
+            return {
+                "residual": routed,
+                "mask": merged_mask,
+                "gate": gate.squeeze(-1),
+                "burst_score": burst_score,
+                "source": "dual_router",
+            }
+        combined = combine_style_traces(fast_trace, slow_trace)
+        burst_score = (fast_trace - slow_trace).abs().mean(dim=-1)
+        return {
+            "residual": combined,
+            "mask": merged_mask,
+            "gate": None,
+            "burst_score": burst_score,
+            "source": "dual_sum",
+        }
+
+    if has_fast:
+        return {
+            "residual": fast_trace,
+            "mask": _merge_style_masks(fast_mask, reference=fast_trace),
+            "gate": None,
+            "burst_score": fast_trace.abs().mean(dim=-1),
+            "source": "fast_only",
+        }
+    if has_slow:
+        return {
+            "residual": slow_trace,
+            "mask": _merge_style_masks(slow_mask, reference=slow_trace),
+            "gate": None,
+            "burst_score": slow_trace.abs().mean(dim=-1),
+            "source": "slow_only",
+        }
+    return {
+        "residual": None,
+        "mask": None,
+        "gate": None,
+        "burst_score": None,
+        "source": "missing",
+    }
+
+
 def build_style_realization_payload(
     model,
     *,
@@ -139,8 +227,13 @@ def build_style_realization_payload(
         "style_trace_mode": style_trace_mode,
         "style_trace_available": False,
         "style_trace_source": "disabled_by_mode" if style_trace_mode == "none" else "missing",
-        "style_decoder_residual": None,
+        "fast_style_decoder_residual": None,
         "slow_style_decoder_residual": None,
+        "style_decoder_residual": None,
+        "style_decoder_residual_mask": None,
+        "style_router_gate": None,
+        "style_burst_score": None,
+        "style_owner_source": "missing",
         "global_style_summary_runtime": global_style_summary,
         "style_trace_skip_reason": None,
         "global_style_summary_runtime_source": "reference_summary",
@@ -206,7 +299,7 @@ def build_style_realization_payload(
         )
         fast_trace_result["memory_mode"] = fast_memory_mode
         _write_trace_result(ret, fast_trace_result, prefix="style_trace")
-        payload["style_decoder_residual"] = fast_trace_result["trace"] * fast_style_strength
+        payload["fast_style_decoder_residual"] = fast_trace_result["trace"] * fast_style_strength
         for key, value in fast_trace_result.get("runtime", {}).items():
             ret[key] = value
         style_trace_summary = _masked_mean(
@@ -267,20 +360,46 @@ def build_style_realization_payload(
         )
         ret["style_trace_source_runtime"] = payload["style_trace_source"]
 
-    blended_trace, blended_mask = resolve_combined_style_trace(
-        {
-            "style_trace": payload["style_decoder_residual"],
-            "slow_style_trace": payload["slow_style_decoder_residual"],
-            "style_trace_mask": ret.get("style_trace_mask"),
-            "slow_style_trace_mask": ret.get("slow_style_trace_mask"),
-        }
+    routed = _route_style_owner(
+        model,
+        query=query,
+        fast_trace=payload["fast_style_decoder_residual"],
+        slow_trace=payload["slow_style_decoder_residual"],
+        fast_mask=ret.get("style_trace_mask"),
+        slow_mask=ret.get("slow_style_trace_mask"),
+        router_enabled=bool(getattr(controls, "style_router_enabled", True)),
     )
+    payload["style_decoder_residual"] = routed.get("residual")
+    payload["style_decoder_residual_mask"] = routed.get("mask")
+    payload["style_router_gate"] = routed.get("gate")
+    payload["style_burst_score"] = routed.get("burst_score")
+    payload["style_owner_source"] = routed.get("source", "missing")
+
+    if isinstance(payload["style_decoder_residual"], torch.Tensor):
+        ret["style_decoder_residual_mask"] = payload["style_decoder_residual_mask"]
+    if isinstance(payload["style_router_gate"], torch.Tensor):
+        ret["style_router_gate"] = payload["style_router_gate"]
+    if isinstance(payload["style_burst_score"], torch.Tensor):
+        ret["style_burst_score"] = payload["style_burst_score"]
+    ret["style_owner_source"] = payload["style_owner_source"]
+
+    blended_trace = payload["style_decoder_residual"]
+    blended_mask = payload["style_decoder_residual_mask"]
     if blended_trace is None:
-        blended_trace = combine_style_traces(
-            payload["style_decoder_residual"],
-            payload["slow_style_decoder_residual"],
+        blended_trace, blended_mask = resolve_combined_style_trace(
+            {
+                "style_trace": payload["fast_style_decoder_residual"],
+                "slow_style_trace": payload["slow_style_decoder_residual"],
+                "style_trace_mask": ret.get("style_trace_mask"),
+                "slow_style_trace_mask": ret.get("slow_style_trace_mask"),
+            }
         )
-        blended_mask = ret.get("style_trace_mask", ret.get("slow_style_trace_mask"))
+        if blended_trace is None:
+            blended_trace = combine_style_traces(
+                payload["fast_style_decoder_residual"],
+                payload["slow_style_decoder_residual"],
+            )
+            blended_mask = ret.get("style_trace_mask", ret.get("slow_style_trace_mask"))
 
     payload["global_style_summary_runtime"], payload["global_style_summary_runtime_source"] = _resolve_global_summary_runtime(
         model,

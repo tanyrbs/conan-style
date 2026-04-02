@@ -16,7 +16,9 @@ Mainline training therefore assumes:
 - `reference_contract_mode: collapsed_reference`
 - `decoder_style_condition_mode: mainline_full`
 - `global_timbre_to_pitch: false`
-- `style_trace_mode: slow`
+- `style_trace_mode: dual` (fast+slow, internally routed)
+- `style_router_enabled: true`
+- `style_to_pitch_residual: true` (bounded, voiced-only)
 - `allow_split_reference_inputs: false`
 - `emit_collapsed_reference_aliases: false`
 
@@ -65,7 +67,7 @@ It also enforces that canonical `mainline_minimal` training keeps exactly this
 
 - `lambda_output_identity_cosine`
 - `lambda_dynamic_timbre_budget`
-- `lambda_dynamic_timbre_boundary`
+- `lambda_pitch_residual_safe`
 - `lambda_decoder_late_owner`
 
 This 4-loss pack only refers to **control regularization**. Total training loss
@@ -75,6 +77,9 @@ Current canonical prep also assumes:
 
 - dynamic timbre query-style coupling stays off by default
 - late-stage timbre backfill stays off
+- dynamic timbre uses TVT material track (global memory + content-synchronous prior + slerp + material router)
+- style is dual-scale internally (fast+slow) but still single owner externally
+- bounded style-to-pitch residual is enabled (no global timbre to pitch)
 - training reference uses batchwise Bernoulli curriculum instead of a hard self-ref/external-ref switch
 - prosody forcing uses batchwise Bernoulli soft decay instead of a hard bool cut
 - `gloss` now follows reference source, not forcing:

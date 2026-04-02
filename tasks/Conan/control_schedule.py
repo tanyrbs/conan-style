@@ -8,6 +8,7 @@ TIMBRE_REGULARIZATION_LAMBDAS = (
     "lambda_dynamic_timbre_budget",
     "lambda_dynamic_timbre_boundary",
     "lambda_dynamic_timbre_anchor",
+    "lambda_pitch_residual_safe",
     "lambda_gate_rank",
     "lambda_decoder_late_owner",
     "lambda_decoder_late_anchor_budget",
@@ -20,6 +21,7 @@ DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
     "lambda_dynamic_timbre_budget",
     "lambda_dynamic_timbre_boundary",
     "lambda_dynamic_timbre_anchor",
+    "lambda_pitch_residual_safe",
     "lambda_gate_rank",
     "lambda_decoder_late_owner",
     "lambda_decoder_late_anchor_budget",
@@ -28,7 +30,7 @@ DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
 MAINLINE_MINIMAL_CONTROL_LAMBDAS = (
     "lambda_output_identity_cosine",
     "lambda_dynamic_timbre_budget",
-    "lambda_dynamic_timbre_boundary",
+    "lambda_pitch_residual_safe",
     "lambda_decoder_late_owner",
 )
 

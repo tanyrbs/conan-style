@@ -68,6 +68,9 @@ Updated: 2026-04-01
 - `global_timbre_to_pitch: false`
 - `timing_writeback_allowed: false`
 - `dynamic_timbre` 的角色是 style realization enhancer，不是独立主控制通道
+- `style_trace_mode: dual` 但对外仍是单一 `M_style` owner
+- `style_router_enabled: true`（内部 fast/slow 合成）
+- `style_to_pitch_residual: true`（仅局部、可控、voiced-only）
 
 补充解释：
 
@@ -95,6 +98,7 @@ Updated: 2026-04-01
 - style / timbre query 已拆开，不再共同吃 `content + condition + anchor`
 - dynamic timbre 的 style conditioning 已改成 owner-aware：`LayerNorm + stopgrad`
 - dynamic timbre 默认只保留 gate-path style coupling；query-path style coupling 需显式打开
+- dynamic timbre 已升级为 TVT material track：global memory + content-synchronous prior + slerp + material router
 - decoder adapter 已加 hard no-op 语义：
   - zero / effectively-zero branch 不再继续 projector → gate → residual
 - decoder late stage 已收口：
@@ -104,12 +108,12 @@ Updated: 2026-04-01
   - 相对 `M_style` 的局部上限在运行时也会生效，而不只依赖训练正则
 - control loss 已补成更接近 owner/stage 的版本：
   - local mask-aware dynamic timbre budget
-  - boundary penalty
+  - pitch residual safety (voiced-only + smooth)
   - late-stage owner / anchor budget
 - canonical `mainline_minimal` 默认训练面已进一步收紧为 **4 个 control regularizers**：
   - `lambda_output_identity_cosine`
   - `lambda_dynamic_timbre_budget`
-  - `lambda_dynamic_timbre_boundary`
+  - `lambda_pitch_residual_safe`
   - `lambda_decoder_late_owner`
 - `mainline_minimal` 不再额外启用 energy regularization，以保持 4-loss 口径
 - 其余 control loss 仍保留给 research / ablation，但不再属于 canonical mainline 开训包
@@ -164,6 +168,7 @@ Updated: 2026-04-01
 - 语义上是：
   - `M_style` owns
   - `M_timbre` follows and enhances
+  - TVT material router 只放行“材质子空间”的变化
 
 ### Contract 语义
 

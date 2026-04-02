@@ -135,6 +135,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                     gate_hidden=gate_hidden,
                     mix_bias=hparams.get("dynamic_timbre_tvt_mix_bias", -0.25),
                     variation_bias=hparams.get("dynamic_timbre_tvt_variation_bias", -1.0),
+                    material_bias=hparams.get("dynamic_timbre_material_router_bias", 1.0),
                 )
             else:
                 self.global_timbre_memory = None
@@ -150,6 +151,27 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             self.style_query_norm = nn.LayerNorm(self.hidden_size)
             self.timbre_query_norm = nn.LayerNorm(self.hidden_size)
             self.dynamic_timbre_style_context_norm = nn.LayerNorm(self.hidden_size)
+            style_router_hidden = int(hparams.get("style_router_hidden", self.hidden_size))
+            self.style_router = nn.Sequential(
+                nn.Linear(self.hidden_size * 3, style_router_hidden),
+                nn.ReLU(),
+                nn.Linear(style_router_hidden, 1),
+            )
+            nn.init.zeros_(self.style_router[2].weight)
+            nn.init.constant_(
+                self.style_router[2].bias,
+                float(hparams.get("style_router_bias_init", -0.15)),
+            )
+            pitch_residual_hidden = int(
+                hparams.get("style_to_pitch_residual_hidden", self.hidden_size)
+            )
+            self.style_to_pitch_residual_head = nn.Sequential(
+                nn.Linear(self.hidden_size * 3, pitch_residual_hidden),
+                nn.ReLU(),
+                nn.Linear(pitch_residual_hidden, 1),
+            )
+            nn.init.zeros_(self.style_to_pitch_residual_head[2].weight)
+            nn.init.zeros_(self.style_to_pitch_residual_head[2].bias)
 
             # build attention layer
             self.embed_positions = SinusoidalPositionalEmbedding(
@@ -168,6 +190,8 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             self.style_query_norm = None
             self.timbre_query_norm = None
             self.dynamic_timbre_style_context_norm = None
+            self.style_router = None
+            self.style_to_pitch_residual_head = None
             self.dynamic_timbre_use_tvt = False
             self.global_timbre_memory = None
             self.content_sync_timbre_fuser = None
@@ -324,6 +348,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
     ):
         ret = {}
         ret["content"] = content
+        ret["content_padding_idx"] = self.content_padding_idx
         tgt_nonpadding = (content != self.content_padding_idx).float()[:, :, None]
         content_ids = content.clamp(min=0, max=self.content_vocab_size - 1)
         content_embed = self.content_embedding(content_ids)
@@ -492,8 +517,10 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         )
         style_trace_available = bool(style_payload.get("style_trace_available", False))
         style_trace_source = str(style_payload.get("style_trace_source", style_trace_source))
-        fast_style_decoder_residual = style_payload.get("style_decoder_residual")
+        fast_style_decoder_residual = style_payload.get("fast_style_decoder_residual")
         slow_style_decoder_residual = style_payload.get("slow_style_decoder_residual")
+        M_style_final = style_payload.get("style_decoder_residual")
+        M_style_mask = style_payload.get("style_decoder_residual_mask")
         global_style_summary_runtime = style_payload.get("global_style_summary_runtime", global_style_summary)
         global_style_summary_runtime_source = style_payload.get(
             "global_style_summary_runtime_source",
@@ -501,14 +528,15 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             if isinstance(reference_cache, dict)
             else "reference_cache",
         )
-        M_style_final, M_style_mask = resolve_combined_style_trace(
-            {
-                "style_trace": fast_style_decoder_residual,
-                "slow_style_trace": slow_style_decoder_residual,
-                "style_trace_mask": ret.get("style_trace_mask"),
-                "slow_style_trace_mask": ret.get("slow_style_trace_mask"),
-            }
-        )
+        if M_style_final is None:
+            M_style_final, M_style_mask = resolve_combined_style_trace(
+                {
+                    "style_trace": fast_style_decoder_residual,
+                    "slow_style_trace": slow_style_decoder_residual,
+                    "style_trace_mask": ret.get("style_trace_mask"),
+                    "slow_style_trace_mask": ret.get("slow_style_trace_mask"),
+                }
+            )
         if M_style_final is None:
             M_style_final = combine_style_traces(
                 fast_style_decoder_residual,
@@ -516,6 +544,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             )
             M_style_mask = ret.get("style_trace_mask", ret.get("slow_style_trace_mask"))
         ret["main_style_owner_residual"] = M_style_final
+        ret["style_owner_source"] = style_payload.get("style_owner_source", ret.get("style_owner_source", "missing"))
         dynamic_timbre_coarse_style_context_scale = float(
             kwargs.get(
                 "dynamic_timbre_coarse_style_context_scale",
@@ -625,6 +654,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["dynamic_timbre_applied"] = bool(dynamic_timbre_available)
         ret["fast_style_decoder_residual"] = fast_style_decoder_residual
         ret["style_decoder_residual"] = M_style_final
+        ret["style_decoder_residual_mask"] = M_style_mask
         ret["slow_style_decoder_residual"] = slow_style_decoder_residual
         ret["dynamic_timbre_decoder_residual"] = dynamic_timbre_decoder_residual
         ret["global_style_summary_runtime"] = global_style_summary_runtime
@@ -824,6 +854,102 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                     )
         return bounded
 
+    def _apply_style_to_pitch_residual(
+        self,
+        f0_out,
+        uv_out,
+        decoder_inp,
+        ret,
+        *,
+        f0_target=None,
+        **kwargs,
+    ):
+        enabled = bool(
+            kwargs.get(
+                "style_to_pitch_residual",
+                self.hparams.get("style_to_pitch_residual", False),
+            )
+        )
+        ret["style_to_pitch_residual_enabled"] = enabled
+        ret["style_to_pitch_residual_applied"] = False
+        if not enabled or self.style_to_pitch_residual_head is None or not isinstance(f0_out, torch.Tensor):
+            return f0_out
+
+        style_residual = ret.get("style_decoder_residual")
+        timbre_residual = ret.get("dynamic_timbre_decoder_residual")
+        if not isinstance(style_residual, torch.Tensor) or tuple(style_residual.shape) != tuple(decoder_inp.shape):
+            style_residual = torch.zeros_like(decoder_inp)
+        if not isinstance(timbre_residual, torch.Tensor) or tuple(timbre_residual.shape) != tuple(decoder_inp.shape):
+            timbre_residual = torch.zeros_like(decoder_inp)
+
+        pitch_residual_hidden = torch.cat([decoder_inp, style_residual, timbre_residual], dim=-1)
+        pitch_residual = self.style_to_pitch_residual_head(pitch_residual_hidden).squeeze(-1)
+        pitch_residual_scale = float(
+            kwargs.get(
+                "style_to_pitch_residual_scale",
+                self.hparams.get("style_to_pitch_residual_scale", 1.0),
+            )
+        )
+        max_semitones = float(
+            kwargs.get(
+                "style_to_pitch_residual_max_semitones",
+                self.hparams.get("style_to_pitch_residual_max_semitones", 2.5),
+            )
+        )
+        max_log2 = max(0.0, max_semitones / 12.0) * max(0.0, pitch_residual_scale)
+        pitch_residual = torch.tanh(pitch_residual) * max_log2
+
+        smooth_factor = float(
+            kwargs.get(
+                "style_to_pitch_residual_smooth_factor",
+                self.hparams.get("style_to_pitch_residual_smooth_factor", 0.35),
+            )
+        )
+        if smooth_factor > 0.0 and pitch_residual.size(1) > 1:
+            pooled = F.avg_pool1d(
+                pitch_residual.unsqueeze(1),
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ).squeeze(1)
+            pitch_residual = (1.0 - smooth_factor) * pitch_residual + smooth_factor * pooled
+
+        content = ret.get("content")
+        if isinstance(content, torch.Tensor) and tuple(content.shape) == tuple(pitch_residual.shape):
+            pitch_residual = pitch_residual.masked_fill(content.eq(self.content_padding_idx), 0.0)
+        if isinstance(uv_out, torch.Tensor) and tuple(uv_out.shape) == tuple(pitch_residual.shape):
+            pitch_residual = pitch_residual * (uv_out == 0).to(pitch_residual.dtype)
+
+        ret["style_to_pitch_residual"] = pitch_residual
+        ret["style_to_pitch_residual_scale"] = pitch_residual_scale
+        ret["style_to_pitch_residual_max_log2"] = max_log2
+        ret["style_to_pitch_residual_max_semitones"] = max_semitones
+        ret["style_to_pitch_residual_smooth_factor"] = smooth_factor
+
+        base_pred = ret.get("f0_base_pred")
+        if isinstance(base_pred, torch.Tensor) and tuple(base_pred.shape) == tuple(pitch_residual.shape):
+            ret["style_to_pitch_residual_base_pred"] = base_pred
+        if isinstance(f0_target, torch.Tensor) and isinstance(base_pred, torch.Tensor):
+            if tuple(f0_target.shape) == tuple(base_pred.shape):
+                target = (f0_target - base_pred.detach()).clamp(-max_log2, max_log2)
+                if isinstance(content, torch.Tensor) and tuple(content.shape) == tuple(target.shape):
+                    target = target.masked_fill(content.eq(self.content_padding_idx), 0.0)
+                if isinstance(uv_out, torch.Tensor) and tuple(uv_out.shape) == tuple(target.shape):
+                    target = target * (uv_out == 0).to(target.dtype)
+                ret["style_to_pitch_residual_target"] = target
+
+        apply_during_teacher_forcing = bool(
+            kwargs.get(
+                "style_to_pitch_residual_apply_during_teacher_forcing",
+                self.hparams.get("style_to_pitch_residual_apply_during_teacher_forcing", False),
+            )
+        )
+        should_apply = f0_target is None or apply_during_teacher_forcing
+        if should_apply:
+            f0_out = f0_out + pitch_residual
+            ret["style_to_pitch_residual_applied"] = True
+        return f0_out
+
     def forward_pitch(self, decoder_inp, f0, uv, ret, **kwargs):  # add **kwargs
         pitch_pred_inp = decoder_inp
         # apply predictor_grad to control gradient backprop
@@ -847,6 +973,15 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
             f0_out, uv_out = self.add_orig_pitch(pitch_pred_inp, f0, uv, ret, **kwargs)
         else:
             raise ValueError(f"Unknown f0_gen type: {hparams['f0_gen']}")
+
+        f0_out = self._apply_style_to_pitch_residual(
+            f0_out,
+            uv_out,
+            pitch_pred_inp,
+            ret,
+            f0_target=f0,
+            **kwargs,
+        )
 
         # --- use f0_out, uv_out returned from add_x_pitch ---
         # f0_out might be log F0 or other forms, denorm_f0 should handle it
@@ -883,6 +1018,8 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         else:
             infer = False
         ret["uv_pred"] = uv_pred = self.uv_predictor(decoder_inp)
+        ret["uv_base_pred"] = uv_pred[:, :, 0]
+        ret["f0_base_pred"] = uv_pred[:, :, 1]
 
         if infer:
             uv = uv_pred[:, :, 0] > 0
@@ -917,6 +1054,8 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         else:
             infer = False
         ret["uv_pred"] = uv_pred = self.uv_predictor(decoder_inp)
+        ret["uv_base_pred"] = uv_pred[:, :, 0]
+        ret["f0_base_pred"] = uv_pred[:, :, 1]
 
         def minmax_norm(x, uv=None):
             x_min = 6
@@ -985,6 +1124,8 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         else:
             infer = False
         ret["uv_pred"] = uv_pred = self.uv_predictor(decoder_inp)
+        ret["uv_base_pred"] = uv_pred[:, :, 0]
+        ret["f0_base_pred"] = uv_pred[:, :, 1]
 
         # define F0 normalization and denormalization functions (minmax_norm, minmax_denorm)
         def minmax_norm(x, uv=None):

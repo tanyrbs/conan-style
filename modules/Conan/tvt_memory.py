@@ -55,12 +55,14 @@ class ContentSynchronousTimbreFuser(nn.Module):
         gate_hidden: Optional[int] = None,
         mix_bias: float = -0.25,
         variation_bias: float = -1.0,
+        material_bias: float = 1.0,
     ):
         super().__init__()
         gate_hidden = int(hidden_size if gate_hidden is None else gate_hidden)
         self.hidden_size = int(hidden_size)
         self.mix_bias = float(mix_bias)
         self.variation_bias = float(variation_bias)
+        self.material_bias = float(material_bias)
         self.query_proj = nn.Linear(self.hidden_size, self.hidden_size)
         self.key_proj = nn.Linear(self.hidden_size, self.hidden_size)
         self.value_proj = nn.Linear(self.hidden_size, self.hidden_size)
@@ -75,6 +77,13 @@ class ContentSynchronousTimbreFuser(nn.Module):
             nn.ReLU(),
             nn.Linear(gate_hidden, 1),
         )
+        self.material_router = nn.Sequential(
+            nn.Linear(self.hidden_size * 4, gate_hidden),
+            nn.ReLU(),
+            nn.Linear(gate_hidden, self.hidden_size),
+        )
+        nn.init.zeros_(self.material_router[2].weight)
+        nn.init.constant_(self.material_router[2].bias, self.material_bias)
 
     def forward(
         self,
@@ -104,9 +113,18 @@ class ContentSynchronousTimbreFuser(nn.Module):
         mix = torch.sigmoid(mix_logit + float(self.mix_bias))
         candidate_absolute = spherical_interpolate(prior_absolute, local_absolute, mix)
 
+        material_logit = self.material_router(
+            torch.cat([query, candidate_absolute, anchor_seq, style_context], dim=-1)
+        )
+        material_router = torch.sigmoid(material_logit)
+        candidate_delta = (candidate_absolute - anchor_seq) * material_router
+        candidate_absolute = anchor_seq + candidate_delta
+
         variation_logit = self.variation_gate(torch.cat([query, candidate_absolute, anchor_seq, style_context], dim=-1))
-        variation_gate = torch.sigmoid(variation_logit * float(gate_scale) + float(gate_bias) + float(self.variation_bias))
-        candidate_delta = candidate_absolute - anchor_seq
+        variation_gate = torch.sigmoid(
+            variation_logit * float(gate_scale) + float(gate_bias) + float(self.variation_bias)
+        )
+        candidate_delta = candidate_delta
 
         return {
             "attn": attn,
@@ -115,6 +133,8 @@ class ContentSynchronousTimbreFuser(nn.Module):
             "mix": mix,
             "candidate_absolute": candidate_absolute,
             "candidate_delta": candidate_delta,
+            "material_logit": material_logit,
+            "material_router": material_router,
             "variation_logit": variation_logit,
             "variation_gate_raw": variation_gate,
             "variation_gate": variation_gate,

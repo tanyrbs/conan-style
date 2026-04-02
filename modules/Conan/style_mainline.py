@@ -136,13 +136,18 @@ class StyleMainlineControls:
     apply_style_trace: bool = True
     apply_dynamic_timbre: bool = True
     global_timbre_to_pitch: bool = False
+    style_to_pitch_residual: bool = False
+    style_to_pitch_residual_scale: float = 1.0
+    style_to_pitch_residual_max_semitones: float = 2.5
+    style_to_pitch_residual_smooth_factor: float = 0.35
     global_style_anchor_strength: float = 1.0
     style_strength: float = 1.0
     fast_style_strength_scale: float = 1.0
     slow_style_strength_scale: float = 1.0
+    style_router_enabled: bool = True
     dynamic_timbre_strength: float = 1.0
     dynamic_timbre_strength_source: str = "derived_from_style_strength"
-    style_trace_mode: str = "slow"
+    style_trace_mode: str = "dual"
     style_memory_mode: str = "slow"
     dynamic_timbre_memory_mode: str = "slow"
     style_temperature: float = 1.0
@@ -196,7 +201,7 @@ def resolve_style_mainline_controls(
     apply_global_style_anchor, apply_style_trace, apply_dynamic_timbre = mode_flags[mode]
     default_style_trace_mode = {
         "legacy_full": "fast",
-        "mainline_full": "slow",
+        "mainline_full": "dual",
         "global_style_dynamic_timbre": "none",
         "global_only": "none",
         "dynamic_timbre_only": "none",
@@ -264,6 +269,22 @@ def resolve_style_mainline_controls(
                 default=default_global_timbre_to_pitch,
             )
         ),
+        style_to_pitch_residual=bool(
+            _value(
+                "style_to_pitch_residual",
+                "use_style_to_pitch_residual",
+                default=mode == "mainline_full",
+            )
+        ),
+        style_to_pitch_residual_scale=float(
+            _value("style_to_pitch_residual_scale", default=1.0)
+        ),
+        style_to_pitch_residual_max_semitones=float(
+            _value("style_to_pitch_residual_max_semitones", default=2.5)
+        ),
+        style_to_pitch_residual_smooth_factor=float(
+            _value("style_to_pitch_residual_smooth_factor", default=0.35)
+        ),
         global_style_anchor_strength=_raw_or_float(
             "global_style_anchor_strength",
             "global_timbre_strength",
@@ -277,6 +298,7 @@ def resolve_style_mainline_controls(
         slow_style_strength_scale=float(
             _value("slow_style_strength_scale", "slow_style_scale", default=1.0)
         ),
+        style_router_enabled=bool(_value("style_router_enabled", default=True)),
         dynamic_timbre_strength=dynamic_timbre_strength_value,
         dynamic_timbre_strength_source=str(dynamic_timbre_strength_source),
         style_trace_mode=resolved_style_trace_mode,
@@ -336,16 +358,30 @@ def build_style_mainline_surface_payload(
         "enforce_decoder_no_timing_writeback": bool(controls.enforce_decoder_no_timing_writeback),
         "planner_writeback_allowed": False,
         "projector_writeback_allowed": False,
-        "timing_authority": "pitch_content_only",
+        "timing_authority": "decoder_only_no_timing_writeback",
+        "pitch_authority": (
+            "content_plus_bounded_style_residual"
+            if bool(controls.style_to_pitch_residual)
+            else "content_only"
+        ),
         "mode": controls.mode,
         "apply_global_style_anchor": bool(controls.apply_global_style_anchor),
         "apply_style_trace": bool(controls.apply_style_trace),
         "apply_dynamic_timbre": bool(controls.apply_dynamic_timbre),
         "global_timbre_to_pitch": bool(controls.global_timbre_to_pitch),
+        "style_to_pitch_residual": bool(controls.style_to_pitch_residual),
+        "style_to_pitch_residual_scale": float(controls.style_to_pitch_residual_scale),
+        "style_to_pitch_residual_max_semitones": float(
+            controls.style_to_pitch_residual_max_semitones
+        ),
+        "style_to_pitch_residual_smooth_factor": float(
+            controls.style_to_pitch_residual_smooth_factor
+        ),
         "global_style_anchor_strength": _surface_value(controls.global_style_anchor_strength),
         "style_strength": _surface_value(controls.style_strength),
         "fast_style_strength_scale": float(controls.fast_style_strength_scale),
         "slow_style_strength_scale": float(controls.slow_style_strength_scale),
+        "style_router_enabled": bool(controls.style_router_enabled),
         "dynamic_timbre_strength": _surface_value(controls.dynamic_timbre_strength),
         "dynamic_timbre_strength_source": str(controls.dynamic_timbre_strength_source),
         "style_trace_mode": str(controls.style_trace_mode),

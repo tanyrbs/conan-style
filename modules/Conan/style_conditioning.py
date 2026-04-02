@@ -782,6 +782,8 @@ class ConanStyleConditioningMixin:
             ret["dynamic_timbre_tvt_prior_absolute"] = tvt_payload["prior_absolute"]
             ret["dynamic_timbre_tvt_candidate_absolute"] = tvt_payload["candidate_absolute"]
             ret["dynamic_timbre_tvt_memory"] = global_memory
+            ret["dynamic_timbre_material_router"] = tvt_payload.get("material_router")
+            ret["dynamic_timbre_material_logit"] = tvt_payload.get("material_logit")
             ret["dynamic_timbre_tvt_gate_logit"] = tvt_payload["variation_logit"].squeeze(-1)
             ret["dynamic_timbre_tvt_prior_scale"] = float(tvt_prior_scale)
             ret["dynamic_timbre_tvt_enabled"] = True

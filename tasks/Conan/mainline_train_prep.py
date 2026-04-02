@@ -33,6 +33,7 @@ REQUIRED_ZERO_KEYS = (
     "lambda_timbre_anchor_cosine",
     "lambda_style_dynamic_timbre_disentangle",
     "lambda_dynamic_timbre_gate",
+    "lambda_dynamic_timbre_boundary",
     "lambda_dynamic_timbre_anchor",
     "lambda_gate_rank",
     "lambda_decoder_late_anchor_budget",
@@ -41,14 +42,14 @@ REQUIRED_ZERO_KEYS = (
 REQUIRED_POSITIVE_KEYS = (
     "lambda_output_identity_cosine",
     "lambda_dynamic_timbre_budget",
-    "lambda_dynamic_timbre_boundary",
+    "lambda_pitch_residual_safe",
     "lambda_decoder_late_owner",
 )
 
 REQUIRED_PRESENT_KEYS = (
     "lambda_output_identity_cosine",
     "lambda_dynamic_timbre_budget",
-    "lambda_dynamic_timbre_boundary",
+    "lambda_pitch_residual_safe",
     "lambda_decoder_late_owner",
 )
 
@@ -187,7 +188,9 @@ def run_prep(args):
     _check_equal(checks, "reference_contract_mode", hparams.get("reference_contract_mode"), "collapsed_reference")
     _check_equal(checks, "decoder_style_condition_mode", controls.mode, "mainline_full")
     _check_equal(checks, "global_timbre_to_pitch", bool(controls.global_timbre_to_pitch), False)
-    _check_equal(checks, "style_trace_mode", controls.style_trace_mode, "slow")
+    _check_equal(checks, "style_to_pitch_residual", bool(controls.style_to_pitch_residual), True)
+    _check_equal(checks, "style_trace_mode", controls.style_trace_mode, "dual")
+    _check_equal(checks, "style_router_enabled", bool(controls.style_router_enabled), True)
     _check_equal(checks, "style_memory_mode", controls.style_memory_mode, "slow")
     _check_equal(checks, "dynamic_timbre_memory_mode", controls.dynamic_timbre_memory_mode, "slow")
     _check_close(checks, "global_style_trace_blend", hparams.get("global_style_trace_blend", 0.0), 0.0)

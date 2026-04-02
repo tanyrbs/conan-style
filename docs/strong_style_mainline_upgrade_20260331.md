@@ -60,12 +60,14 @@ split reference 仍可保留给 research-only tooling，
 
 - expression owner
 - 风格强度、accent posture、情绪张力、局部 delivery
+- 内部 dual-scale（fast + slow）但对外仍是单一 owner
 
 ### `M_timbre`
 
 - bounded material enhancer
 - breathiness / brightness / thickness / onset-release
 - 服务于 style realization，而不是第二条主风格通道
+- TVT material track：content-synchronous prior + slerp + material router
 
 说明：
 
@@ -81,6 +83,8 @@ split reference 仍可保留给 research-only tooling，
 - `global_timbre_to_pitch = false`
 - `M_style > M_timbre`
 - dynamic timbre = constrained enhancer
+- `style_trace_mode: dual` + `style_router_enabled`
+- `style_to_pitch_residual: true`（bounded, voiced-only）
 
 ## 6. What changed in this round
 
@@ -97,6 +101,9 @@ split reference 仍可保留给 research-only tooling，
 - decoder adapter 对 zero / 无效分支已做 hard no-op
 - local style owner 存在时，late-stage 默认跳过 `global_style_summary` 重复注入
 - dynamic timbre 已增加 runtime hard budget
+- style 内部 dual-scale router 已上线（对外仍是单 owner）
+- timbre 已升级为 TVT material track（global memory + content-synchronous prior + slerp + router）
+- bounded style-to-pitch residual 已加入（不打开 global timbre to pitch）
 
 ## 7. Remaining gaps
 

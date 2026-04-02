@@ -176,13 +176,21 @@ content_vocab_size: 102
 content_padding_idx: 101
 reference_contract_mode: collapsed_reference  # mainline training contract = single-reference weak internal factorization
 decoder_style_condition_mode: mainline_full
-style_trace_mode: slow
+style_trace_mode: dual
 style_reference_memory_mode: slow
-fast_style_strength_scale: 1.00
-slow_style_strength_scale: 1.45
+fast_style_strength_scale: 1.10
+slow_style_strength_scale: 1.20
+style_router_enabled: true
+style_router_hidden: 256
+style_router_bias_init: -0.15
 global_style_trace_blend: 0.0
 style_query_global_summary_scale: 0.0
 global_timbre_to_pitch: false
+style_to_pitch_residual: true
+style_to_pitch_residual_scale: 1.0
+style_to_pitch_residual_max_semitones: 2.5
+style_to_pitch_residual_smooth_factor: 0.35
+style_to_pitch_residual_apply_during_teacher_forcing: false
 global_style_summary_fallback_to_timbre: false
 global_style_anchor_strength: 1.0
 use_decoder_style_adapter: true
@@ -228,6 +236,7 @@ dynamic_timbre_facet_hidden: 256
 dynamic_timbre_tvt_prior_scale: 1.0
 dynamic_timbre_tvt_mix_bias: -0.25
 dynamic_timbre_tvt_variation_bias: -1.0
+dynamic_timbre_material_router_bias: 1.0
 dynamic_timbre_style_condition_scale: 0.35
 dynamic_timbre_query_style_condition_scale: 0.0
 dynamic_timbre_coarse_style_context_scale: 0.0
@@ -267,14 +276,16 @@ lambda_output_identity_cosine: 0.03
 lambda_style_dynamic_timbre_disentangle: 0.0
 lambda_dynamic_timbre_gate: 0.0
 lambda_dynamic_timbre_budget: 0.03
-lambda_dynamic_timbre_boundary: 0.0075
+lambda_dynamic_timbre_boundary: 0.0
 lambda_dynamic_timbre_anchor: 0.0
+lambda_pitch_residual_safe: 0.01
 lambda_gate_rank: 0.0
 lambda_decoder_late_owner: 0.015
 lambda_decoder_late_anchor_budget: 0.0
 dynamic_timbre_gate_target: 0.35
 dynamic_timbre_budget_ratio: 0.40
 dynamic_timbre_budget_margin: 0.0
+pitch_residual_smooth_weight: 0.10
 decoder_late_timbre_owner_ratio: 0.50
 decoder_late_anchor_budget_ratio: 0.35
 decoder_late_anchor_budget_floor: 0.0
@@ -286,7 +297,7 @@ control_regularization_schedule:
   type: linear
   lambda_output_identity_cosine: {start: 2000, warmup: 8000, initial: 0.0, target: 0.03}
   lambda_dynamic_timbre_budget: {start: 0, warmup: 6000, initial: 0.0, target: 0.03}
-  lambda_dynamic_timbre_boundary: {start: 4000, warmup: 8000, initial: 0.0, target: 0.0075}
+  lambda_pitch_residual_safe: {start: 4000, warmup: 8000, initial: 0.0, target: 0.01}
   lambda_decoder_late_owner: {start: 2000, warmup: 8000, initial: 0.0, target: 0.015}
 log_control_diagnostics: true
 control_diagnostics_track_lambdas: true

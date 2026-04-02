@@ -508,6 +508,47 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             if reduced_budget is not None:
                 losses["dynamic_timbre_budget"] = reduced_budget * dynamic_timbre_budget_lambda
 
+    pitch_residual_safe_lambda = _lambda("lambda_pitch_residual_safe")
+    if pitch_residual_safe_lambda > 0:
+        pitch_residual = output.get("style_to_pitch_residual")
+        pitch_residual_target = output.get("style_to_pitch_residual_target")
+        if isinstance(pitch_residual, torch.Tensor):
+            voiced_weight = None
+            sample_uv = sample.get("uv")
+            if (
+                isinstance(sample_uv, torch.Tensor)
+                and sample_uv.dim() == 2
+                and tuple(sample_uv.shape) == tuple(pitch_residual.shape)
+            ):
+                voiced_weight = (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(pitch_residual.device)
+            residual_weight = _sequence_weight(
+                output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                reference=pitch_residual,
+                voiced_weight=voiced_weight,
+            )
+            residual_total = None
+            if (
+                isinstance(pitch_residual_target, torch.Tensor)
+                and tuple(pitch_residual_target.shape) == tuple(pitch_residual.shape)
+            ):
+                mse = (pitch_residual - pitch_residual_target).pow(2)
+                residual_total = _weighted_mean(mse, residual_weight)
+            if pitch_residual.size(1) > 1:
+                smooth_penalty = (pitch_residual[:, 1:] - pitch_residual[:, :-1]).abs()
+                smooth_weight = None
+                if isinstance(residual_weight, torch.Tensor) and residual_weight.size(1) == pitch_residual.size(1):
+                    smooth_weight = residual_weight[:, 1:] * residual_weight[:, :-1]
+                smooth_term = _weighted_mean(smooth_penalty, smooth_weight)
+                smooth_scale = float(config.get("pitch_residual_smooth_weight", 0.10))
+                if smooth_term is not None:
+                    residual_total = (
+                        smooth_term * smooth_scale
+                        if residual_total is None
+                        else residual_total + smooth_term * smooth_scale
+                    )
+            if residual_total is not None:
+                losses["pitch_residual_safe"] = residual_total * pitch_residual_safe_lambda
+
     dynamic_timbre_boundary_lambda = _lambda("lambda_dynamic_timbre_boundary")
     if dynamic_timbre_boundary_lambda > 0:
         dynamic_timbre_decoder_residual = output.get("dynamic_timbre_decoder_residual")

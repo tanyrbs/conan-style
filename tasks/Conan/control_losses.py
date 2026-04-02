@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from modules.Conan.style_trace_utils import resolve_combined_style_trace
+from tasks.Conan.control_schedule import MAINLINE_MINIMAL_CONTROL_LAMBDAS
 
 
 def _shape_match_time_mask(mask, target):
@@ -353,14 +354,7 @@ def add_prompt_regularization_losses(losses, output, config):
 def add_style_timbre_regularization_losses(losses, output, sample, config):
     control_loss_profile = str(config.get("control_loss_profile", "mainline_minimal") or "mainline_minimal").strip().lower()
     minimal_mainline = control_loss_profile in {"mainline_minimal", "minimal", "core", "mainline"}
-    minimal_allowed = {
-        "lambda_style_trace_consistency",
-        "lambda_output_identity_cosine",
-        "lambda_dynamic_timbre_budget",
-        "lambda_dynamic_timbre_boundary",
-        "lambda_dynamic_timbre_anchor",
-        "lambda_gate_rank",
-    }
+    minimal_allowed = set(MAINLINE_MINIMAL_CONTROL_LAMBDAS)
 
     def _lambda(key):
         if minimal_mainline and key not in minimal_allowed:

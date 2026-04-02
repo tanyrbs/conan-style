@@ -11,12 +11,16 @@ if str(ROOT_DIR) not in sys.path:
 
 from modules.Conan.style_mainline import resolve_style_mainline_controls
 from modules.Conan.style_profiles import resolve_style_profile
-from tasks.Conan.control_schedule import resolve_control_regularization_config
+from tasks.Conan.control_schedule import (
+    MAINLINE_MINIMAL_CONTROL_LAMBDAS,
+    resolve_control_regularization_config,
+)
 from utils.commons.hparams import hparams, set_hparams
 
 
 REQUIRED_ZERO_KEYS = (
     "lambda_style_timbre_disentangle",
+    "lambda_style_trace_consistency",
     "lambda_style_query_var",
     "lambda_global_style_summary_align",
     "lambda_slow_style_summary_align",
@@ -25,23 +29,23 @@ REQUIRED_ZERO_KEYS = (
     "lambda_timbre_anchor_cosine",
     "lambda_style_dynamic_timbre_disentangle",
     "lambda_dynamic_timbre_gate",
-    "lambda_decoder_late_owner",
+    "lambda_dynamic_timbre_anchor",
+    "lambda_gate_rank",
     "lambda_decoder_late_anchor_budget",
 )
 
 REQUIRED_POSITIVE_KEYS = (
-    "lambda_style_trace_consistency",
     "lambda_output_identity_cosine",
     "lambda_dynamic_timbre_budget",
     "lambda_dynamic_timbre_boundary",
-    "lambda_dynamic_timbre_anchor",
-    "lambda_gate_rank",
+    "lambda_decoder_late_owner",
 )
 
 REQUIRED_PRESENT_KEYS = (
+    "lambda_output_identity_cosine",
+    "lambda_dynamic_timbre_budget",
     "lambda_dynamic_timbre_boundary",
-    "lambda_dynamic_timbre_anchor",
-    "lambda_gate_rank",
+    "lambda_decoder_late_owner",
 )
 
 
@@ -192,6 +196,25 @@ def run_prep(args):
         "decoder_late_timbre_owner_ratio",
         hparams.get("decoder_late_timbre_owner_ratio", 0.55),
         0.55,
+    )
+    active_mainline_control_keys = tuple(
+        key for key in MAINLINE_MINIMAL_CONTROL_LAMBDAS if float(hparams.get(key, 0.0)) > 0.0
+    )
+    checks.append(
+        {
+            "name": "mainline_minimal_active_control_loss_count",
+            "ok": len(active_mainline_control_keys) <= 4,
+            "actual": len(active_mainline_control_keys),
+            "expected": "<= 4",
+        }
+    )
+    checks.append(
+        {
+            "name": "mainline_minimal_active_control_losses",
+            "ok": set(active_mainline_control_keys) == set(MAINLINE_MINIMAL_CONTROL_LAMBDAS),
+            "actual": list(active_mainline_control_keys),
+            "expected": list(MAINLINE_MINIMAL_CONTROL_LAMBDAS),
+        }
     )
 
     for key in REQUIRED_POSITIVE_KEYS:

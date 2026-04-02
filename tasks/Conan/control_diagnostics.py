@@ -3,16 +3,10 @@ import torch.nn.functional as F
 
 from modules.Conan.control.common import summary_vector
 from modules.Conan.style_trace_utils import resolve_combined_style_trace
+from tasks.Conan.control_schedule import MAINLINE_MINIMAL_CONTROL_LAMBDAS
 
 
-TRACKED_LAMBDA_KEYS = (
-    "lambda_style_trace_consistency",
-    "lambda_output_identity_cosine",
-    "lambda_dynamic_timbre_budget",
-    "lambda_dynamic_timbre_boundary",
-    "lambda_dynamic_timbre_anchor",
-    "lambda_gate_rank",
-)
+TRACKED_LAMBDA_KEYS = tuple(MAINLINE_MINIMAL_CONTROL_LAMBDAS)
 
 
 def _normalize_mask(mask, sequence):
@@ -596,8 +590,11 @@ def collect_control_diagnostics(output, sample, config):
                 if isinstance(value, torch.Tensor):
                     device = value.device
                     break
+            active_mainline_count = 0
             for key in TRACKED_LAMBDA_KEYS:
                 if key in config:
+                    if float(config.get(key, 0.0)) > 0.0:
+                        active_mainline_count += 1
                     if device is not None:
                         diagnostics[f"diag_{key}"] = torch.tensor(
                             float(config.get(key, 0.0)),
@@ -609,4 +606,9 @@ def collect_control_diagnostics(output, sample, config):
                             float(config.get(key, 0.0)),
                             dtype=torch.float32,
                         )
+            diagnostics["diag_active_mainline_control_loss_count"] = torch.tensor(
+                float(active_mainline_count),
+                dtype=torch.float32,
+                device=device,
+            ) if device is not None else torch.tensor(float(active_mainline_count), dtype=torch.float32)
     return diagnostics

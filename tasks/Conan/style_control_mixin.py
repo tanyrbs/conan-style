@@ -30,6 +30,15 @@ class ConanStyleControlMixin:
             default="mainline_minimal",
         )
 
+    @staticmethod
+    def _is_minimal_control_profile(name):
+        return str(name or "mainline_minimal").strip().lower() in {
+            "mainline_minimal",
+            "minimal",
+            "core",
+            "mainline",
+        }
+
     def build_style_model_kwargs(self, sample, ref):
         reference_bundle = resolve_reference_bundle(sample, fallback_ref=ref)
         reference_cache = sample.get("reference_cache", None)
@@ -61,8 +70,14 @@ class ConanStyleControlMixin:
             or not hasattr(self.model, "encode_spk_embed")
         ):
             return
+        identity_schedule_cfg = hparams.get("control_regularization_schedule", {})
+        schedule_identity_enabled = (
+            isinstance(identity_schedule_cfg, dict)
+            and identity_schedule_cfg.get("lambda_output_identity_cosine") is not None
+        )
         needs_identity_features = (
             float(hparams.get("lambda_output_identity_cosine", 0.0)) > 0.0
+            or schedule_identity_enabled
             or bool(hparams.get("log_control_diagnostics", True))
         )
         if not needs_identity_features:
@@ -80,7 +95,7 @@ class ConanStyleControlMixin:
     def add_control_losses(self, output, sample, losses):
         regularization_config = resolve_control_regularization_config(hparams, self.global_step)
         control_loss_profile = self._control_loss_profile(regularization_config)
-        minimal_profile = control_loss_profile == "mainline_minimal"
+        minimal_profile = self._is_minimal_control_profile(control_loss_profile)
 
         if not minimal_profile:
             add_classification_losses(

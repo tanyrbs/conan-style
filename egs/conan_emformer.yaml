@@ -206,10 +206,10 @@ reference_prosody_slow_pool: 4
 reference_timbre_slow_pool: 2
 dynamic_timbre_reference_memory_mode: slow
 allow_explicit_dynamic_timbre_strength: false
-dynamic_timbre_strength_base: 0.60
-dynamic_timbre_strength_slope: 0.70
-dynamic_timbre_strength_min: 0.60
-dynamic_timbre_strength_max: 1.40
+dynamic_timbre_strength_base: 0.55
+dynamic_timbre_strength_slope: 0.45
+dynamic_timbre_strength_min: 0.50
+dynamic_timbre_strength_max: 1.05
 dynamic_timbre_style_condition_scale: 0.50
 dynamic_timbre_coarse_style_context_scale: 0.0
 dynamic_timbre_style_context_stopgrad: true
@@ -231,7 +231,7 @@ lambda_energy: 0.0
 control_loss_profile: mainline_minimal
 num_styles: 0
 lambda_style_trace_smooth: 0.0
-lambda_style_trace_consistency: 0.1
+lambda_style_trace_consistency: 0.0
 lambda_style_timbre_disentangle: 0.0
 lambda_style_query_var: 0.0
 lambda_global_style_summary_align: 0.0
@@ -239,14 +239,14 @@ lambda_slow_style_summary_align: 0.0
 lambda_tv_timbre_smooth: 0.0
 lambda_tv_timbre_anchor: 0.0
 lambda_timbre_anchor_cosine: 0.0
-lambda_output_identity_cosine: 0.01
+lambda_output_identity_cosine: 0.02
 lambda_style_dynamic_timbre_disentangle: 0.0
 lambda_dynamic_timbre_gate: 0.0
-lambda_dynamic_timbre_budget: 0.01
+lambda_dynamic_timbre_budget: 0.02
 lambda_dynamic_timbre_boundary: 0.005
-lambda_dynamic_timbre_anchor: 0.005
-lambda_gate_rank: 0.01
-lambda_decoder_late_owner: 0.0
+lambda_dynamic_timbre_anchor: 0.0
+lambda_gate_rank: 0.0
+lambda_decoder_late_owner: 0.01
 lambda_decoder_late_anchor_budget: 0.0
 dynamic_timbre_gate_target: 0.35
 dynamic_timbre_budget_ratio: 0.50
@@ -260,13 +260,10 @@ timbre_reg_init_scale: 0.0
 timbre_reg_final_scale: 1.0
 control_regularization_schedule:
   type: linear
-  lambda_style_trace_consistency: {start: 10000, warmup: 15000, initial: 0.0, target: 0.1}
-  lambda_output_identity_cosine: {start: 18000, warmup: 15000, initial: 0.0, target: 0.01}
-  lambda_dynamic_timbre_budget: {start: 15000, warmup: 12000, initial: 0.0, target: 0.01}
-  lambda_dynamic_timbre_boundary: {start: 15000, warmup: 12000, initial: 0.0, target: 0.005}
-  lambda_dynamic_timbre_anchor: {start: 15000, warmup: 12000, initial: 0.0, target: 0.005}
-  lambda_gate_rank: {start: 18000, warmup: 15000, initial: 0.0, target: 0.01}
-  lambda_decoder_late_owner: {start: 18000, warmup: 15000, initial: 0.0, target: 0.0}
+  lambda_output_identity_cosine: {start: 2000, warmup: 6000, initial: 0.0, target: 0.02}
+  lambda_dynamic_timbre_budget: {start: 0, warmup: 4000, initial: 0.0, target: 0.02}
+  lambda_dynamic_timbre_boundary: {start: 4000, warmup: 6000, initial: 0.0, target: 0.005}
+  lambda_decoder_late_owner: {start: 2000, warmup: 6000, initial: 0.0, target: 0.01}
 log_control_diagnostics: true
 control_diagnostics_track_lambdas: true
 valid_use_streaming_prefix_path: true

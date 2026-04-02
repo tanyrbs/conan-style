@@ -20,5 +20,5 @@ style_query_global_summary_scale: 0.0
 dynamic_timbre_coarse_style_context_scale: 0.0
 allow_explicit_dynamic_timbre_strength: false
 allow_split_reference_inputs: false  # split-reference paths stay research-only and do not define the mainline contract
-runtime_dynamic_timbre_style_budget_ratio: 0.50
+runtime_dynamic_timbre_style_budget_ratio: 0.40
 runtime_dynamic_timbre_style_budget_margin: 0.0

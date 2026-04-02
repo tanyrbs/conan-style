@@ -515,7 +515,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if isinstance(dynamic_timbre_decoder_residual, torch.Tensor) and isinstance(boundary_mask, torch.Tensor):
             boundary_penalty = _sequence_abs_mean(dynamic_timbre_decoder_residual)
             if isinstance(boundary_penalty, torch.Tensor):
-                nonboundary_weight = _sequence_weight(
+                valid_weight = _sequence_weight(
                     output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
                     reference=boundary_penalty,
                 )
@@ -524,8 +524,8 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                         boundary_mask = boundary_mask.squeeze(-1)
                     if boundary_mask.dim() == 2 and tuple(boundary_mask.shape) == tuple(boundary_penalty.shape):
                         boundary_weight = boundary_mask.to(boundary_penalty.device, dtype=boundary_penalty.dtype).clamp(0.0, 1.0)
-                        if isinstance(nonboundary_weight, torch.Tensor):
-                            boundary_weight = boundary_weight * nonboundary_weight
+                        if isinstance(valid_weight, torch.Tensor):
+                            boundary_weight = boundary_weight * valid_weight
                         reduced_boundary = _weighted_mean(boundary_penalty, boundary_weight)
                         if reduced_boundary is not None:
                             losses["dynamic_timbre_boundary"] = (
@@ -549,7 +549,6 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             style_gate = _mean_optional_scalars(
                 _gate_mean(mid_stage.get("slow_style_gate")) if isinstance(mid_stage, dict) else None,
                 _gate_mean(late_stage.get("global_style_gate")) if isinstance(late_stage, dict) else None,
-                _gate_mean(late_stage.get("slow_style_gate")) if isinstance(late_stage, dict) else None,
                 _gate_mean(late_stage.get("style_trace_gate")) if isinstance(late_stage, dict) else None,
             )
             timbre_gate = _mean_optional_scalars(
@@ -575,7 +574,6 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if isinstance(late_stage, dict):
             late_style_energy = _sum_optional_scalars(
                 _tensor_abs_mean(late_stage.get("global_style_delta")),
-                _tensor_abs_mean(late_stage.get("slow_style_delta")),
                 _tensor_abs_mean(late_stage.get("style_trace_delta")),
             )
             late_timbre_energy = _tensor_abs_mean(late_stage.get("dynamic_timbre_delta"))

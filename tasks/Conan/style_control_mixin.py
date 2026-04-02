@@ -58,6 +58,48 @@ class ConanStyleControlMixin:
             return None
         return (content != hparams.get("content_padding_idx", 101)).float()
 
+    def _identity_encoder(self):
+        verifier = getattr(self, "speaker_verifier", None)
+        if verifier is not None:
+            return verifier
+        if getattr(self, "model", None) is None or not hasattr(self.model, "encode_spk_embed"):
+            return None
+        return self.model.encode_spk_embed
+
+    @staticmethod
+    def _normalize_identity_embedding(embedding, mel_btc=None):
+        if not isinstance(embedding, torch.Tensor):
+            return None
+        if embedding.dim() == 2:
+            return embedding.unsqueeze(1)
+        if embedding.dim() != 3:
+            return None
+        if embedding.size(1) == 1:
+            return embedding
+        if embedding.size(-1) == 1:
+            return embedding.transpose(1, 2)
+        if isinstance(mel_btc, torch.Tensor):
+            mel_len = int(mel_btc.size(1))
+            if embedding.size(1) == mel_len:
+                return embedding.mean(dim=1, keepdim=True)
+            if embedding.size(2) == mel_len:
+                return embedding.transpose(1, 2).mean(dim=1, keepdim=True)
+        return embedding.mean(dim=1, keepdim=True)
+
+    def _encode_identity_embedding(self, mel_btc, *, detach_input=False):
+        if not isinstance(mel_btc, torch.Tensor) or mel_btc.dim() != 3:
+            return None
+        encoder = self._identity_encoder()
+        if encoder is None:
+            return None
+        mel_input = mel_btc.detach() if detach_input else mel_btc
+        verifier = getattr(self, "speaker_verifier", None)
+        if verifier is not None:
+            embedding = encoder(mel_input)
+        else:
+            embedding = encoder(mel_input.transpose(1, 2))
+        return self._normalize_identity_embedding(embedding, mel_btc=mel_btc)
+
     def _maybe_attach_output_identity_embeddings(self, output, reference_mels=None):
         if not isinstance(output, dict):
             return
@@ -66,8 +108,6 @@ class ConanStyleControlMixin:
         if (
             not isinstance(mel_out, torch.Tensor)
             or not isinstance(global_timbre_anchor, torch.Tensor)
-            or getattr(self, "model", None) is None
-            or not hasattr(self.model, "encode_spk_embed")
         ):
             return
         identity_schedule_cfg = hparams.get("control_regularization_schedule", {})
@@ -82,15 +122,27 @@ class ConanStyleControlMixin:
         )
         if not needs_identity_features:
             return
-        output["output_identity_embed"] = self.model.encode_spk_embed(
-            mel_out.transpose(1, 2)
-        ).transpose(1, 2)
+        output_identity_embed = self._encode_identity_embedding(
+            mel_out,
+            detach_input=bool(hparams.get("speaker_verifier_detach_input", False)),
+        )
+        if not isinstance(output_identity_embed, torch.Tensor):
+            return
+        output["output_identity_embed"] = output_identity_embed
         output["output_identity_anchor_target"] = global_timbre_anchor.detach()
+        output["identity_encoder_backend"] = (
+            "external_speaker_verifier"
+            if getattr(self, "speaker_verifier", None) is not None
+            else "model_encode_spk_embed"
+        )
         if isinstance(reference_mels, torch.Tensor):
             with torch.no_grad():
-                output["reference_identity_embed"] = self.model.encode_spk_embed(
-                    reference_mels.transpose(1, 2)
-                ).transpose(1, 2)
+                reference_identity_embed = self._encode_identity_embedding(
+                    reference_mels,
+                    detach_input=True,
+                )
+                if isinstance(reference_identity_embed, torch.Tensor):
+                    output["reference_identity_embed"] = reference_identity_embed
 
     def add_control_losses(self, output, sample, losses):
         regularization_config = resolve_control_regularization_config(hparams, self.global_step)
@@ -142,13 +194,14 @@ class ConanStyleControlMixin:
                 ),
             )
 
-        add_energy_loss(
-            losses,
-            output,
-            sample,
-            lambda_energy=hparams.get("lambda_energy", 0.0),
-            nonpadding=self._content_nonpadding(sample),
-        )
+        if not minimal_profile:
+            add_energy_loss(
+                losses,
+                output,
+                sample,
+                lambda_energy=hparams.get("lambda_energy", 0.0),
+                nonpadding=self._content_nonpadding(sample),
+            )
         if not minimal_profile:
             add_prompt_regularization_losses(losses, output, regularization_config)
         add_style_timbre_regularization_losses(losses, output, sample, regularization_config)

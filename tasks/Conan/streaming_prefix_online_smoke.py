@@ -35,6 +35,8 @@ def parse_args():
     parser.add_argument("--tokens_per_chunk", type=int, default=4)
     parser.add_argument("--max_mel_l1", type=float, default=0.10)
     parser.add_argument("--max_tail_mel_l1", type=float, default=0.05)
+    parser.add_argument("--max_boundary_mel_l1", type=float, default=0.05)
+    parser.add_argument("--max_boundary_mel_l1_max", type=float, default=0.10)
     parser.add_argument(
         "--output_path",
         type=str,
@@ -78,10 +80,22 @@ def run_smoke(args):
 
     mel_l1 = float(scalarize_value(parity_metrics["streaming_mel_l1"]))
     tail_l1 = float(scalarize_value(parity_metrics.get("streaming_tail_mel_l1", parity_metrics["streaming_mel_l1"])))
+    boundary_l1 = float(
+        scalarize_value(parity_metrics.get("streaming_boundary_mel_l1", parity_metrics["streaming_mel_l1"]))
+    )
+    boundary_l1_max = float(
+        scalarize_value(parity_metrics.get("streaming_boundary_mel_l1_max", parity_metrics["streaming_mel_l1"]))
+    )
     if mel_l1 > float(args.max_mel_l1):
         raise AssertionError(f"streaming_mel_l1 too large: {mel_l1} > {args.max_mel_l1}")
     if tail_l1 > float(args.max_tail_mel_l1):
         raise AssertionError(f"streaming_tail_mel_l1 too large: {tail_l1} > {args.max_tail_mel_l1}")
+    if boundary_l1 > float(args.max_boundary_mel_l1):
+        raise AssertionError(f"streaming_boundary_mel_l1 too large: {boundary_l1} > {args.max_boundary_mel_l1}")
+    if boundary_l1_max > float(args.max_boundary_mel_l1_max):
+        raise AssertionError(
+            f"streaming_boundary_mel_l1_max too large: {boundary_l1_max} > {args.max_boundary_mel_l1_max}"
+        )
     if not bool(streaming_output.get("query_anchor_split_applied", False)):
         raise AssertionError("query_anchor_split_applied is false on the prefix-online path.")
     if not bool(streaming_output.get("dynamic_timbre_style_context_owner_safe", False)):

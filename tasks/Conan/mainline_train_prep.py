@@ -19,6 +19,7 @@ from utils.commons.hparams import hparams, set_hparams
 
 
 REQUIRED_ZERO_KEYS = (
+    "lambda_energy",
     "lambda_style_timbre_disentangle",
     "lambda_style_trace_consistency",
     "lambda_style_query_var",
@@ -116,8 +117,25 @@ def run_prep(args):
             "style_strength": hparams.get("style_strength", None),
             "global_style_trace_blend": hparams.get("global_style_trace_blend", None),
             "style_query_global_summary_scale": hparams.get("style_query_global_summary_scale", None),
+            "dynamic_timbre_style_condition_scale": hparams.get("dynamic_timbre_style_condition_scale", None),
             "dynamic_timbre_coarse_style_context_scale": hparams.get(
                 "dynamic_timbre_coarse_style_context_scale",
+                None,
+            ),
+            "dynamic_timbre_query_style_condition_scale": hparams.get(
+                "dynamic_timbre_query_style_condition_scale",
+                None,
+            ),
+            "runtime_dynamic_timbre_style_budget_enabled": hparams.get(
+                "runtime_dynamic_timbre_style_budget_enabled",
+                None,
+            ),
+            "runtime_dynamic_timbre_style_budget_ratio": hparams.get(
+                "runtime_dynamic_timbre_style_budget_ratio",
+                None,
+            ),
+            "runtime_dynamic_timbre_style_budget_margin": hparams.get(
+                "runtime_dynamic_timbre_style_budget_margin",
                 None,
             ),
             "allow_explicit_dynamic_timbre_strength": hparams.get(
@@ -183,8 +201,8 @@ def run_prep(args):
     _check_close(
         checks,
         "runtime_dynamic_timbre_style_budget_ratio",
-        hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.50),
-        0.50,
+        hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.40),
+        0.40,
     )
     _check_equal(
         checks,
@@ -198,12 +216,48 @@ def run_prep(args):
         hparams.get("runtime_dynamic_timbre_style_budget_margin", 0.0),
         0.0,
     )
-    _check_close(checks, "dynamic_timbre_budget_ratio", hparams.get("dynamic_timbre_budget_ratio", 0.50), 0.50)
+    _check_close(checks, "dynamic_timbre_budget_ratio", hparams.get("dynamic_timbre_budget_ratio", 0.40), 0.40)
     _check_close(
         checks,
         "decoder_late_timbre_owner_ratio",
-        hparams.get("decoder_late_timbre_owner_ratio", 0.55),
-        0.55,
+        hparams.get("decoder_late_timbre_owner_ratio", 0.50),
+        0.50,
+    )
+    _check_close(
+        checks,
+        "decoder_dynamic_timbre_late_no_style_scale",
+        hparams.get("decoder_dynamic_timbre_late_no_style_scale", 0.0),
+        0.0,
+    )
+    _check_close(
+        checks,
+        "dynamic_timbre_style_condition_scale",
+        hparams.get("dynamic_timbre_style_condition_scale", 0.35),
+        0.35,
+    )
+    _check_close(
+        checks,
+        "dynamic_timbre_query_style_condition_scale",
+        hparams.get("dynamic_timbre_query_style_condition_scale", 0.0),
+        0.0,
+    )
+    _check_close(
+        checks,
+        "tv_timbre_gate_bias_init",
+        hparams.get("tv_timbre_gate_bias_init", -1.0),
+        -1.0,
+    )
+    _check_equal(
+        checks,
+        "use_external_speaker_verifier",
+        bool(hparams.get("use_external_speaker_verifier", False)),
+        False,
+    )
+    _check_equal(
+        checks,
+        "speaker_verifier_detach_input",
+        bool(hparams.get("speaker_verifier_detach_input", False)),
+        False,
     )
     active_mainline_control_keys = tuple(
         key for key in MAINLINE_MINIMAL_CONTROL_LAMBDAS if float(hparams.get(key, 0.0)) > 0.0

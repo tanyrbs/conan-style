@@ -117,6 +117,11 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 nn.Linear(gate_hidden, 1),
                 nn.Sigmoid(),
             )
+            nn.init.zeros_(self.timbre_gate[2].weight)
+            nn.init.constant_(
+                self.timbre_gate[2].bias,
+                float(hparams.get("tv_timbre_gate_bias_init", -1.0)),
+            )
             self.style_query_proj = nn.Sequential(
                 nn.Linear(self.hidden_size, self.hidden_size),
                 nn.Tanh(),
@@ -234,7 +239,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
                 dynamic_timbre_scale_late=hparams.get("decoder_dynamic_timbre_scale_late", None),
                 dynamic_timbre_late_no_style_scale=hparams.get(
                     "decoder_dynamic_timbre_late_no_style_scale",
-                    0.25,
+                    0.0,
                 ),
                 skip_global_style_when_local_style_present=hparams.get(
                     "decoder_skip_global_style_when_local_style_present",
@@ -508,15 +513,20 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ret["dynamic_timbre_style_context_bridge"] = (
             "layernorm_stopgrad" if dynamic_timbre_style_context_stopgrad else "layernorm"
         )
-        timbre_query_style_scale = dynamic_timbre_coarse_style_context_scale
-        timbre_query_style_scale_source = "coarse_style_context"
-        if timbre_query_style_scale == 0.0:
-            fallback = float(style_mainline.dynamic_timbre_style_condition_scale)
-            if fallback != 0.0:
-                timbre_query_style_scale = fallback
-                timbre_query_style_scale_source = "style_condition_fallback"
-            else:
-                timbre_query_style_scale_source = "disabled"
+        query_style_scale_override = kwargs.get(
+            "dynamic_timbre_query_style_condition_scale",
+            self.hparams.get("dynamic_timbre_query_style_condition_scale", None),
+        )
+        if query_style_scale_override is None:
+            timbre_query_style_scale = float(dynamic_timbre_coarse_style_context_scale)
+            timbre_query_style_scale_source = (
+                "coarse_style_context" if timbre_query_style_scale != 0.0 else "disabled"
+            )
+        else:
+            timbre_query_style_scale = float(query_style_scale_override)
+            timbre_query_style_scale_source = (
+                "query_style_condition" if timbre_query_style_scale != 0.0 else "disabled"
+            )
         ret["timbre_query_style_scale"] = timbre_query_style_scale
         ret["timbre_query_style_scale_source"] = timbre_query_style_scale_source
         timbre_query_base = base_condition_inp

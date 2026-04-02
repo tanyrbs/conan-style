@@ -152,6 +152,7 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         mel_chunks = []
         last_output = None
         chunk_count = 0
+        emitted_chunk_mel_lengths = []
         prefix_rewrite_l1_values = []
         prefix_rewrite_l2_values = []
         prefix_tail_rewrite_l1_values = []
@@ -190,6 +191,7 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                 mel_new = mel_out[:, prev_mel_len:, :]
                 if mel_new.size(1) > 0:
                     mel_chunks.append(mel_new)
+                    emitted_chunk_mel_lengths.append(int(mel_new.size(1)))
                 prev_full_mel = mel_out
                 prev_mel_len = int(mel_out.size(1))
         if last_output is None:
@@ -202,6 +204,7 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         last_output["streaming_stateful_vocoder"] = False
         last_output["streaming_chunk_tokens"] = int(step)
         last_output["streaming_total_chunks"] = int(chunk_count)
+        last_output["streaming_emitted_chunk_mel_lengths"] = emitted_chunk_mel_lengths
         last_output["streaming_prefix_overlap_frames"] = int(prefix_overlap_frames)
         if prefix_rewrite_l1_values:
             prefix_rewrite_l1 = torch.stack(prefix_rewrite_l1_values)
@@ -245,17 +248,10 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         return 1.0 - F.cosine_similarity(lhs, rhs, dim=-1, eps=1e-6).mean()
 
     def _speaker_summary_from_mel(self, mel):
-        if (
-            not isinstance(mel, torch.Tensor)
-            or mel.dim() != 3
-            or getattr(self, "model", None) is None
-            or not hasattr(self.model, "encode_spk_embed")
-        ):
+        if not isinstance(mel, torch.Tensor) or mel.dim() != 3:
             return None
         with torch.no_grad():
-            embed = self.model.encode_spk_embed(mel.transpose(1, 2))
-        if isinstance(embed, torch.Tensor) and embed.dim() == 3:
-            embed = embed.transpose(1, 2)
+            embed = self._encode_identity_embedding(mel, detach_input=True)
         return self._masked_sequence_summary(embed)
 
     @staticmethod
@@ -294,6 +290,28 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                 streaming_aligned[:, -tail_frames:, :],
                 offline_aligned[:, -tail_frames:, :],
             )
+        chunk_mel_lengths = streaming_output.get("streaming_emitted_chunk_mel_lengths")
+        if isinstance(chunk_mel_lengths, (list, tuple)):
+            boundary_window = max(1, int(hparams.get("streaming_parity_boundary_window", 8)))
+            boundary_errors = []
+            boundary_cursor = 0
+            for chunk_len in chunk_mel_lengths[:-1]:
+                boundary_cursor += int(chunk_len)
+                if boundary_cursor <= 0 or boundary_cursor >= min_len:
+                    continue
+                left = max(0, boundary_cursor - boundary_window)
+                right = min(min_len, boundary_cursor + boundary_window)
+                if right > left:
+                    boundary_errors.append(
+                        F.l1_loss(
+                            streaming_aligned[:, left:right, :],
+                            offline_aligned[:, left:right, :],
+                        )
+                    )
+            if boundary_errors:
+                boundary_errors = torch.stack(boundary_errors)
+                metrics["streaming_boundary_mel_l1"] = boundary_errors.mean()
+                metrics["streaming_boundary_mel_l1_max"] = boundary_errors.max()
         for key in (
             "streaming_prefix_rewrite_l1_mean",
             "streaming_prefix_rewrite_l1_max",

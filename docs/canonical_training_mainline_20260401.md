@@ -71,6 +71,12 @@ It also enforces that canonical `mainline_minimal` training keeps exactly this
 This 4-loss pack only refers to **control regularization**. Total training loss
 still includes backbone terms such as mel / pitch / VQ losses.
 
+Current canonical prep also assumes:
+
+- dynamic timbre query-style coupling stays off by default
+- late-stage timbre backfill stays off
+- streaming parity includes explicit chunk-boundary mel checks
+
 ## 5. Canonical CPU local dry run
 
 Before launching a real run, do one minimal CPU dry run:
@@ -135,10 +141,11 @@ At this stage, “training ready” means:
 - single-reference contract is enforced on the product path
 - style/timbre query hierarchy is owner-aware
 - canonical mainline control regularization is constrained to the 4-loss pack
+- minimal mainline excludes extra energy regularization, so the control pack stays at 4
 - generator loss assembly sums only trainable loss terms; diagnostics stay logging-only
 - training-prep check passes
 - CPU dry run passes
-- prefix-online parity smoke passes, including mel + prefix rewrite + identity/style/material proxies
+- prefix-online parity smoke passes, including mel + prefix rewrite + chunk-boundary mel + identity/style/material proxies
 
 It does **not** yet mean:
 

@@ -738,10 +738,12 @@ class ConanStyleConditioningMixin:
         else:
             style_context = None
             encoder_gate_input = encoder_out
-        gate = self.timbre_gate(torch.cat([encoder_gate_input, aligned, global_timbre_anchor], dim=-1))
-        ret["dynamic_timbre_gate_raw"] = gate.squeeze(-1)
-        gate = gate * float(gate_scale) + float(gate_bias)
-        gate = gate.clamp(0.0, 1.0)
+        gate_prob = self.timbre_gate(torch.cat([encoder_gate_input, aligned, global_timbre_anchor], dim=-1))
+        ret["dynamic_timbre_gate_raw"] = gate_prob.squeeze(-1)
+        gate_logit = torch.logit(gate_prob.clamp(1.0e-5, 1.0 - 1.0e-5))
+        ret["dynamic_timbre_gate_logit_raw"] = gate_logit.squeeze(-1)
+        ret["dynamic_timbre_gate_calibration"] = "logit_affine"
+        gate = torch.sigmoid(gate_logit * float(gate_scale) + float(gate_bias))
         boundary_mask = build_dynamic_timbre_boundary_mask(
             ret.get("content"),
             padding_mask=src_key_padding_mask,

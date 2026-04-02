@@ -139,18 +139,22 @@ python tasks/Conan/decoder_style_adapter_contract_smoke.py
   `global_timbre_anchor / M_style / M_timbre` 为准
 - style / timbre query 已拆分：不再共享 `content + condition + anchor`
 - `M_style -> M_timbre` 已改成 owner-aware conditioning：`LayerNorm + stopgrad`
+- `M_timbre` 默认只保留 gate-style conditioning；query-style coupling 需要显式 opt-in，避免双重 style 注入
 - decoder adapter 对 zero tensor / 无效分支已做 hard no-op，避免“禁用分支仍偷偷注入”
 - decoder style bundle 会先按 `effective_signal_epsilon` 过滤近零分支，再进入 adapter owner 判定
 - late-stage 默认会在 local style owner 已存在时跳过 `global_style_summary` 重复注入
+- late-stage 不再在“没有 local style owner”时放大 `M_timbre` 去补位；fallback 只留给 `global_style_summary`
 - dynamic timbre 已增加 runtime hard budget，确保 `M_timbre` 受 `M_style` 预算约束
+- dynamic timbre gate 已改成 logit-affine calibration，和 decoder-side gate 诊断口径更一致
 - canonical `mainline_minimal` 已收缩成 4-loss control pack：
   - identity cosine
   - dynamic timbre budget
   - dynamic timbre boundary
   - decoder late-owner
+- `mainline_minimal` 口径下不再额外启用 energy regularization，避免打破 4-loss control pack
 - generator `total_loss` 现在只汇总真正参与反传的训练项；control diagnostics 保持 logging-only，不再和 adversarial 启停口径混在一起
-- 输出端已补 mel-side identity proxy loss：`mel_out -> global_timbre_anchor`
-- validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel、prefix rewrite、identity/style/material/f0 parity
+- 输出端已补 mel-side identity proxy loss：`mel_out -> global_timbre_anchor`，并预留 frozen external speaker verifier hook
+- validation / test 已直接覆盖 prefix-online path，并回传 offline/online mel、prefix rewrite、chunk-boundary mel、identity/style/material/f0 parity
 - mainline style profile 若收到 research 风格 override，默认会告警并收回 canonical mainline；研究态请显式使用 `research_*` 或 opt-in
 
 ## 当前阶段重点

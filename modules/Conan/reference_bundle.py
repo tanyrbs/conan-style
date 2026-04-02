@@ -24,6 +24,7 @@ STYLE_RUNTIME_KEYS = (
     "dynamic_timbre_strength",
     "dynamic_timbre_memory_mode",
     "dynamic_timbre_style_condition_scale",
+    "dynamic_timbre_query_style_condition_scale",
     "dynamic_timbre_temperature",
     "dynamic_timbre_gate_scale",
     "dynamic_timbre_gate_bias",
@@ -32,6 +33,7 @@ STYLE_RUNTIME_KEYS = (
     "dynamic_timbre_anchor_preserve_strength",
     "style_query_global_summary_scale",
     "dynamic_timbre_coarse_style_context_scale",
+    "dynamic_timbre_query_style_condition_scale",
     "dynamic_timbre_style_context_stopgrad",
     "runtime_dynamic_timbre_style_budget_enabled",
     "runtime_dynamic_timbre_style_budget_ratio",
@@ -369,6 +371,10 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
             source,
             "dynamic_timbre_style_condition_scale",
         ),
+        "dynamic_timbre_query_style_condition_scale": first_present(
+            source,
+            "dynamic_timbre_query_style_condition_scale",
+        ),
         "dynamic_timbre_temperature": first_present(source, "dynamic_timbre_temperature"),
         "dynamic_timbre_gate_scale": first_present(source, "dynamic_timbre_gate_scale"),
         "dynamic_timbre_gate_bias": first_present(source, "dynamic_timbre_gate_bias"),
@@ -391,6 +397,10 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
         "dynamic_timbre_coarse_style_context_scale": first_present(
             source,
             "dynamic_timbre_coarse_style_context_scale",
+        ),
+        "dynamic_timbre_query_style_condition_scale": first_present(
+            source,
+            "dynamic_timbre_query_style_condition_scale",
         ),
         "dynamic_timbre_style_context_stopgrad": first_present(
             source,

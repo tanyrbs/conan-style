@@ -167,7 +167,7 @@ decoder_style_condition_mode: mainline_full
 style_trace_mode: slow
 style_reference_memory_mode: slow
 fast_style_strength_scale: 1.00
-slow_style_strength_scale: 1.35
+slow_style_strength_scale: 1.45
 global_style_trace_blend: 0.0
 style_query_global_summary_scale: 0.0
 global_timbre_to_pitch: false
@@ -176,15 +176,15 @@ global_style_anchor_strength: 1.0
 use_decoder_style_adapter: true
 decoder_style_adapter_gate_hidden: 256
 decoder_global_timbre_scale: 0.18
-decoder_global_timbre_scale_mid: 0.10
-decoder_global_timbre_scale_late: 0.05
+decoder_global_timbre_scale_mid: 0.08
+decoder_global_timbre_scale_late: 0.03
 decoder_style_global_scale: 0.2
-decoder_slow_style_trace_scale: 0.70
-decoder_style_trace_scale: 1.00
-decoder_dynamic_timbre_scale: 0.20
-decoder_dynamic_timbre_scale_mid: 0.20
-decoder_dynamic_timbre_scale_late: 0.12
-decoder_dynamic_timbre_late_no_style_scale: 0.25
+decoder_slow_style_trace_scale: 0.80
+decoder_style_trace_scale: 1.10
+decoder_dynamic_timbre_scale: 0.16
+decoder_dynamic_timbre_scale_mid: 0.14
+decoder_dynamic_timbre_scale_late: 0.08
+decoder_dynamic_timbre_late_no_style_scale: 0.0
 decoder_skip_global_style_when_local_style_present: true  # late stage prefers local style owner over repeated global summary injection
 decoder_style_adapter_effective_signal_epsilon: 1.0e-8
 decoder_style_adapter_gate_bias: -1.0
@@ -210,17 +210,23 @@ dynamic_timbre_strength_base: 0.55
 dynamic_timbre_strength_slope: 0.45
 dynamic_timbre_strength_min: 0.50
 dynamic_timbre_strength_max: 1.05
-dynamic_timbre_style_condition_scale: 0.50
+dynamic_timbre_style_condition_scale: 0.35
+dynamic_timbre_query_style_condition_scale: 0.0
 dynamic_timbre_coarse_style_context_scale: 0.0
 dynamic_timbre_style_context_stopgrad: true
 dynamic_timbre_boundary_suppress_strength: 0.50
 dynamic_timbre_boundary_radius: 2
 dynamic_timbre_anchor_preserve_strength: 0.20
+tv_timbre_gate_bias_init: -1.0
 runtime_dynamic_timbre_style_budget_enabled: true
-runtime_dynamic_timbre_style_budget_ratio: 0.50
+runtime_dynamic_timbre_style_budget_ratio: 0.40
 runtime_dynamic_timbre_style_budget_margin: 0.0
 runtime_dynamic_timbre_style_budget_slow_style_weight: 1.0
 runtime_dynamic_timbre_style_budget_epsilon: 1.0e-6
+use_external_speaker_verifier: false
+speaker_verifier_backend: ecapa
+speaker_verifier_ckpt: null
+speaker_verifier_detach_input: false
 # (single-reference) style/dynamic_timbre ref sampling disabled
 use_fixed_timbre_reference: true
 # (single-reference) style/dynamic_timbre ref sampling params removed
@@ -239,19 +245,19 @@ lambda_slow_style_summary_align: 0.0
 lambda_tv_timbre_smooth: 0.0
 lambda_tv_timbre_anchor: 0.0
 lambda_timbre_anchor_cosine: 0.0
-lambda_output_identity_cosine: 0.02
+lambda_output_identity_cosine: 0.03
 lambda_style_dynamic_timbre_disentangle: 0.0
 lambda_dynamic_timbre_gate: 0.0
-lambda_dynamic_timbre_budget: 0.02
-lambda_dynamic_timbre_boundary: 0.005
+lambda_dynamic_timbre_budget: 0.03
+lambda_dynamic_timbre_boundary: 0.0075
 lambda_dynamic_timbre_anchor: 0.0
 lambda_gate_rank: 0.0
-lambda_decoder_late_owner: 0.01
+lambda_decoder_late_owner: 0.015
 lambda_decoder_late_anchor_budget: 0.0
 dynamic_timbre_gate_target: 0.35
-dynamic_timbre_budget_ratio: 0.50
+dynamic_timbre_budget_ratio: 0.40
 dynamic_timbre_budget_margin: 0.0
-decoder_late_timbre_owner_ratio: 0.55
+decoder_late_timbre_owner_ratio: 0.50
 decoder_late_anchor_budget_ratio: 0.35
 decoder_late_anchor_budget_floor: 0.0
 timbre_reg_start_steps: 15000
@@ -260,15 +266,16 @@ timbre_reg_init_scale: 0.0
 timbre_reg_final_scale: 1.0
 control_regularization_schedule:
   type: linear
-  lambda_output_identity_cosine: {start: 2000, warmup: 6000, initial: 0.0, target: 0.02}
-  lambda_dynamic_timbre_budget: {start: 0, warmup: 4000, initial: 0.0, target: 0.02}
-  lambda_dynamic_timbre_boundary: {start: 4000, warmup: 6000, initial: 0.0, target: 0.005}
-  lambda_decoder_late_owner: {start: 2000, warmup: 6000, initial: 0.0, target: 0.01}
+  lambda_output_identity_cosine: {start: 2000, warmup: 8000, initial: 0.0, target: 0.03}
+  lambda_dynamic_timbre_budget: {start: 0, warmup: 6000, initial: 0.0, target: 0.03}
+  lambda_dynamic_timbre_boundary: {start: 4000, warmup: 8000, initial: 0.0, target: 0.0075}
+  lambda_decoder_late_owner: {start: 2000, warmup: 8000, initial: 0.0, target: 0.015}
 log_control_diagnostics: true
 control_diagnostics_track_lambdas: true
 valid_use_streaming_prefix_path: true
 streaming_eval_tokens_per_chunk: 4
 streaming_parity_tail_frames: 32
+streaming_parity_boundary_window: 8
 
 # Emformer-related parameters
 emformer_ckpt: checkpoints/Emformer

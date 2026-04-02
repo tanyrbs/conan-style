@@ -87,10 +87,12 @@ Updated: 2026-04-01
 - `set_hparams()` 已允许 config 中的 `work_dir` 在无 `exp_name` 时保留，不再被清空
 - style / timbre query 已拆开，不再共同吃 `content + condition + anchor`
 - dynamic timbre 的 style conditioning 已改成 owner-aware：`LayerNorm + stopgrad`
+- dynamic timbre 默认只保留 gate-path style coupling；query-path style coupling 需显式打开
 - decoder adapter 已加 hard no-op 语义：
   - zero / effectively-zero branch 不再继续 projector → gate → residual
 - decoder late stage 已收口：
   - 有本地 style owner 时，`global_style_summary` 只保留 coarse prior，不再重复 late 注入
+  - late 没有本地 owner 时，也不再放大 `M_timbre` 去补位
 - `M_timbre` 已补 runtime hard budget：
   - 相对 `M_style` 的局部上限在运行时也会生效，而不只依赖训练正则
 - control loss 已补成更接近 owner/stage 的版本：
@@ -102,9 +104,11 @@ Updated: 2026-04-01
   - `lambda_dynamic_timbre_budget`
   - `lambda_dynamic_timbre_boundary`
   - `lambda_decoder_late_owner`
+- `mainline_minimal` 不再额外启用 energy regularization，以保持 4-loss 口径
 - 其余 control loss 仍保留给 research / ablation，但不再属于 canonical mainline 开训包
 - 输出端已补一层 mel-side identity proxy：
   - `mel_out -> encode_spk_embed -> global_timbre_anchor.detach()`
+- identity 路径已预留 frozen external speaker verifier hook，后续可无缝升级
 - test / smoke 已开始直接覆盖 prefix-online 路径：
   - `tasks/Conan/streaming_prefix_online_smoke.py`
   - `tasks/Conan/style_mainline_smoke.py`
@@ -182,6 +186,7 @@ Updated: 2026-04-01
 当前 parity 指标已不再只看 mel：
 
 - offline/online mel L1 / L2 / tail L1
+- chunk-boundary mel L1 / max-L1
 - prefix rewrite L1 / L2 / tail L1
 - offline/online identity cosine distance
 - style owner / dynamic timbre cosine distance

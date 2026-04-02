@@ -28,6 +28,7 @@ STYLE_PROFILE_KEYS = (
     "dynamic_timbre_anchor_preserve_strength",
     "style_query_global_summary_scale",
     "dynamic_timbre_coarse_style_context_scale",
+    "dynamic_timbre_query_style_condition_scale",
     "dynamic_timbre_style_context_stopgrad",
     "runtime_dynamic_timbre_style_budget_enabled",
     "runtime_dynamic_timbre_style_budget_ratio",
@@ -45,11 +46,11 @@ STYLE_PROFILES = {
         "style_memory_mode": "slow",
         "style_strength": 1.35,
         "fast_style_strength_scale": 1.0,
-        "slow_style_strength_scale": 1.35,
+        "slow_style_strength_scale": 1.45,
         "style_temperature": 1.2,
         "global_style_trace_blend": 0.0,
         "dynamic_timbre_memory_mode": "slow",
-        "dynamic_timbre_style_condition_scale": 0.5,
+        "dynamic_timbre_style_condition_scale": 0.35,
         "dynamic_timbre_temperature": 1.0,
         "dynamic_timbre_gate_scale": 1.0,
         "dynamic_timbre_gate_bias": 0.0,
@@ -58,9 +59,10 @@ STYLE_PROFILES = {
         "dynamic_timbre_anchor_preserve_strength": 0.2,
         "style_query_global_summary_scale": 0.0,
         "dynamic_timbre_coarse_style_context_scale": 0.0,
+        "dynamic_timbre_query_style_condition_scale": 0.0,
         "dynamic_timbre_style_context_stopgrad": True,
         "runtime_dynamic_timbre_style_budget_enabled": True,
-        "runtime_dynamic_timbre_style_budget_ratio": 0.50,
+        "runtime_dynamic_timbre_style_budget_ratio": 0.40,
         "runtime_dynamic_timbre_style_budget_margin": 0.0,
     },
     "research_dual": {
@@ -85,6 +87,7 @@ STYLE_PROFILES = {
         "dynamic_timbre_anchor_preserve_strength": 0.2,
         "style_query_global_summary_scale": 0.0,
         "dynamic_timbre_coarse_style_context_scale": 0.0,
+        "dynamic_timbre_query_style_condition_scale": 0.0,
         "dynamic_timbre_style_context_stopgrad": True,
         "runtime_dynamic_timbre_style_budget_enabled": True,
         "runtime_dynamic_timbre_style_budget_ratio": 0.55,
@@ -112,6 +115,7 @@ STYLE_PROFILES = {
         "dynamic_timbre_anchor_preserve_strength": 0.18,
         "style_query_global_summary_scale": 0.0,
         "dynamic_timbre_coarse_style_context_scale": 0.0,
+        "dynamic_timbre_query_style_condition_scale": 0.0,
         "dynamic_timbre_style_context_stopgrad": True,
         "runtime_dynamic_timbre_style_budget_enabled": True,
         "runtime_dynamic_timbre_style_budget_ratio": 0.50,
@@ -182,8 +186,9 @@ def resolve_style_profile(
             or str(resolved.get("style_memory_mode", "slow")).strip().lower() != "slow"
             or str(resolved.get("dynamic_timbre_memory_mode", "slow")).strip().lower() != "slow"
             or float(resolved.get("dynamic_timbre_coarse_style_context_scale", 0.0)) != 0.0
+            or float(resolved.get("dynamic_timbre_query_style_condition_scale", 0.0)) != 0.0
             or not bool(resolved.get("dynamic_timbre_style_context_stopgrad", True))
-            or float(resolved.get("runtime_dynamic_timbre_style_budget_ratio", 0.50)) != 0.50
+            or float(resolved.get("runtime_dynamic_timbre_style_budget_ratio", 0.40)) != 0.40
             or float(resolved.get("runtime_dynamic_timbre_style_budget_margin", 0.0)) != 0.0
             or not bool(resolved.get("runtime_dynamic_timbre_style_budget_enabled", True))
         )
@@ -200,9 +205,10 @@ def resolve_style_profile(
             resolved["style_memory_mode"] = "slow"
             resolved["dynamic_timbre_memory_mode"] = "slow"
             resolved["dynamic_timbre_coarse_style_context_scale"] = 0.0
+            resolved["dynamic_timbre_query_style_condition_scale"] = 0.0
             resolved["dynamic_timbre_style_context_stopgrad"] = True
             resolved["runtime_dynamic_timbre_style_budget_enabled"] = True
-            resolved["runtime_dynamic_timbre_style_budget_ratio"] = 0.50
+            resolved["runtime_dynamic_timbre_style_budget_ratio"] = 0.40
             resolved["runtime_dynamic_timbre_style_budget_margin"] = 0.0
             normalized_mode = "mainline_full"
             normalized_trace_mode = "slow"

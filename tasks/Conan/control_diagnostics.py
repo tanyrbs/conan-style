@@ -205,6 +205,8 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     slow_style_residual_values = []
     global_style_skip_flags = []
     global_style_fallback_skip_flags = []
+    global_style_applied_as_fallback_flags = []
+    late_style_owner_present_flags = []
     late_style_delta = None
     late_timbre_delta = None
     late_anchor_delta = None
@@ -219,6 +221,14 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
         if "global_style_skipped_due_to_fallback" in stage_meta:
             global_style_fallback_skip_flags.append(
                 1.0 if bool(stage_meta.get("global_style_skipped_due_to_fallback", False)) else 0.0
+            )
+        if "global_style_applied_as_fallback" in stage_meta:
+            global_style_applied_as_fallback_flags.append(
+                1.0 if bool(stage_meta.get("global_style_applied_as_fallback", False)) else 0.0
+            )
+        if stage_name == "late" and "late_style_owner_present" in stage_meta:
+            late_style_owner_present_flags.append(
+                1.0 if bool(stage_meta.get("late_style_owner_present", False)) else 0.0
             )
         branch_stats = _branch_statistics(
             stage_meta.get("global_timbre_ctx"),
@@ -247,10 +257,10 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
             global_residual_values.append(branch_stats["diag_decoder_global_style_residual_norm"])
 
         branch_stats = _branch_statistics(
-            stage_meta.get("slow_style_ctx", stage_meta.get("style_trace_ctx")),
-            stage_meta.get("slow_style_gate", stage_meta.get("style_trace_gate")),
+            stage_meta.get("slow_style_ctx"),
+            stage_meta.get("slow_style_gate"),
             "diag_decoder_slow_style",
-            branch_delta=stage_meta.get("slow_style_delta", stage_meta.get("style_trace_delta")),
+            branch_delta=stage_meta.get("slow_style_delta"),
         )
         if "diag_decoder_slow_style_gate_mean" in branch_stats:
             slow_style_gate_values.append(branch_stats["diag_decoder_slow_style_gate_mean"])
@@ -288,7 +298,6 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
             late_style_delta = _sum_optional_delta(
                 late_style_delta,
                 stage_meta.get("global_style_delta"),
-                stage_meta.get("slow_style_delta"),
                 stage_meta.get("style_trace_delta"),
             )
             late_timbre_delta = stage_meta.get("dynamic_timbre_delta")
@@ -332,6 +341,16 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     if global_style_fallback_skip_flags:
         stats["diag_decoder_global_style_skipped_due_to_fallback"] = torch.tensor(
             global_style_fallback_skip_flags,
+            dtype=torch.float32,
+        ).mean()
+    if global_style_applied_as_fallback_flags:
+        stats["diag_decoder_global_style_applied_as_fallback"] = torch.tensor(
+            global_style_applied_as_fallback_flags,
+            dtype=torch.float32,
+        ).mean()
+    if late_style_owner_present_flags:
+        stats["diag_decoder_late_style_owner_present"] = torch.tensor(
+            late_style_owner_present_flags,
             dtype=torch.float32,
         ).mean()
     style_total_residual = None
@@ -562,6 +581,13 @@ def collect_control_diagnostics(output, sample, config):
                 output.get("dynamic_timbre_gate_raw"),
                 output.get("dynamic_timbre_mask"),
                 prefix="diag_dynamic_timbre_gate_raw",
+            )
+        )
+        diagnostics.update(
+            _simple_sequence_statistics(
+                output.get("dynamic_timbre_gate_logit_raw"),
+                output.get("dynamic_timbre_mask"),
+                prefix="diag_dynamic_timbre_gate_logit_raw",
             )
         )
         diagnostics.update(

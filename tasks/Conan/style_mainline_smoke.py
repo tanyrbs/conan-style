@@ -140,10 +140,24 @@ def _validate_mode_output(mode, output):
                     f"{mode}: dynamic_timbre_style_context_raw must match style_decoder_residual for owner-aware conditioning."
                 )
     coarse_style_scale = float(output.get("dynamic_timbre_coarse_style_context_scale", 0.0))
+    query_style_scale_config = output.get("dynamic_timbre_query_style_condition_scale", None)
+    if query_style_scale_config is None:
+        query_style_scale_config = output.get("dynamic_timbre_query_style_condition_scale_runtime", None)
     style_condition_scale = float(output.get("dynamic_timbre_style_condition_scale_runtime", 0.0))
     actual_query_style_scale = float(output.get("timbre_query_style_scale", 0.0))
     actual_query_style_scale_source = str(output.get("timbre_query_style_scale_source", ""))
-    if coarse_style_scale != 0.0:
+    if query_style_scale_config is not None:
+        expected_query_scale = float(query_style_scale_config)
+        expected_source = "query_style_condition" if expected_query_scale != 0.0 else "disabled"
+        if abs(actual_query_style_scale - expected_query_scale) > 1e-12:
+            raise AssertionError(
+                f"{mode}: timbre_query_style_scale must match explicit query_style_condition scale."
+            )
+        if actual_query_style_scale_source != expected_source:
+            raise AssertionError(
+                f"{mode}: expected timbre_query_style_scale_source={expected_source}, got {actual_query_style_scale_source}"
+            )
+    elif coarse_style_scale != 0.0:
         if abs(actual_query_style_scale - coarse_style_scale) > 1e-12:
             raise AssertionError(
                 f"{mode}: timbre_query_style_scale must match explicit coarse style scale."
@@ -152,19 +166,10 @@ def _validate_mode_output(mode, output):
             raise AssertionError(
                 f"{mode}: expected timbre_query_style_scale_source=coarse_style_context, got {actual_query_style_scale_source}"
             )
-    elif style_condition_scale != 0.0:
-        if abs(actual_query_style_scale - style_condition_scale) > 1e-12:
-            raise AssertionError(
-                f"{mode}: timbre_query_style_scale should fall back to dynamic_timbre_style_condition_scale."
-            )
-        if actual_query_style_scale_source != "style_condition_fallback":
-            raise AssertionError(
-                f"{mode}: expected timbre_query_style_scale_source=style_condition_fallback, got {actual_query_style_scale_source}"
-            )
     else:
         if abs(actual_query_style_scale) > 1e-12 or actual_query_style_scale_source != "disabled":
             raise AssertionError(
-                f"{mode}: timbre_query_style_scale should be disabled when both coarse and fallback scales are zero."
+                f"{mode}: timbre_query_style_scale should be disabled when explicit query conditioning is off."
             )
     expected_coarse_applied = bool(expected_owner_safe and coarse_style_scale != 0.0)
     if bool(output.get("dynamic_timbre_coarse_style_context_applied", False)) != expected_coarse_applied:
@@ -178,6 +183,18 @@ def _validate_mode_output(mode, output):
             f"{mode}: timbre_query_style_context_applied mismatch, "
             f"expected {expected_query_style_applied}, got {output.get('timbre_query_style_context_applied')}"
         )
+    expected_gate_style_conditioned = bool(expected_owner_safe and style_condition_scale != 0.0)
+    if bool(output.get("dynamic_timbre_style_conditioned", False)) != expected_gate_style_conditioned:
+        raise AssertionError(
+            f"{mode}: dynamic_timbre_style_conditioned mismatch, "
+            f"expected {expected_gate_style_conditioned}, got {output.get('dynamic_timbre_style_conditioned')}"
+        )
+    if expected["dynamic_timbre"]:
+        gate_calibration = str(output.get("dynamic_timbre_gate_calibration", ""))
+        if gate_calibration != "logit_affine":
+            raise AssertionError(
+                f"{mode}: dynamic_timbre_gate_calibration expected logit_affine, got {gate_calibration}"
+            )
     if not bool(output.get("decoder_style_adapter_enabled", False)):
         raise AssertionError(f"{mode}: decoder_style_adapter_enabled is false.")
     if not isinstance(output.get("output_identity_embed"), torch.Tensor):

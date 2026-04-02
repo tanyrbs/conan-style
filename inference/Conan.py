@@ -379,7 +379,7 @@ class StreamingVoiceConversion:
             "runtime_dynamic_timbre_style_budget_ratio": float(
                 style_profile.get(
                     "runtime_dynamic_timbre_style_budget_ratio",
-                    self.hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.50),
+                    self.hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.40),
                 )
             ),
             "runtime_dynamic_timbre_style_budget_margin": float(

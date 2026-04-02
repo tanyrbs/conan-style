@@ -515,18 +515,14 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         )
         query_style_scale_override = kwargs.get(
             "dynamic_timbre_query_style_condition_scale",
-            self.hparams.get("dynamic_timbre_query_style_condition_scale", None),
+            self.hparams.get("dynamic_timbre_query_style_condition_scale", 0.0),
         )
         if query_style_scale_override is None:
-            timbre_query_style_scale = float(dynamic_timbre_coarse_style_context_scale)
-            timbre_query_style_scale_source = (
-                "coarse_style_context" if timbre_query_style_scale != 0.0 else "disabled"
-            )
-        else:
-            timbre_query_style_scale = float(query_style_scale_override)
-            timbre_query_style_scale_source = (
-                "query_style_condition" if timbre_query_style_scale != 0.0 else "disabled"
-            )
+            query_style_scale_override = 0.0
+        timbre_query_style_scale = float(query_style_scale_override)
+        timbre_query_style_scale_source = (
+            "query_style_condition" if timbre_query_style_scale != 0.0 else "disabled"
+        )
         ret["timbre_query_style_scale"] = timbre_query_style_scale
         ret["timbre_query_style_scale_source"] = timbre_query_style_scale_source
         timbre_query_base = base_condition_inp
@@ -737,7 +733,7 @@ class Conan(ConanStyleConditioningMixin, FastSpeech):
         ratio = float(
             kwargs.get(
                 "runtime_dynamic_timbre_style_budget_ratio",
-                self.hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.50),
+                self.hparams.get("runtime_dynamic_timbre_style_budget_ratio", 0.40),
             )
         )
         margin = float(

@@ -71,10 +71,10 @@ def normalize_decoder_style_condition_mode(mode, default: str = "mainline_full")
 def derive_dynamic_timbre_strength(
     style_strength,
     *,
-    base: float = 0.6,
-    slope: float = 0.7,
-    min_value: float = 0.6,
-    max_value: float = 1.4,
+    base: float = 0.55,
+    slope: float = 0.45,
+    min_value: float = 0.50,
+    max_value: float = 1.05,
 ):
     base = float(base)
     slope = float(slope)
@@ -148,7 +148,7 @@ class StyleMainlineControls:
     style_temperature: float = 1.0
     global_style_trace_blend: float = 0.0
     dynamic_timbre_temperature: float = 1.0
-    dynamic_timbre_style_condition_scale: float = 0.5
+    dynamic_timbre_style_condition_scale: float = 0.35
     dynamic_timbre_gate_scale: float = 1.0
     dynamic_timbre_gate_bias: float = 0.0
     dynamic_timbre_boundary_suppress_strength: float = 0.0
@@ -242,10 +242,10 @@ def resolve_style_mainline_controls(
     else:
         dynamic_timbre_strength_value = derive_dynamic_timbre_strength(
             style_strength_value,
-            base=float(_value("dynamic_timbre_strength_base", default=0.6)),
-            slope=float(_value("dynamic_timbre_strength_slope", default=0.7)),
-            min_value=float(_value("dynamic_timbre_strength_min", default=0.6)),
-            max_value=float(_value("dynamic_timbre_strength_max", default=1.4)),
+            base=float(_value("dynamic_timbre_strength_base", default=0.55)),
+            slope=float(_value("dynamic_timbre_strength_slope", default=0.45)),
+            min_value=float(_value("dynamic_timbre_strength_min", default=0.50)),
+            max_value=float(_value("dynamic_timbre_strength_max", default=1.05)),
         )
         dynamic_timbre_strength_source = "derived_from_style_strength"
 
@@ -294,7 +294,7 @@ def resolve_style_mainline_controls(
         global_style_trace_blend=float(_value("global_style_trace_blend", default=0.0)),
         dynamic_timbre_temperature=float(_value("dynamic_timbre_temperature", default=1.0)),
         dynamic_timbre_style_condition_scale=float(
-            _value("dynamic_timbre_style_condition_scale", default=0.5)
+            _value("dynamic_timbre_style_condition_scale", default=0.35)
         ),
         dynamic_timbre_gate_scale=float(_value("dynamic_timbre_gate_scale", default=1.0)),
         dynamic_timbre_gate_bias=float(_value("dynamic_timbre_gate_bias", default=0.0)),

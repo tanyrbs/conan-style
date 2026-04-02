@@ -15,6 +15,9 @@ from tasks.Conan.control_diagnostics import collect_control_diagnostics
 from tasks.Conan.control_schedule import resolve_control_regularization_config
 from tasks.Conan.style_control_mixin import ConanStyleControlMixin
 from tasks.Conan.style_batching_mixin import ConanStyleBatchingMixin
+from tasks.Conan.reference_curriculum import sample_training_reference_source
+from tasks.Conan.forcing_schedule import sample_forcing_flag
+from modules.Conan.reference_bundle import build_reference_bundle_from_inputs
 
 
 class ConanEmbTask(AuxDecoderMIDITask):
@@ -64,7 +67,94 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
             random_tech = torch.rand_like(tech, dtype=torch.float32)
             tech[random_tech < drop_p] = 2
         return tech
-            
+
+    @staticmethod
+    def _schedule_end_step(primary_key, fallback_key):
+        return int(hparams.get(primary_key, hparams.get(fallback_key, 0)))
+
+    def _build_runtime_reference_bundle(self, sample, ref):
+        allow_split_reference_inputs = bool(
+            sample.get(
+                "allow_split_reference_inputs",
+                hparams.get("allow_split_reference_inputs", False),
+            )
+        )
+        bundle_kwargs = {
+            "ref": ref,
+            "ref_emotion": sample.get("ref_emotion_mels", sample.get("emotion_ref_mels", None)),
+            "ref_accent": sample.get("ref_accent_mels", sample.get("accent_ref_mels", None)),
+            "prompt_fallback_to_style": bool(
+                sample.get(
+                    "prompt_ref_fallback_to_style",
+                    hparams.get("prompt_ref_fallback_to_style", False),
+                )
+            ),
+            "reference_contract_mode": sample.get(
+                "reference_contract_mode",
+                hparams.get("reference_contract_mode", "collapsed_reference"),
+            ),
+        }
+        if allow_split_reference_inputs:
+            bundle_kwargs.update(
+                {
+                    "ref_timbre": sample.get("ref_timbre_mels", sample.get("timbre_ref_mels", None)),
+                    "ref_style": sample.get("ref_style_mels", None),
+                    "ref_dynamic_timbre": sample.get("ref_dynamic_timbre_mels", None),
+                }
+            )
+        return build_reference_bundle_from_inputs(**bundle_kwargs)
+
+    def _resolve_reference_inputs(self, sample, target, *, global_step=0, infer=False, test=False):
+        external_ref = sample.get("ref_mels", target)
+        curriculum_end = self._schedule_end_step("reference_curriculum_end_steps", "random_speaker_steps")
+        if infer or test:
+            state = {
+                "mode": "inference_external_only",
+                "start_steps": int(
+                    hparams.get(
+                        "reference_curriculum_start_steps",
+                        hparams.get("forcing", 0),
+                    )
+                ),
+                "end_steps": int(curriculum_end),
+                "progress": 1.0,
+                "external_prob": 1.0,
+                "self_prob": 0.0,
+                "self_ref_floor": 0.0,
+                "sample_mode": "inference_fixed",
+                "use_external_ref": True,
+                "use_self_ref": False,
+                "gloss_scale": 0.0,
+                "reference_source": "external_ref",
+            }
+            ref = external_ref
+        else:
+            state = sample_training_reference_source(
+                global_step,
+                config=hparams,
+                device=target.device,
+            )
+            ref = external_ref if state["use_external_ref"] else target
+        reference_bundle = self._build_runtime_reference_bundle(sample, ref)
+        return ref, reference_bundle, state
+
+    def _resolve_forcing_schedule_state(self, *, global_step=0, infer=False, test=False, device=None):
+        if infer or test:
+            return {
+                "mode": "inference_disabled",
+                "progress": 1.0,
+                "forcing_prob": 0.0,
+                "legacy_cut": int(hparams.get("forcing", 0)),
+                "start_steps": int(hparams.get("forcing_decay_start_steps", hparams.get("forcing", 0))),
+                "end_steps": int(hparams.get("forcing_decay_end_steps", hparams.get("forcing", 0))),
+                "forcing_enabled": False,
+            }
+        return sample_forcing_flag(
+            global_step,
+            config=hparams,
+            device=device,
+        )
+
     def run_model(self, sample, infer=False, test=False):
         # txt_tokens = sample["txt_tokens"]
         # mel2ph = sample["mel2ph"]
@@ -82,13 +172,17 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         if test:
             effective_global_step = max(
                 effective_global_step,
-                int(hparams.get("random_speaker_steps", 0)),
+                self._schedule_end_step("reference_curriculum_end_steps", "random_speaker_steps"),
+                self._schedule_end_step("forcing_decay_end_steps", "forcing"),
                 200000,
             )
-        if effective_global_step >= hparams["random_speaker_steps"]:
-            ref = sample.get('ref_mels', target)
-        else:
-            ref = target
+        ref, runtime_reference_bundle, reference_curriculum = self._resolve_reference_inputs(
+            sample,
+            target,
+            global_step=effective_global_step,
+            infer=infer,
+            test=test,
+        )
         # assert False, f'content: {content.shape}, target: {target.shape},spk_embed: {spk_embed.shape}'
         # if not infer:
         #     tech_drop = {
@@ -109,9 +203,35 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         # bubble,strong,weak=sample['bubble'],sample['strong'],sample['weak']
         # pharyngeal, vibrato, glissando = sample['pharyngeal'], sample['vibrato'], sample['glissando']
         model_kwargs = self.build_style_model_kwargs(sample, ref)
+        model_kwargs["reference_bundle"] = runtime_reference_bundle
+        if model_kwargs.get("reference_cache") is not None:
+            model_kwargs["reference_cache"] = None
+        forcing_schedule_state = self._resolve_forcing_schedule_state(
+            global_step=effective_global_step,
+            infer=infer,
+            test=test,
+            device=target.device,
+        )
+        model_kwargs["forcing_schedule_state"] = forcing_schedule_state
         output = self.model(content,spk_embed=spk_embed, target=target,ref=ref,
                             f0=f0, uv=uv,
                             infer=infer, global_steps=effective_global_step, **model_kwargs)
+        output["reference_curriculum"] = dict(reference_curriculum)
+        output["reference_curriculum_mode"] = reference_curriculum["mode"]
+        output["reference_curriculum_progress"] = float(reference_curriculum["progress"])
+        output["reference_curriculum_external_prob"] = float(reference_curriculum["external_prob"])
+        output["reference_curriculum_self_prob"] = float(reference_curriculum["self_prob"])
+        output["reference_curriculum_self_ref_floor"] = float(reference_curriculum.get("self_ref_floor", 0.0))
+        output["reference_curriculum_sample_mode"] = reference_curriculum.get("sample_mode", "batch")
+        output["reference_curriculum_use_external_ref"] = bool(reference_curriculum["use_external_ref"])
+        output["reference_curriculum_use_self_ref"] = bool(reference_curriculum.get("use_self_ref", False))
+        output["reference_curriculum_gloss_scale"] = float(reference_curriculum["gloss_scale"])
+        output["reference_curriculum_source"] = reference_curriculum["reference_source"]
+        output["forcing_schedule"] = dict(forcing_schedule_state)
+        output["forcing_schedule_mode"] = forcing_schedule_state["mode"]
+        output["forcing_schedule_progress"] = float(forcing_schedule_state["progress"])
+        output["forcing_prob"] = float(forcing_schedule_state["forcing_prob"])
+        output["forcing_enabled"] = bool(forcing_schedule_state["forcing_enabled"])
         
         losses = {}
         
@@ -125,17 +245,24 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         return losses, output
 
     def _reference_for_inference(self, sample, *, global_step=None):
-        effective_global_step = int(self.global_step if global_step is None else global_step)
-        if effective_global_step >= hparams["random_speaker_steps"]:
-            return sample.get("ref_mels", sample["mels"])
+        _ = global_step
+        if sample.get("ref_mels", None) is not None:
+            return sample["ref_mels"]
         return sample["mels"]
 
     def _run_prefix_online_inference(self, sample, *, tokens_per_chunk=4):
         content_full = sample["content"]
         spk_embed = sample.get("spk_embed", None)
-        infer_global_steps = max(int(self.global_step), int(hparams.get("random_speaker_steps", 0)), 200000)
+        infer_global_steps = max(
+            int(self.global_step),
+            self._schedule_end_step("reference_curriculum_end_steps", "random_speaker_steps"),
+            self._schedule_end_step("forcing_decay_end_steps", "forcing"),
+            200000,
+        )
         ref = self._reference_for_inference(sample, global_step=infer_global_steps)
         model_kwargs = self.build_style_model_kwargs(sample, ref)
+        model_kwargs["reference_bundle"] = self._build_runtime_reference_bundle(sample, ref)
+        model_kwargs["reference_cache"] = None
         with torch.no_grad():
             reference_cache = self.model.prepare_reference_cache(
                 reference_bundle=model_kwargs["reference_bundle"],
@@ -206,6 +333,15 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         last_output["streaming_total_chunks"] = int(chunk_count)
         last_output["streaming_emitted_chunk_mel_lengths"] = emitted_chunk_mel_lengths
         last_output["streaming_prefix_overlap_frames"] = int(prefix_overlap_frames)
+        last_output["reference_curriculum_mode"] = "inference_external_only"
+        last_output["reference_curriculum_source"] = "external_ref"
+        last_output["reference_curriculum_external_prob"] = 1.0
+        last_output["reference_curriculum_self_prob"] = 0.0
+        last_output["reference_curriculum_use_external_ref"] = True
+        last_output["reference_curriculum_gloss_scale"] = 0.0
+        last_output["forcing_schedule_mode"] = "inference_disabled"
+        last_output["forcing_prob"] = 0.0
+        last_output["forcing_enabled"] = False
         if prefix_rewrite_l1_values:
             prefix_rewrite_l1 = torch.stack(prefix_rewrite_l1_values)
             last_output["streaming_prefix_rewrite_l1_mean"] = prefix_rewrite_l1.mean()

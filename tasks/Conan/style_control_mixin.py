@@ -222,12 +222,21 @@ class ConanStyleControlMixin:
             losses["timbre_vq_loss"] = output["timbre_vq_loss"] * regularization_config.get("lambda_timbre_vq", 1.0)
 
         if hparams.get("style", False):
-            if self.global_step > hparams["forcing"] and self.global_step < hparams["random_speaker_steps"]:
-                add_optional_passthrough_losses(
-                    losses,
-                    output,
-                    specs=(("gloss", "gloss", True),),
-                )
+            gloss_scale = output.get("reference_curriculum_gloss_scale", None)
+            if gloss_scale is None:
+                if self.global_step > hparams["forcing"] and self.global_step < hparams["random_speaker_steps"]:
+                    add_optional_passthrough_losses(
+                        losses,
+                        output,
+                        specs=(("gloss", "gloss", True),),
+                    )
+            else:
+                try:
+                    gloss_scale = float(gloss_scale)
+                except (TypeError, ValueError):
+                    gloss_scale = 0.0
+                if gloss_scale > 0.0 and output.get("gloss") is not None:
+                    losses["gloss"] = output["gloss"] * gloss_scale
             if self.global_step > hparams["vq_start"]:
                 add_optional_passthrough_losses(
                     losses,

@@ -1415,6 +1415,15 @@ def run_prep(args):
             "expected": "[0.0, 1.0)",
         }
     )
+    overlap_lambda = float(hparams.get("lambda_style_timbre_runtime_overlap", 0.0))
+    checks.append(
+        {
+            "name": "lambda_style_timbre_runtime_overlap_nonnegative",
+            "ok": overlap_lambda >= 0.0,
+            "actual": overlap_lambda,
+            "expected": ">= 0.0",
+        }
+    )
     overlap_use_abs = hparams.get("style_timbre_runtime_overlap_use_abs", True)
     checks.append(
         {

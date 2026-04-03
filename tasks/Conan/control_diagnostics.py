@@ -937,6 +937,18 @@ def collect_control_diagnostics(output, sample, config):
             diagnostics["diag_style_timbre_runtime_postbudget_abs_cos"] = (
                 overlap_postbudget_terms["reduced"]
             )
+        if (
+            overlap_abs_terms.get("reduced") is not None
+            and overlap_postbudget_terms.get("reduced") is not None
+        ):
+            pre_abs_cos = overlap_abs_terms["reduced"]
+            post_abs_cos = overlap_postbudget_terms["reduced"]
+            diagnostics["diag_style_timbre_runtime_abs_cos_reduction"] = (
+                pre_abs_cos - post_abs_cos
+            )
+            diagnostics["diag_style_timbre_runtime_post_to_pre_abs_cos_ratio"] = (
+                post_abs_cos / pre_abs_cos.clamp_min(1e-6)
+            )
         style_energy = sequence_energy_mean(
             style_decoder_residual,
             mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask")),

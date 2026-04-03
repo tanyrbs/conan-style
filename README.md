@@ -1,8 +1,10 @@
-# Conan canonical mainline
+# Conan-derived canonical mainline
 
 Updated: 2026-04-04
 
-This repository snapshot keeps only the Conan single-reference strong-style mainline.
+**Repository note:** this repo is our Conan-based modified implementation, not an official Conan upstream repository or the authoritative "official implementation". This README only describes the shipped contract in this codebase.
+
+This repository snapshot keeps only our Conan-based single-reference strong-style mainline adaptation. Here, "canonical" means the supported mainline path in this repo, not an upstream-official release label.
 
 Review-archive note: do **not** infer train-readiness from repository text alone.
 Some checkouts may already have staged `data/*` and `checkpoints/*` artifacts at the canonical paths, while others may not.

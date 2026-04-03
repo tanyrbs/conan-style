@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from inference.conan_request import (
+    ADVANCED_CONTROL_ALIASES,
     ADVANCED_CONTROL_KEYS,
     UNSUPPORTED_INTERNAL_REQUEST_KEYS,
     has_distinct_split_reference_inputs,
@@ -146,7 +147,13 @@ class StyleProfileSweepRunner:
         for key in ignored_internal_keys:
             base_input.pop(key, None)
         if not allow_advanced_controls:
-            ignored_advanced_keys = [key for key in ADVANCED_CONTROL_KEYS if base_input.get(key) is not None]
+            ignored_advanced_keys = []
+            for key in ADVANCED_CONTROL_KEYS:
+                if base_input.get(key) is not None and key not in ignored_advanced_keys:
+                    ignored_advanced_keys.append(key)
+                for alias_key in ADVANCED_CONTROL_ALIASES.get(key, ()):
+                    if base_input.get(alias_key) is not None and alias_key not in ignored_advanced_keys:
+                        ignored_advanced_keys.append(alias_key)
             if ignored_advanced_keys and not self._advanced_control_warning_emitted:
                 warnings.warn(
                     "Ignoring unsupported or non-mainline control keys in style_profile_sweep.py: "
@@ -157,6 +164,17 @@ class StyleProfileSweepRunner:
                 self._advanced_control_warning_emitted = True
             for key in ignored_advanced_keys:
                 base_input.pop(key, None)
+        else:
+            for canonical_key, alias_keys in ADVANCED_CONTROL_ALIASES.items():
+                if base_input.get(canonical_key) is None:
+                    for alias_key in alias_keys:
+                        alias_value = base_input.get(alias_key)
+                        if alias_value is not None:
+                            base_input[canonical_key] = alias_value
+                            break
+                for alias_key in alias_keys:
+                    if alias_key in base_input and canonical_key in base_input:
+                        base_input.pop(alias_key, None)
         has_distinct_split_refs = has_distinct_split_reference_inputs(base_input)
         if has_distinct_split_refs and not self.allow_split_reference_inputs:
             raise ValueError(
@@ -165,6 +183,7 @@ class StyleProfileSweepRunner:
             )
         if has_distinct_split_refs:
             base_input["allow_split_reference_inputs"] = True
+            base_input["factorized_references_requested"] = True
         base_input["style_profile"] = profile_name
         return base_input
 

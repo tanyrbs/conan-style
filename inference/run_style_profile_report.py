@@ -7,7 +7,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from inference.profile_sweep_evaluator import StyleProfileSweepEvaluator
 from inference.profile_sweep_report import StyleProfileSweepReporter
 from utils.commons.hparams import hparams, set_hparams
 
@@ -58,9 +57,11 @@ def parse_args():
 
 def main():
     args = parse_args()
-    set_hparams(config=args.config, exp_name=args.exp_name, hparams_str=args.hparams)
     sweep_dir = Path(args.sweep_dir)
     if args.auto_evaluate and not (sweep_dir / "evaluation_summary.json").exists():
+        from inference.profile_sweep_evaluator import StyleProfileSweepEvaluator
+
+        set_hparams(config=args.config, exp_name=args.exp_name, hparams_str=args.hparams)
         evaluator = StyleProfileSweepEvaluator(
             hparams,
             sweep_dir,

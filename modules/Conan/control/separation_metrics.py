@@ -83,6 +83,7 @@ def resolve_dynamic_timbre_frame_weight(
     uv_floor=0.25,
     energy_floor=0.10,
     energy_power=0.5,
+    energy_quantile=0.90,
 ):
     reference_energy = sequence_energy_map(reference)
     if not isinstance(reference_energy, torch.Tensor):
@@ -112,7 +113,19 @@ def resolve_dynamic_timbre_frame_weight(
 
     energy_floor = max(0.0, min(1.0, float(energy_floor)))
     energy_power = max(float(energy_power), 1.0e-4)
-    energy_scale = energy_source.amax(dim=1, keepdim=True).clamp_min(1.0e-6)
+    energy_quantile = min(max(float(energy_quantile), 1.0e-3), 1.0)
+    energy_scales = []
+    for row_idx in range(energy_source.size(0)):
+        row_energy = energy_source[row_idx]
+        if isinstance(sequence_mask, torch.Tensor):
+            row_valid = ~sequence_mask[row_idx]
+            row_energy = row_energy[row_valid]
+        if row_energy.numel() <= 0:
+            scale = torch.tensor(1.0, device=device, dtype=dtype)
+        else:
+            scale = torch.quantile(row_energy, energy_quantile).clamp_min(1.0e-4)
+        energy_scales.append(scale)
+    energy_scale = torch.stack(energy_scales, dim=0).unsqueeze(1).clamp_min(1.0e-4)
     normalized_energy = (energy_source / energy_scale).clamp(0.0, 1.0)
     energy_support = energy_floor + (1.0 - energy_floor) * normalized_energy.pow(energy_power)
     support = energy_support if support is None else torch.maximum(support, energy_support)

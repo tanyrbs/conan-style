@@ -14,11 +14,14 @@ from modules.Conan.control.style_success import (
     mean_optional_vectors,
     normalized_summary_batch,
     resolve_style_success_anchor,
-    style_success_negative_mask,
+    resolve_style_success_negative_masks,
+    resolve_style_success_target_summary,
     style_success_supervision_scale,
-    style_success_target_global_summary,
 )
-from modules.Conan.dynamic_timbre_control import resolve_dynamic_timbre_budget_terms
+from modules.Conan.dynamic_timbre_control import (
+    resolve_dynamic_timbre_budget_terms,
+    resolve_stage_dynamic_timbre_budget_terms,
+)
 from modules.Conan.style_trace_utils import resolve_combined_style_trace
 from tasks.Conan.control_schedule import MAINLINE_MINIMAL_CONTROL_LAMBDAS
 
@@ -200,6 +203,7 @@ def _resolve_dynamic_timbre_budget_support_weight(sample, output, config, refere
         uv_floor=float(config.get("dynamic_timbre_budget_uv_floor", 0.25)),
         energy_floor=float(config.get("dynamic_timbre_budget_energy_floor", 0.10)),
         energy_power=float(config.get("dynamic_timbre_budget_energy_power", 0.5)),
+        energy_quantile=float(config.get("dynamic_timbre_budget_energy_quantile", 0.90)),
     )
 
 
@@ -557,9 +561,13 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             fast_style_summary=fast_style_repr,
             combined_style_summary=style_repr,
         )
+        style_success_target_state = resolve_style_success_target_summary(output)
         style_success_target = mean_optional_vectors(
-            style_success_target_global_summary(output),
+            style_success_target_state.get("summary"),
             style_memory_repr,
+        )
+        output["style_success_target_source"] = str(
+            style_success_target_state.get("source", "none")
         )
         # Keep this target bank style-led: exclude reference_summary / mixed reference
         # projections so the lower-bound signal does not blur the shipped owner-style
@@ -586,11 +594,23 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             pos_sim = (anchor_bank * target_bank).sum(dim=-1)
             if pair_weight > 0.0:
                 total_style_success = (1.0 - pos_sim.mean()) * pair_weight
-            negative_mask = style_success_negative_mask(
+            negative_state = resolve_style_success_negative_masks(
                 sample,
                 batch_size=anchor_bank.size(0),
                 device=anchor_bank.device,
+                proxy_threshold=float(config.get("style_success_proxy_negative_threshold", 1.25)),
+                proxy_min_count=int(config.get("style_success_proxy_negative_min_count", 2)),
             )
+            negative_mask = negative_state.get("negative_mask")
+            output["style_success_negative_source"] = str(negative_state.get("source", "none"))
+            for state_key, output_key in (
+                ("label_valid_rows", "style_success_label_negative_row_frac"),
+                ("proxy_valid_rows", "style_success_proxy_negative_row_frac"),
+                ("valid_rows", "style_success_negative_row_frac"),
+            ):
+                rows = negative_state.get(state_key)
+                if isinstance(rows, torch.Tensor):
+                    output[output_key] = rows.float().mean().detach()
             if isinstance(negative_mask, torch.Tensor) and rank_weight > 0.0:
                 rank_mask = negative_mask | torch.eye(
                     anchor_bank.size(0),
@@ -736,15 +756,16 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if isinstance(stage_outputs, dict):
             for stage_name in ("mid", "late"):
                 stage_meta = stage_outputs.get(stage_name)
-                stage_style_budget = _stage_energy_map(
+                stage_terms = resolve_stage_dynamic_timbre_budget_terms(
                     stage_meta,
-                    branch_keys=("global_style_delta", "slow_style_delta", "style_trace_delta"),
-                    combine_before_energy=True,
+                    padding_mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                    budget_ratio=budget_ratio,
+                    budget_margin=budget_margin,
+                    slow_style_weight=budget_slow_style_weight,
+                    budget_epsilon=budget_epsilon,
                 )
-                stage_timbre_budget = _stage_energy_map(
-                    stage_meta,
-                    branch_keys=("dynamic_timbre_delta",),
-                )
+                stage_style_budget = stage_terms.get("style_energy")
+                stage_timbre_budget = stage_terms.get("timbre_energy")
                 if not isinstance(stage_style_budget, torch.Tensor) or not isinstance(stage_timbre_budget, torch.Tensor):
                     continue
                 stage_valid_weight = _sequence_weight(

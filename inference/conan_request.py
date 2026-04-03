@@ -73,6 +73,7 @@ ADVANCED_CONTROL_KEYS = (
 
 UNSUPPORTED_INTERNAL_REQUEST_KEYS = (
     "style_condition_strength",
+    "enforce_decoder_no_timing_writeback",
     "runtime_dynamic_timbre_style_budget_slow_style_weight",
     "runtime_dynamic_timbre_style_budget_epsilon",
     "style_to_pitch_residual_apply_during_teacher_forcing",
@@ -83,6 +84,15 @@ UNSUPPORTED_INTERNAL_REQUEST_KEYS = (
     "upper_bound_curriculum_end_steps",
     "expressive_upper_bound_curriculum_end_steps",
 )
+
+ADVANCED_CONTROL_ALIASES = {
+    "decoder_style_condition_mode": ("style_condition_mode",),
+    "style_memory_mode": ("style_reference_memory_mode",),
+    "global_style_anchor_strength": ("style_anchor_strength",),
+    "style_to_pitch_residual": ("use_style_to_pitch_residual",),
+    "fast_style_strength_scale": ("fast_style_scale",),
+    "slow_style_strength_scale": ("slow_style_scale",),
+}
 
 SPLIT_REFERENCE_KEYS = (
     "ref_timbre_wav",
@@ -120,10 +130,29 @@ def build_mainline_request_input(
     if allow_advanced_controls:
         for key in ADVANCED_CONTROL_KEYS:
             value = source.get(key)
+            alias_keys = ADVANCED_CONTROL_ALIASES.get(key, ())
+            if value is None:
+                for alias_key in alias_keys:
+                    alias_value = source.get(alias_key)
+                    if alias_value is not None:
+                        value = alias_value
+                        break
+            elif any(source.get(alias_key) is not None for alias_key in alias_keys):
+                ignored_advanced_keys.extend(
+                    alias_key
+                    for alias_key in alias_keys
+                    if source.get(alias_key) is not None and alias_key not in ignored_advanced_keys
+                )
             if value is not None:
                 request[key] = value
     else:
-        ignored_advanced_keys = [key for key in ADVANCED_CONTROL_KEYS if source.get(key) is not None]
+        ignored_advanced_keys = []
+        for key in ADVANCED_CONTROL_KEYS:
+            if source.get(key) is not None and key not in ignored_advanced_keys:
+                ignored_advanced_keys.append(key)
+            for alias_key in ADVANCED_CONTROL_ALIASES.get(key, ()):
+                if source.get(alias_key) is not None and alias_key not in ignored_advanced_keys:
+                    ignored_advanced_keys.append(alias_key)
     ignored_advanced_keys.extend(
         key
         for key in UNSUPPORTED_INTERNAL_REQUEST_KEYS
@@ -134,6 +163,7 @@ def build_mainline_request_input(
 
 __all__ = [
     "ADVANCED_CONTROL_KEYS",
+    "ADVANCED_CONTROL_ALIASES",
     "ADVANCED_CONDITION_CONTROL_KEYS",
     "ADVANCED_MODEL_CONTROL_KEYS",
     "ADVANCED_STYLE_RUNTIME_KEYS",

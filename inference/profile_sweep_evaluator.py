@@ -418,6 +418,16 @@ class StyleProfileSweepEvaluator:
                 "ref_accent_wav",
             )
         )
+        if explicit_reference_requested:
+            metrics.update(
+                {
+                    "ref_timbre_wav": model_input.get("ref_timbre_wav"),
+                    "ref_style_wav": model_input.get("ref_style_wav"),
+                    "ref_dynamic_timbre_wav": model_input.get("ref_dynamic_timbre_wav"),
+                    "ref_emotion_wav": model_input.get("ref_emotion_wav"),
+                    "ref_accent_wav": model_input.get("ref_accent_wav"),
+                }
+            )
         if self.include_research_metadata:
             metrics.update(
                 {

@@ -58,7 +58,7 @@ Implementation note for this 2026-04-03 closure pass:
 
 Important: this mainline is a **bounded single-reference factorization contract**, not a proof of perfect disentanglement. The code explicitly surfaces `factorization_guaranteed: false`; the shipped losses constrain identity drift, timbre budget, pitch residual safety, and late-owner dominance, but they do not mathematically guarantee that every internal branch learns a unique semantic role.
 
-`lambda_style_success_rank` is intentionally training-side only. It does not open a new inference control surface; instead it adds a lower-bound style-success signal that combines paired self/reference alignment with weak-label batch ranking when metadata negatives are available. The target side is kept reference-derived only: self-derived runtime summaries such as `style_trace_pooled` / `style_trace_blended_with_reference` are excluded from that lower-bound target so the loss does not quietly grade the owner-style branch against its own pooled output. `tasks/Conan/mainline_train_prep.py` now reports whether the staged artifacts imply `paired_plus_weak_label_ranking` or only `paired_only`; if the staged condition artifacts expose no usable label buckets (`num_labels <= 1`), the weak-label branch naturally degenerates toward paired alignment rather than meaningful cross-label ranking. In the currently staged LibriTTS-single artifacts in this checkout, those weak-label buckets are empty, so the prep summary resolves to `paired_only`.
+`lambda_style_success_rank` is intentionally training-side only. It does not open a new inference control surface; instead it adds a lower-bound style-success signal that combines paired self/reference alignment with weak-label batch ranking when metadata negatives are available. The target side is kept reference-derived only: self-derived runtime summaries such as `style_trace_pooled` / `style_trace_blended_with_reference` are excluded from that lower-bound target so the loss does not quietly grade the owner-style branch against its own pooled output. `tasks/Conan/mainline_train_prep.py` now reports whether the staged artifacts imply `paired_plus_weak_label_ranking` or only `paired_only`; if the staged condition artifacts expose no usable label buckets (`num_labels <= 1`), the label-driven weak-ranking branch naturally degenerates toward paired alignment rather than meaningful cross-label ranking. In the currently staged LibriTTS-single artifacts in this checkout, those weak-label buckets are empty, so the prep summary resolves to `paired_only`. On top of that, the shipped rank loss now has a conservative **proxy-negative fallback** for label-sparse batches: label negatives remain first-class, but rows that have no label support can backfill negatives from batch proxy features such as log-energy statistics, a text/content-length speaking-rate proxy, voiced ratio, and voiced-frame `f0` spread. The prep summary now also exposes a small-batch runtime preview of which negative path is actually available (`label`, `proxy`, or `label_plus_proxy_backfill`) instead of only the artifact-level label-map view.
 
 An additional optional research regularizer is now wired but still shipped as `0.0` by default: `lambda_style_timbre_runtime_overlap`. It does not claim disentanglement; it simply measures and, when enabled, penalizes excessive frame-wise overlap between `style_decoder_residual` and `dynamic_timbre_decoder_residual_prebudget`. Importantly, explicit ablation runs can now enable it while staying on `control_loss_profile: mainline_minimal`; the schedule layer no longer silently zeroes that opt-in regularizer.
 
@@ -164,6 +164,17 @@ New control diagnostics from this closure pass include:
 - `diag_style_success_pair_cos`
 - `diag_style_success_hard_negative_cos`
 - `diag_style_success_pair_margin`
+- `diag_style_success_uses_weak_negative_ranking`
+- `diag_style_success_uses_proxy_negative_ranking`
+- `diag_style_success_label_negative_row_frac`
+- `diag_style_success_proxy_negative_row_frac`
+- `diag_style_success_negative_row_frac`
+- `diag_style_success_negative_source_label`
+- `diag_style_success_negative_source_proxy`
+- `diag_style_success_negative_source_label_plus_proxy_backfill`
+- `diag_style_success_target_source_runtime_reference_derived`
+- `diag_style_success_target_source_global_reference_derived`
+- `diag_style_success_target_source_none`
 - `diag_identity_backend_is_external`
 - `diag_identity_encoder_frozen_for_loss`
 - `diag_output_identity_target_cos`
@@ -199,6 +210,8 @@ python tasks/Conan/mainline_train_prep.py --config egs/conan_emformer.yaml
 Expected result after the processed/binary datasets are staged correctly:
 
 - `MAINLINE_TRAIN_PREP_OK`
+
+If the current local environment still has dependency pin drift or missing staged artifacts, the honest result is `MAINLINE_TRAIN_PREP_NOT_READY`; in that case, treat the JSON summary fields `code_contract_ready` vs `ready` / `train_ready_now` as the source of truth rather than assuming the repo text implies train-readiness.
 
 ### 4) Real training
 

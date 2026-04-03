@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument(
         "--allow_advanced_controls",
         action="store_true",
-        help="Opt-in passthrough for research-only emotion/accent/arousal/valence/energy controls.",
+        help="Opt-in passthrough for research/ablation-only condition controls plus advanced style/runtime overrides such as explicit dynamic-timbre strength and pitch/style runtime knobs. Internal hparam-owned safety knobs still remain unavailable.",
     )
     return parser.parse_args()
 

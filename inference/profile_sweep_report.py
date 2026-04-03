@@ -15,8 +15,26 @@ DISTANCE_TO_REF_KEYS = (
 
 COSINE_TO_REF_KEYS = (
     "global_cos_to_ref",
+    "timbre_global_cos_to_ref",
     "prosody_cos_to_ref",
     "dynamic_timbre_cos_to_ref",
+)
+
+SCORABLE_DISTANCE_PREFIXES = (
+    "mel_mean_l1_to_",
+    "mel_std_l1_to_",
+    "energy_mean_abs_to_",
+    "energy_std_abs_to_",
+    "f0_mean_abs_to_",
+    "f0_std_abs_to_",
+    "voiced_frac_abs_to_",
+)
+
+SCORABLE_COSINE_PREFIXES = (
+    "global_cos_to_",
+    "timbre_global_cos_to_",
+    "prosody_cos_to_",
+    "dynamic_timbre_cos_to_",
 )
 
 
@@ -37,6 +55,21 @@ def _mean(values, default=0.0):
     if len(filtered) <= 0:
         return float(default)
     return float(sum(filtered) / len(filtered))
+
+
+def _collect_scorable_metric_keys(rows, explicit_keys, prefixes):
+    keys = list(explicit_keys)
+    seen = set(keys)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in row.keys():
+            if key in seen:
+                continue
+            if any(str(key).startswith(prefix) for prefix in prefixes):
+                keys.append(key)
+                seen.add(key)
+    return tuple(keys)
 
 
 def load_report_inputs(sweep_dir):
@@ -106,6 +139,16 @@ def _normalize_case_metric(rows, key, *, higher_is_better):
 
 
 def score_results_by_case(rows):
+    distance_metric_keys = _collect_scorable_metric_keys(
+        rows,
+        DISTANCE_TO_REF_KEYS,
+        SCORABLE_DISTANCE_PREFIXES,
+    )
+    cosine_metric_keys = _collect_scorable_metric_keys(
+        rows,
+        COSINE_TO_REF_KEYS,
+        SCORABLE_COSINE_PREFIXES,
+    )
     rows_by_case = {}
     for row in rows:
         rows_by_case.setdefault(row.get("case_name", "unknown"), []).append(row)
@@ -114,14 +157,14 @@ def score_results_by_case(rows):
         ref_scores = {id(row): [] for row in case_rows}
         stability_scores = {id(row): [] for row in case_rows}
 
-        for key in DISTANCE_TO_REF_KEYS:
+        for key in distance_metric_keys:
             normalized = _normalize_case_metric(case_rows, key, higher_is_better=False)
             for row in case_rows:
                 value = normalized.get(id(row))
                 if value is not None:
                     ref_scores[id(row)].append(value)
 
-        for key in COSINE_TO_REF_KEYS:
+        for key in cosine_metric_keys:
             normalized = _normalize_case_metric(case_rows, key, higher_is_better=True)
             for row in case_rows:
                 value = normalized.get(id(row))

@@ -78,9 +78,11 @@ The report surfaces:
 - style-profile defaults now flow cleanly into runtime controls
 - each inference request now resolves its style profile exactly once before building control/runtime kwargs
 - `inference/conan_request.py` is now the canonical source for public request keys, advanced-control filtering, and split-reference detection
-- request-helper advanced mode now forwards the runtime controls that the engine actually consumes, including explicit `dynamic_timbre_strength` and mainline research-override gating; internal budget stabilizers stay hparam-owned on the closed mainline path
+- request-helper advanced mode now forwards the runtime controls that the engine actually consumes, including explicit `dynamic_timbre_strength` and mainline research-override gating; common alias spellings such as `style_condition_mode` / `style_reference_memory_mode` / `style_anchor_strength` / `fast_style_scale` / `slow_style_scale` are normalized onto the canonical keys instead of silently bypassing request-surface filtering
 - request helpers now also flag unsupported internal-only keys such as `style_condition_strength`, protected budget stabilizers, and upper-bound curriculum knobs instead of silently pretending they are valid request-surface controls
 - canonical runners stay single-reference by default; internal split-reference handling remains for evaluator/research plumbing, not as a public closed-mainline promise
+- sweep evaluation now always writes the explicit `ref_*_wav` provenance columns whenever explicit-reference metrics are emitted, and report scoring now includes timbre-global plus detected explicit-reference fidelity metrics instead of ranking split-reference sweeps as if they were single-ref only
+- `run_style_profile_report.py` no longer needs to import the evaluator stack or call `set_hparams()` on the plain render-only path; it only loads the heavy evaluation path when `--auto_evaluate` is actually needed
 - resolved mainline controls stay authoritative for TVT prior/runtime flags and pitch-residual scale / semitone / smoothing
 - inference metadata now reports requested/effective/clamped `style_strength`
 - inference metadata now also reports requested pitch-canvas mode, realized canvas, and fallback reason when post-rhythm routing is unavailable

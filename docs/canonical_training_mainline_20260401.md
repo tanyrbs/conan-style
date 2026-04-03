@@ -69,7 +69,7 @@ Their effective strengths still follow the schedule, so this is the configured l
 
 This is intentionally a **bounded weak internal factorization** contract, not a proof of perfect disentanglement. The mainline explicitly reports `factorization_guaranteed: false`; the active losses constrain lower-level failure modes, but they do not prove that each latent/control branch has become uniquely interpretable.
 
-The new `lambda_style_success_rank` is a training-only lower-bound signal rather than a new inference knob: it combines paired self/reference style alignment with weak-label batch ranking whenever metadata negatives are available, while leaving the shipped runtime surface closed. `tasks/Conan/mainline_train_prep.py` now reports whether the staged artifacts imply `paired_plus_weak_label_ranking` or only `paired_only`; if staged condition artifacts expose no usable label buckets (`num_labels <= 1`), the weak-label branch naturally collapses toward paired alignment instead of informative cross-label ranking. In the currently staged LibriTTS-single artifacts in this checkout, those weak-label buckets are empty, so the artifact-level preview resolves to `paired_only`.
+The new `lambda_style_success_rank` is a training-only lower-bound signal rather than a new inference knob: it combines paired self/reference style alignment with weak-label batch ranking whenever metadata negatives are available, while leaving the shipped runtime surface closed. `tasks/Conan/mainline_train_prep.py` now reports whether the staged artifacts imply `paired_plus_weak_label_ranking` or only `paired_only`; if staged condition artifacts expose no usable label buckets (`num_labels <= 1`), the label-driven weak-ranking branch naturally collapses toward paired alignment instead of informative cross-label ranking. In the currently staged LibriTTS-single artifacts in this checkout, those weak-label buckets are empty, so the artifact-level preview resolves to `paired_only`. Separately, the shipped rank loss now has a conservative **proxy-negative fallback** for label-sparse batches: label negatives still take priority, but unsupported rows can backfill negatives from batch proxy features such as log-energy statistics, a text/content-length speaking-rate proxy, voiced ratio, and voiced-frame `f0` spread. The prep gate now also exposes a small-batch runtime preview of which negative path is actually available (`label`, `proxy`, or `label_plus_proxy_backfill`) so the artifact-level summary is not mistaken for the actual in-batch supervision path.
 
 Separately, the codebase now exposes an optional runtime-separation regularizer, `lambda_style_timbre_runtime_overlap`, but keeps it at `0.0` in the shipped canonical config. Its purpose is diagnostic/ablation-oriented: measure and optionally penalize excessive frame-wise overlap between `style_decoder_residual` and `dynamic_timbre_decoder_residual_prebudget`, not to assert that true disentanglement has been proved. Explicit ablation runs can now enable it without leaving `control_loss_profile: mainline_minimal`; the schedule layer no longer silently zeros that opt-in regularizer.
 
@@ -135,6 +135,8 @@ python tasks/Conan/mainline_train_prep.py --config egs/conan_emformer.yaml
 Expected result:
 
 - `MAINLINE_TRAIN_PREP_OK`
+
+If your local checkout still has dependency pin drift or missing staged artifacts, the honest result is `MAINLINE_TRAIN_PREP_NOT_READY`; in that case, read the JSON summary fields `code_contract_ready` vs `ready` / `train_ready_now` rather than inferring readiness from this document alone.
 
 This prep gate now also checks that style-profile defaults really control mainline runtime strengths instead of silently falling back to neutral values.
 When the environment is incomplete, the JSON summary now separates `code_contract_ready` from the stricter `ready` / `train_ready_now` flags so mainline code-contract failures are not conflated with missing staged data or missing runtime libraries.
@@ -227,6 +229,7 @@ python inference/run_streaming_latency_report.py
 - `slow_style_trace` now enters the decoder runtime bundle directly, so decoder-stage authority separation better matches the intended mainline theory
 - `lambda_dynamic_timbre_budget` now observes the pre-budget dynamic-timbre residual **and** the realized decoder-stage deltas, while the style-side reference is built from owner-style energy plus only the slow-style excess beyond that owner reference, avoiding a slow-style double count
 - the dynamic-timbre budget loss no longer hard-drops unvoiced / weak frames; it uses a soft uv floor plus relative energy support so fricatives, breathy segments, and other low-periodicity regions remain partially supervised instead of becoming a blind spot
+- that energy support is now normalized by a per-utterance energy quantile rather than the raw max, making the support weight more stable under isolated spikes while preserving weak-frame visibility
 - fast style / TVT timbre / pitch residual no longer start fully open at step 0; they share one `20000 -> 80000` upper-bound curriculum during training
 - dynamic timbre now uses a unified residual semantic on both TVT and non-TVT paths (`local_delta` relative to the global timbre anchor)
 - dynamic-timbre boundary suppression now detects dense HuBERT-like unit streams and avoids turning token-transition boundaries into a global mask
@@ -268,6 +271,17 @@ python inference/run_streaming_latency_report.py
   - `diag_style_success_pair_cos`
   - `diag_style_success_hard_negative_cos`
   - `diag_style_success_pair_margin`
+  - `diag_style_success_uses_weak_negative_ranking`
+  - `diag_style_success_uses_proxy_negative_ranking`
+  - `diag_style_success_label_negative_row_frac`
+  - `diag_style_success_proxy_negative_row_frac`
+  - `diag_style_success_negative_row_frac`
+  - `diag_style_success_negative_source_label`
+  - `diag_style_success_negative_source_proxy`
+  - `diag_style_success_negative_source_label_plus_proxy_backfill`
+  - `diag_style_success_target_source_runtime_reference_derived`
+  - `diag_style_success_target_source_global_reference_derived`
+  - `diag_style_success_target_source_none`
   - `diag_identity_backend_is_external`
   - `diag_identity_encoder_frozen_for_loss`
   - `diag_output_identity_target_cos`

@@ -116,6 +116,10 @@ class ConanDataset(FastSpeechDataset):
         batch["content"] = collate_1d_or_2d(
             [sample["content"] for sample in samples], content_padding_idx
         ).long()
+        batch["content_lengths"] = torch.tensor(
+            [sample["content"].numel() for sample in samples],
+            dtype=torch.long,
+        )
         batch["emotion_ids"] = torch.stack([sample["emotion_id"] for sample in samples]).long()
         batch["accent_ids"] = torch.stack([sample["accent_id"] for sample in samples]).long()
         batch["arousal"] = torch.stack([sample["arousal"] for sample in samples]).float()

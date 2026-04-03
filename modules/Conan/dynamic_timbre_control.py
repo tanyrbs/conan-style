@@ -213,6 +213,20 @@ def _match_energy_shape(
     return value
 
 
+def _sum_optional_residuals(*values: Optional[torch.Tensor]):
+    total = None
+    for value in values:
+        if not isinstance(value, torch.Tensor):
+            continue
+        if total is None:
+            total = value
+            continue
+        if tuple(value.shape) != tuple(total.shape):
+            continue
+        total = total + value
+    return total
+
+
 def _resolve_style_budget_residuals(
     *,
     style_residual: Optional[torch.Tensor] = None,
@@ -377,6 +391,36 @@ def resolve_dynamic_timbre_budget_terms(
     }
 
 
+def resolve_stage_dynamic_timbre_budget_terms(
+    stage_meta: Optional[Mapping[str, Any]],
+    *,
+    padding_mask: Optional[torch.Tensor] = None,
+    budget_ratio: float = 0.50,
+    budget_margin: float = 0.0,
+    slow_style_weight: float = 1.0,
+    budget_epsilon: float = 1e-6,
+):
+    if not isinstance(stage_meta, Mapping):
+        return {
+            "applied": False,
+            "skip_reason": "missing_stage_meta",
+        }
+    style_owner_residual = _sum_optional_residuals(
+        stage_meta.get("global_style_delta"),
+        stage_meta.get("style_trace_delta"),
+    )
+    return resolve_dynamic_timbre_budget_terms(
+        stage_meta.get("dynamic_timbre_delta"),
+        style_residual=style_owner_residual,
+        slow_style_residual=stage_meta.get("slow_style_delta"),
+        padding_mask=padding_mask,
+        budget_ratio=budget_ratio,
+        budget_margin=budget_margin,
+        slow_style_weight=slow_style_weight,
+        budget_epsilon=budget_epsilon,
+    )
+
+
 def apply_runtime_budget_to_dynamic_timbre(
     aligned: Optional[torch.Tensor],
     *,
@@ -424,5 +468,6 @@ __all__ = [
     "build_dynamic_timbre_boundary_mask",
     "recenter_dynamic_timbre_to_anchor",
     "resolve_dynamic_timbre_budget_terms",
+    "resolve_stage_dynamic_timbre_budget_terms",
     "resolve_dynamic_timbre_control",
 ]

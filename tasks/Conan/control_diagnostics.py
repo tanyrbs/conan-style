@@ -10,14 +10,14 @@ from modules.Conan.control.separation_metrics import (
     weighted_mean,
 )
 from modules.Conan.control.style_success import (
-    STYLE_SUCCESS_SELF_DERIVED_RUNTIME_SOURCES,
     mean_optional_vectors,
     normalized_summary_batch,
     resolve_style_success_anchor,
-    style_success_negative_mask,
+    resolve_style_success_negative_masks,
+    resolve_style_success_target_summary,
     style_success_supervision_scale,
-    style_success_target_global_summary,
 )
+from modules.Conan.dynamic_timbre_control import resolve_stage_dynamic_timbre_budget_terms
 from modules.Conan.style_trace_utils import resolve_combined_style_trace
 from tasks.Conan.control_schedule import MAINLINE_MINIMAL_CONTROL_LAMBDAS
 
@@ -79,6 +79,7 @@ def _resolve_dynamic_timbre_budget_support_weight(sample, output, config, refere
         uv_floor=float(config.get("dynamic_timbre_budget_uv_floor", 0.25)),
         energy_floor=float(config.get("dynamic_timbre_budget_energy_floor", 0.10)),
         energy_power=float(config.get("dynamic_timbre_budget_energy_power", 0.5)),
+        energy_quantile=float(config.get("dynamic_timbre_budget_energy_quantile", 0.90)),
     )
 
 
@@ -658,8 +659,9 @@ def collect_control_diagnostics(output, sample, config):
             fast_style_summary=fast_style_repr,
             combined_style_summary=style_repr,
         )
+        style_success_target_state = resolve_style_success_target_summary(output)
         style_success_target = mean_optional_vectors(
-            style_success_target_global_summary(output),
+            style_success_target_state.get("summary"),
             _masked_sequence_mean(
                 output.get("style_trace_memory"),
                 output.get("style_trace_memory_mask"),
@@ -673,18 +675,26 @@ def collect_control_diagnostics(output, sample, config):
         support_scale = output.get("style_success_rank_support_scale")
         if isinstance(support_scale, torch.Tensor):
             diagnostics["diag_style_success_rank_support_scale"] = support_scale.detach().float().mean()
-        runtime_target_source = str(output.get("global_style_summary_runtime_source", "") or "").strip().lower()
+        style_success_target_source = str(style_success_target_state.get("source", "none"))
         diagnostics["diag_style_success_runtime_target_is_self_derived"] = torch.tensor(
-            1.0 if runtime_target_source in STYLE_SUCCESS_SELF_DERIVED_RUNTIME_SOURCES else 0.0
+            1.0 if style_success_target_source == "runtime_self_derived" else 0.0
         )
         diagnostics["diag_style_success_runtime_target_is_reference_driven"] = torch.tensor(
             1.0
-            if runtime_target_source
-            and runtime_target_source not in STYLE_SUCCESS_SELF_DERIVED_RUNTIME_SOURCES
-            and runtime_target_source != "fallback_timbre_anchor"
+            if style_success_target_source in {"runtime_reference_derived", "global_reference_derived"}
             else 0.0
         )
+        diagnostics["diag_style_success_target_source_runtime_reference_derived"] = torch.tensor(
+            1.0 if style_success_target_source == "runtime_reference_derived" else 0.0
+        )
+        diagnostics["diag_style_success_target_source_global_reference_derived"] = torch.tensor(
+            1.0 if style_success_target_source == "global_reference_derived" else 0.0
+        )
+        diagnostics["diag_style_success_target_source_none"] = torch.tensor(
+            1.0 if style_success_target_source == "none" else 0.0
+        )
         diagnostics["diag_style_success_uses_weak_negative_ranking"] = torch.tensor(0.0)
+        diagnostics["diag_style_success_uses_proxy_negative_ranking"] = torch.tensor(0.0)
         if (
             isinstance(anchor_bank, torch.Tensor)
             and isinstance(target_bank, torch.Tensor)
@@ -692,24 +702,68 @@ def collect_control_diagnostics(output, sample, config):
         ):
             pair_cos = (anchor_bank * target_bank).sum(dim=-1)
             diagnostics["diag_style_success_pair_cos"] = pair_cos.mean()
-            negative_mask = style_success_negative_mask(
+            negative_state = resolve_style_success_negative_masks(
                 sample,
                 batch_size=anchor_bank.size(0),
                 device=anchor_bank.device,
+                proxy_threshold=float(config.get("style_success_proxy_negative_threshold", 1.25)),
+                proxy_min_count=int(config.get("style_success_proxy_negative_min_count", 2)),
+            )
+            negative_mask = negative_state.get("negative_mask")
+            label_negative_mask = negative_state.get("label_negative_mask")
+            proxy_negative_mask = negative_state.get("proxy_negative_mask")
+            label_valid_rows = negative_state.get("label_valid_rows")
+            proxy_valid_rows = negative_state.get("proxy_valid_rows")
+            valid_rows = negative_state.get("valid_rows")
+            negative_source = str(negative_state.get("source", "none"))
+            rank_supervision_active = (
+                float(config.get("lambda_style_success_rank", 0.0)) > 0.0
+                and float(config.get("style_success_rank_weight", 1.0)) > 0.0
             )
             diagnostics["diag_style_success_uses_weak_negative_ranking"] = torch.tensor(
-                1.0 if isinstance(negative_mask, torch.Tensor) else 0.0,
+                1.0
+                if rank_supervision_active and negative_source in {"label", "label_plus_proxy_backfill"}
+                else 0.0,
+                device=anchor_bank.device,
+            )
+            diagnostics["diag_style_success_uses_proxy_negative_ranking"] = torch.tensor(
+                1.0
+                if rank_supervision_active and negative_source in {"proxy", "label_plus_proxy_backfill"}
+                else 0.0,
+                device=anchor_bank.device,
+            )
+            if isinstance(label_valid_rows, torch.Tensor):
+                diagnostics["diag_style_success_label_negative_row_frac"] = (
+                    label_valid_rows.float().mean()
+                )
+            if isinstance(proxy_valid_rows, torch.Tensor):
+                diagnostics["diag_style_success_proxy_negative_row_frac"] = (
+                    proxy_valid_rows.float().mean()
+                )
+            if isinstance(valid_rows, torch.Tensor):
+                diagnostics["diag_style_success_negative_row_frac"] = (
+                    valid_rows.float().mean()
+                )
+                diagnostics["diag_style_success_rank_valid_row_frac"] = (
+                    valid_rows.float().mean()
+                )
+            diagnostics["diag_style_success_negative_source_label"] = torch.tensor(
+                1.0 if negative_source == "label" else 0.0,
+                device=anchor_bank.device,
+            )
+            diagnostics["diag_style_success_negative_source_proxy"] = torch.tensor(
+                1.0 if negative_source == "proxy" else 0.0,
+                device=anchor_bank.device,
+            )
+            diagnostics["diag_style_success_negative_source_label_plus_proxy_backfill"] = torch.tensor(
+                1.0 if negative_source == "label_plus_proxy_backfill" else 0.0,
                 device=anchor_bank.device,
             )
             if isinstance(negative_mask, torch.Tensor):
                 diagnostics["diag_style_success_negative_pair_frac"] = (
                     negative_mask.float().mean()
                 )
-                valid_rows = negative_mask.sum(dim=-1) > 0
-                diagnostics["diag_style_success_rank_valid_row_frac"] = (
-                    valid_rows.float().mean()
-                )
-                if valid_rows.any():
+                if isinstance(valid_rows, torch.Tensor) and valid_rows.any():
                     similarity = anchor_bank @ target_bank.transpose(0, 1)
                     hard_negative = similarity.masked_fill(
                         ~negative_mask,
@@ -1015,7 +1069,25 @@ def collect_control_diagnostics(output, sample, config):
                     "runtime_dynamic_timbre_style_budget_margin",
                     config.get("dynamic_timbre_budget_margin", 0.0),
                 ),
+            )
         )
+        budget_slow_style_weight = float(
+            output.get(
+                "runtime_dynamic_timbre_style_budget_slow_style_weight",
+                config.get(
+                    "runtime_dynamic_timbre_style_budget_slow_style_weight",
+                    config.get("dynamic_timbre_budget_slow_style_weight", 1.0),
+                ),
+            )
+        )
+        budget_epsilon = float(
+            output.get(
+                "runtime_dynamic_timbre_style_budget_epsilon",
+                config.get(
+                    "runtime_dynamic_timbre_style_budget_epsilon",
+                    config.get("dynamic_timbre_budget_epsilon", 1e-6),
+                ),
+            )
         )
         stage_outputs = output.get("decoder_style_adapter_stages")
         stage_mean_buckets = {
@@ -1031,20 +1103,23 @@ def collect_control_diagnostics(output, sample, config):
         if isinstance(stage_outputs, dict):
             for stage_name in ("mid", "late"):
                 stage_meta = stage_outputs.get(stage_name)
-                stage_style_budget = _stage_energy_map(
+                stage_terms = resolve_stage_dynamic_timbre_budget_terms(
                     stage_meta,
-                    branch_keys=("global_style_delta", "slow_style_delta", "style_trace_delta"),
-                    combine_before_energy=True,
+                    padding_mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                    budget_ratio=budget_ratio,
+                    budget_margin=budget_margin,
+                    slow_style_weight=budget_slow_style_weight,
+                    budget_epsilon=budget_epsilon,
                 )
-                stage_timbre_budget = _stage_energy_map(
-                    stage_meta,
-                    branch_keys=("dynamic_timbre_delta",),
-                )
+                stage_style_budget = stage_terms.get("style_energy")
+                stage_timbre_budget = stage_terms.get("timbre_energy")
                 if not isinstance(stage_style_budget, torch.Tensor) or not isinstance(stage_timbre_budget, torch.Tensor):
                     continue
-                stage_overflow = F.relu(
-                    stage_timbre_budget - budget_ratio * stage_style_budget.detach() - budget_margin
-                )
+                stage_overflow = stage_terms.get("overflow")
+                if not isinstance(stage_overflow, torch.Tensor):
+                    stage_overflow = F.relu(
+                        stage_timbre_budget - budget_ratio * stage_style_budget.detach() - budget_margin
+                    )
                 stage_weight = build_sequence_weight(
                     output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
                     reference=stage_timbre_budget,

@@ -75,10 +75,13 @@ dynamic_timbre_budget_margin: 0.0
 dynamic_timbre_budget_uv_floor: 0.25
 dynamic_timbre_budget_energy_floor: 0.1
 dynamic_timbre_budget_energy_power: 0.5
+dynamic_timbre_budget_energy_quantile: 0.9
 pitch_residual_huber_delta: 0.02
 pitch_residual_budget_weight: 0.15
 pitch_residual_budget_margin: 0.015
 pitch_residual_smooth_weight: 0.1
+style_success_proxy_negative_threshold: 1.25
+style_success_proxy_negative_min_count: 2
 decoder_late_timbre_owner_ratio: 0.5
 decoder_late_anchor_budget_ratio: 0.35
 decoder_late_anchor_budget_floor: 0.0

@@ -21,6 +21,7 @@ from modules.Conan.style_mainline import (
 )
 from modules.Conan.style_profiles import resolve_style_profile
 from modules.Conan.reference_bundle import build_control_kwargs, build_style_runtime_kwargs
+from modules.Conan.control.style_success import resolve_style_success_negative_masks
 from modules.Conan.dynamic_timbre_control import build_dynamic_timbre_boundary_mask
 from tasks.Conan.dataset import ConanDataset
 from tasks.Conan.control_schedule import (
@@ -103,6 +104,7 @@ def _classify_check_name(name):
         "train_batch_mainline_controls_resolvable",
         "dynamic_timbre_boundary_preview_available",
         "dynamic_timbre_boundary_not_global_on_real_data",
+        "style_success_runtime_preview",
         "train_batch_style_strength_matches_profile",
         "train_batch_dynamic_timbre_strength_matches_profile",
         "train_batch_dynamic_timbre_strength_source_matches_profile",
@@ -344,9 +346,43 @@ def _check_importable(checks, name, module_name):
         )
 
 
+def _normalize_condition_label_text(value):
+    text = str(value or "").strip()
+    return text or None
+
+
+def _normalize_condition_mapping_payload(payload):
+    if not isinstance(payload, dict):
+        return {}
+    normalized = {}
+    for key, value in payload.items():
+        label = _normalize_condition_label_text(key)
+        if label is None:
+            continue
+        try:
+            normalized[label] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
+def _mapping_from_condition_set_payload(payload):
+    if not isinstance(payload, list):
+        return {}
+    normalized = {}
+    offset = 1 if payload and str(payload[0]).strip() == "<UNK>" else 0
+    for idx, raw in enumerate(payload[offset:], start=0):
+        label = _normalize_condition_label_text(raw)
+        if label is None or label == "<UNK>":
+            continue
+        normalized[label] = int(idx)
+    return normalized
+
+
 def _check_condition_artifacts(checks, candidate_dirs):
     resolved_maps = load_condition_id_maps(candidate_dirs, fields=CONDITION_FIELDS)
     for field in CONDITION_FIELDS:
+        per_dir_states = []
         map_paths = [
             os.path.join(str(data_dir), f"{field}_map.json")
             for data_dir in candidate_dirs
@@ -370,6 +406,47 @@ def _check_condition_artifacts(checks, candidate_dirs):
                 }
             )
             continue
+        normalized_by_dir = []
+        for data_dir in candidate_dirs:
+            if not data_dir:
+                continue
+            state = {
+                "dir": str(data_dir),
+                "map_exists": False,
+                "set_exists": False,
+                "map_matches_set": True,
+                "map_num_labels": 0,
+                "set_num_labels": 0,
+            }
+            map_path = os.path.join(str(data_dir), f"{field}_map.json")
+            set_path = os.path.join(str(data_dir), f"{field}_set.json")
+            map_payload = None
+            set_payload = None
+            if os.path.exists(map_path):
+                state["map_exists"] = True
+                try:
+                    with open(map_path, "r", encoding="utf-8") as f:
+                        map_payload = json.load(f)
+                except Exception as exc:
+                    state["map_error"] = f"{type(exc).__name__}: {exc}"
+            if os.path.exists(set_path):
+                state["set_exists"] = True
+                try:
+                    with open(set_path, "r", encoding="utf-8") as f:
+                        set_payload = json.load(f)
+                except Exception as exc:
+                    state["set_error"] = f"{type(exc).__name__}: {exc}"
+            normalized_map = _normalize_condition_mapping_payload(map_payload)
+            normalized_set = _mapping_from_condition_set_payload(set_payload)
+            state["map_num_labels"] = int(len(normalized_map))
+            state["set_num_labels"] = int(len(normalized_set))
+            if state["map_exists"] and state["set_exists"]:
+                state["map_matches_set"] = normalized_map == normalized_set
+            if state["map_exists"] or state["set_exists"]:
+                normalized_by_dir.append(
+                    normalized_map if normalized_map else normalized_set
+                )
+            per_dir_states.append(state)
         roundtrip_ok = True
         roundtrip_mismatches = []
         for label, expected_id in mapping.items():
@@ -383,27 +460,87 @@ def _check_condition_artifacts(checks, candidate_dirs):
                         "actual": int(actual_id),
                     }
                 )
+        cross_dir_consistent = True
+        if len(normalized_by_dir) > 1:
+            first_mapping = normalized_by_dir[0]
+            cross_dir_consistent = all(candidate == first_mapping for candidate in normalized_by_dir[1:])
         checks.append(
             {
                 "name": f"condition_artifacts_{field}",
-                "ok": bool((not set_exists or map_exists) and roundtrip_ok),
+                "ok": bool(
+                    (not set_exists or map_exists)
+                    and roundtrip_ok
+                    and cross_dir_consistent
+                    and all(state.get("map_matches_set", True) for state in per_dir_states)
+                ),
                 "actual": {
                     "map_exists": bool(map_exists),
                     "set_exists": bool(set_exists),
                     "num_labels": int(len(mapping)),
                     "roundtrip_mismatches": roundtrip_mismatches[:8],
+                    "cross_dir_consistent": bool(cross_dir_consistent),
+                    "per_dir": per_dir_states,
                 },
                 "expected": {
                     "map_exists_if_set_exists": True,
                     "roundtrip_consistent": True,
+                    "cross_dir_consistent": True,
+                    "map_matches_set_when_both_exist": True,
                 },
             }
         )
     return resolved_maps
 
 
-def _style_success_supervision_summary(hparams, resolved_condition_maps):
+def _style_success_runtime_preview(batch, hparams):
+    if not isinstance(batch, dict):
+        return {
+            "available": False,
+            "reason": "missing_batch",
+        }
+    mel_lengths = batch.get("mel_lengths")
+    if isinstance(mel_lengths, torch.Tensor):
+        batch_size = int(mel_lengths.numel())
+        device = mel_lengths.device
+    else:
+        batch_size = int(batch.get("nsamples", 0) or 0)
+        device = torch.device("cpu")
+    if batch_size <= 1:
+        return {
+            "available": False,
+            "reason": "batch_size_le_1",
+            "batch_size": batch_size,
+        }
+    negative_state = resolve_style_success_negative_masks(
+        batch,
+        batch_size=batch_size,
+        device=device,
+        proxy_threshold=float(hparams.get("style_success_proxy_negative_threshold", 1.25) or 1.25),
+        proxy_min_count=int(hparams.get("style_success_proxy_negative_min_count", 2) or 2),
+    )
+    preview = {
+        "available": True,
+        "batch_size": batch_size,
+        "negative_source": str(negative_state.get("source", "none")),
+    }
+    for state_key, preview_key in (
+        ("label_valid_rows", "label_negative_row_frac"),
+        ("proxy_valid_rows", "proxy_negative_row_frac"),
+        ("valid_rows", "negative_row_frac"),
+    ):
+        rows = negative_state.get(state_key)
+        if isinstance(rows, torch.Tensor):
+            preview[preview_key] = float(rows.float().mean().detach().cpu())
+    negative_mask = negative_state.get("negative_mask")
+    if isinstance(negative_mask, torch.Tensor):
+        preview["negative_pair_frac"] = float(negative_mask.float().mean().detach().cpu())
+    return preview
+
+
+def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime_preview=None):
     style_success_lambda = float(hparams.get("lambda_style_success_rank", 0.0) or 0.0)
+    proxy_negative_threshold = float(hparams.get("style_success_proxy_negative_threshold", 1.25) or 1.25)
+    proxy_negative_min_count = int(hparams.get("style_success_proxy_negative_min_count", 2) or 0)
     weak_label_counts = {
         field: int(len(resolved_condition_maps.get(field, {})))
         for field in ("emotion", "accent")
@@ -431,9 +568,20 @@ def _style_success_supervision_summary(hparams, resolved_condition_maps):
         "weak_label_ranking_available_from_artifacts": bool(weak_label_ranking_available),
         "usable_weak_label_fields": usable_weak_label_fields,
         "weak_label_label_counts": weak_label_counts,
+        "proxy_negative_fallback_enabled": bool(pair_enabled),
+        "proxy_negative_threshold": proxy_negative_threshold,
+        "proxy_negative_min_count": proxy_negative_min_count,
+        "runtime_negative_strategy": (
+            "disabled" if not pair_enabled else "label_priority_with_proxy_backfill"
+        ),
+        "runtime_preview": runtime_preview
+        if isinstance(runtime_preview, dict)
+        else {"available": False, "reason": "preview_unavailable"},
         "source": "condition_artifacts",
         "note": (
-            "artifact-level preview only; actual batch negatives still depend on per-item emotion_id/accent_id coverage"
+            "artifact-level label summary plus optional small-batch runtime preview; actual rank negatives still depend "
+            "on per-item batch composition, and label negatives remain authoritative while proxy negatives only backfill "
+            "rows that lack label support"
         ),
     }
 
@@ -592,6 +740,10 @@ def run_prep(args):
     upper_bound_preview_80000 = resolve_expressive_upper_bound_progress(80000, hparams=hparams)
     batch_controls = None
     batch_controls_error = None
+    style_success_runtime_preview = {
+        "available": False,
+        "reason": "dataset_preview_unavailable",
+    }
     boundary_preview = []
     try:
         train_dataset = ConanDataset(prefix="train", shuffle=False)
@@ -602,6 +754,17 @@ def run_prep(args):
             batch_kwargs.update(build_control_kwargs(batch))
             batch_kwargs.update(build_style_runtime_kwargs(batch))
             batch_controls = resolve_style_mainline_controls(batch_kwargs, hparams=hparams)
+            preview_batch_size = min(4, len(train_dataset))
+            if preview_batch_size > 1:
+                preview_samples = [train_dataset[idx] for idx in range(preview_batch_size)]
+                preview_batch = train_dataset.collater(preview_samples)
+                style_success_runtime_preview = _style_success_runtime_preview(preview_batch, hparams)
+            else:
+                style_success_runtime_preview = {
+                    "available": False,
+                    "reason": "dataset_size_le_1",
+                    "batch_size": int(preview_batch_size),
+                }
             preview_count = min(5, len(train_dataset))
             content_padding_idx = int(hparams.get("content_padding_idx", 101))
             silent_token = hparams.get("silent_token", None)
@@ -643,8 +806,17 @@ def run_prep(args):
                 )
         else:
             batch_controls_error = "empty_train_dataset"
+            style_success_runtime_preview = {
+                "available": False,
+                "reason": "empty_train_dataset",
+                "batch_size": 0,
+            }
     except Exception as exc:  # pragma: no cover - surfaced through prep output
         batch_controls_error = f"{type(exc).__name__}: {exc}"
+        style_success_runtime_preview = {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
 
     checks = []
     _check_true(
@@ -1105,12 +1277,21 @@ def run_prep(args):
     style_success_supervision = _style_success_supervision_summary(
         hparams,
         resolved_condition_maps,
+        runtime_preview=style_success_runtime_preview,
     )
     checks.append(
         {
             "name": "style_success_supervision_mode",
             "ok": True,
             "actual": _jsonable(style_success_supervision),
+            "expected": "informational",
+        }
+    )
+    checks.append(
+        {
+            "name": "style_success_runtime_preview",
+            "ok": True,
+            "actual": _jsonable(style_success_runtime_preview),
             "expected": "informational",
         }
     )
@@ -1295,6 +1476,33 @@ def run_prep(args):
             "ok": dynamic_timbre_budget_energy_power > 0.0,
             "actual": dynamic_timbre_budget_energy_power,
             "expected": "> 0.0",
+        }
+    )
+    dynamic_timbre_budget_energy_quantile = float(hparams.get("dynamic_timbre_budget_energy_quantile", 0.90))
+    checks.append(
+        {
+            "name": "dynamic_timbre_budget_energy_quantile_range",
+            "ok": 0.0 < dynamic_timbre_budget_energy_quantile <= 1.0,
+            "actual": dynamic_timbre_budget_energy_quantile,
+            "expected": "(0.0, 1.0]",
+        }
+    )
+    style_success_proxy_negative_threshold = float(hparams.get("style_success_proxy_negative_threshold", 1.25))
+    checks.append(
+        {
+            "name": "style_success_proxy_negative_threshold_nonnegative",
+            "ok": style_success_proxy_negative_threshold >= 0.0,
+            "actual": style_success_proxy_negative_threshold,
+            "expected": ">= 0.0",
+        }
+    )
+    style_success_proxy_negative_min_count = int(hparams.get("style_success_proxy_negative_min_count", 2))
+    checks.append(
+        {
+            "name": "style_success_proxy_negative_min_count_nonnegative",
+            "ok": style_success_proxy_negative_min_count >= 0,
+            "actual": style_success_proxy_negative_min_count,
+            "expected": ">= 0",
         }
     )
 

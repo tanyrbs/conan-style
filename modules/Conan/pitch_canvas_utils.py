@@ -69,11 +69,18 @@ def project_source_sequence_to_pitch_canvas(
     target_shape=None,
     mode: str = "auto",
 ):
+    mode = normalize_style_to_pitch_residual_mode(mode)
     meta = {
         "canvas": "source_aligned",
         "mask": None,
         "blank_mask": None,
         "valid_mask": None,
+        "requested_mode": mode,
+        "post_rhythm_requested": bool(mode == "post_rhythm"),
+        "post_rhythm_available": False,
+        "post_rhythm_runtime_available": False,
+        "post_rhythm_projection_used": False,
+        "fallback_reason": None,
     }
     if not isinstance(sequence, torch.Tensor) or sequence.dim() != 2:
         return sequence, meta
@@ -82,8 +89,8 @@ def project_source_sequence_to_pitch_canvas(
     normalized_target_shape = tuple(target_shape.shape) if isinstance(target_shape, torch.Tensor) else (
         tuple(target_shape) if target_shape is not None else None
     )
-    mode = normalize_style_to_pitch_residual_mode(mode)
     if mode == "source_aligned":
+        meta["fallback_reason"] = "source_aligned_requested"
         meta["mask"] = resolve_content_padding_mask(
             runtime_state.get("content"),
             content_padding_idx,
@@ -92,6 +99,7 @@ def project_source_sequence_to_pitch_canvas(
         return sequence, meta
 
     if normalized_target_shape is not None and tuple(sequence.shape) == normalized_target_shape and mode == "auto":
+        meta["fallback_reason"] = "auto_source_aligned_target_shape"
         meta["mask"] = resolve_content_padding_mask(
             runtime_state.get("content"),
             content_padding_idx,
@@ -125,6 +133,12 @@ def project_source_sequence_to_pitch_canvas(
         "frame_blank_mask",
         "slot_is_blank",
     )
+    has_post_rhythm_runtime = bool(
+        (isinstance(source_frame_index, torch.Tensor) and source_frame_index.dim() == 2)
+        or (isinstance(unit_index, torch.Tensor) and unit_index.dim() == 2)
+    )
+    meta["post_rhythm_runtime_available"] = has_post_rhythm_runtime
+    meta["post_rhythm_available"] = has_post_rhythm_runtime
 
     projected = None
     canvas = None
@@ -165,9 +179,16 @@ def project_source_sequence_to_pitch_canvas(
                     "mask": invalid_mask,
                     "blank_mask": resolved_blank_mask,
                     "valid_mask": valid_mask,
+                    "post_rhythm_projection_used": True,
+                    "fallback_reason": None,
                 }
             )
             return projected, meta
+        meta["fallback_reason"] = "post_rhythm_shape_mismatch"
+    elif mode == "post_rhythm":
+        meta["fallback_reason"] = "post_rhythm_indices_missing"
+    elif mode == "auto":
+        meta["fallback_reason"] = "auto_post_rhythm_unavailable"
 
     meta["mask"] = resolve_content_padding_mask(
         runtime_state.get("content"),

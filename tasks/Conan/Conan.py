@@ -135,7 +135,10 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                     "ref_dynamic_timbre": sample.get("ref_dynamic_timbre_mels", None),
                 }
             )
-        return build_reference_bundle_from_inputs(**bundle_kwargs)
+        return build_reference_bundle_from_inputs(
+            allow_split_reference_inputs=allow_split_reference_inputs,
+            **bundle_kwargs,
+        )
 
     def _resolve_reference_inputs(self, sample, target, *, global_step=0, infer=False, test=False):
         has_external_ref = sample.get("ref_mels", None) is not None

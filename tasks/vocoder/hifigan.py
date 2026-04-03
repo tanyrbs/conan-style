@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 import utils
-from modules.fastspeech.multi_window_disc import Discriminator
+from modules.tts.iclspeech.multi_window_disc import Discriminator
 from modules.vocoder.hifigan.hifigan_causal import (
     MultiPeriodDiscriminator,
     MultiScaleDiscriminator,

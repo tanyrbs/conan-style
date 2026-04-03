@@ -392,7 +392,27 @@ class ConanStylePitchRuntimeMixin:
         ret["style_to_pitch_residual_max_log2"] = max_log2
         ret["style_to_pitch_residual_max_semitones"] = max_semitones
         ret["style_to_pitch_residual_smooth_factor"] = smooth_factor
+        ret["style_to_pitch_residual_requested_mode"] = canvas_meta.get(
+            "requested_mode",
+            residual_mode,
+        )
         ret["style_to_pitch_residual_canvas"] = canvas_meta.get("canvas", "source_aligned")
+        ret["style_to_pitch_residual_post_rhythm_requested"] = bool(
+            canvas_meta.get("post_rhythm_requested", False)
+        )
+        ret["style_to_pitch_residual_post_rhythm_available"] = bool(
+            canvas_meta.get("post_rhythm_available", False)
+        )
+        ret["style_to_pitch_residual_post_rhythm_runtime_available"] = bool(
+            canvas_meta.get("post_rhythm_runtime_available", False)
+        )
+        ret["style_to_pitch_residual_post_rhythm_projection_used"] = bool(
+            canvas_meta.get("post_rhythm_projection_used", False)
+        )
+        fallback_reason = canvas_meta.get("fallback_reason")
+        if fallback_reason is not None:
+            ret["style_to_pitch_residual_canvas_fallback_reason"] = str(fallback_reason)
+            ret["style_to_pitch_residual_projection_fallback_reason"] = str(fallback_reason)
         ret["style_to_pitch_residual_mask"] = canvas_meta.get("mask")
         ret["style_to_pitch_residual_blank_mask"] = canvas_meta.get("blank_mask")
         ret["style_to_pitch_residual_voiced_mask"] = voiced_mask

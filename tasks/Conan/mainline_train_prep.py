@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import importlib
+from importlib import metadata as importlib_metadata
 import json
 import os
 import numpy as np
@@ -84,6 +85,150 @@ CANONICAL_REMOVED_CONFIG_KEYS = (
 )
 
 TOP_LEVEL_KEY_PATTERN = re.compile(r"^([A-Za-z0-9_]+):")
+
+
+def _classify_check_name(name):
+    name = str(name or "").strip()
+    if (
+        name.startswith("runtime_import_")
+        or name == "runtime_python_version_compatible_with_pinned_torchaudio"
+        or name.endswith("_matches_requirements_pin")
+    ):
+        return "runtime_dependencies"
+    if name in {"binary_data_dir_exists", "processed_data_dir_exists"}:
+        return "data_staging"
+    if name.startswith("binary_") or name.startswith("condition_artifacts_"):
+        return "data_staging"
+    if name in {
+        "train_batch_mainline_controls_resolvable",
+        "dynamic_timbre_boundary_preview_available",
+        "dynamic_timbre_boundary_not_global_on_real_data",
+        "train_batch_style_strength_matches_profile",
+        "train_batch_dynamic_timbre_strength_matches_profile",
+        "train_batch_dynamic_timbre_strength_source_matches_profile",
+        "train_batch_style_temperature_matches_profile",
+        "train_batch_dynamic_timbre_temperature_matches_profile",
+        "train_batch_dynamic_timbre_use_tvt_matches_profile",
+        "train_batch_dynamic_timbre_tvt_prior_scale_matches_profile",
+    }:
+        return "data_dependent_preview"
+    if name.startswith("config_"):
+        return "config_surface"
+    if name in {
+        "reference_contract_mode",
+        "decoder_style_condition_mode",
+        "global_timbre_to_pitch",
+        "style_to_pitch_residual",
+        "style_to_pitch_residual_include_timbre",
+        "style_to_pitch_residual_mode",
+        "style_trace_mode",
+        "style_router_enabled",
+        "style_memory_mode",
+        "dynamic_timbre_memory_mode",
+        "style_profile_track",
+        "style_profile",
+        "control_loss_profile",
+        "identity_loss_constraint_mode",
+        "mainline_minimal_active_control_loss_count",
+        "mainline_minimal_active_control_losses",
+    } or name.startswith("lambda_"):
+        return "mainline_contract"
+    return "mainline_contract"
+
+
+def _load_repo_requirements(root_dir: Path):
+    requirements = {}
+    req_path = Path(root_dir) / "requirements.txt"
+    if not req_path.exists():
+        return requirements
+    try:
+        for raw_line in req_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "==" not in line:
+                continue
+            name, version = line.split("==", 1)
+            requirements[name.strip().lower()] = version.strip()
+    except Exception:
+        return {}
+    return requirements
+
+
+def _normalize_requirement_version(version):
+    version = str(version or "").strip()
+    if not version:
+        return None
+    return version.split("+", 1)[0]
+
+
+def _installed_distribution_version(package_name):
+    try:
+        return importlib_metadata.version(str(package_name))
+    except Exception:
+        return None
+
+
+def _check_runtime_requirement_pins(checks, requirements_path, package_names):
+    pins = _load_repo_requirements(Path(requirements_path).parent)
+    for package_name in package_names:
+        normalized_name = str(package_name).strip().lower()
+        pinned_version = pins.get(normalized_name)
+        installed_version = _installed_distribution_version(normalized_name)
+        checks.append(
+            {
+                "name": f"runtime_{normalized_name}_matches_requirements_pin",
+                "ok": bool(
+                    pinned_version is not None
+                    and installed_version is not None
+                    and _normalize_requirement_version(installed_version)
+                    == _normalize_requirement_version(pinned_version)
+                ),
+                "actual": installed_version,
+                "expected": pinned_version if pinned_version is not None else "exact pin present",
+            }
+        )
+
+
+def _resolve_torchaudio_python_range(version: str):
+    version = str(version or "").strip()
+    if not version:
+        return None
+    major_minor = ".".join(version.split(".")[:2])
+    compat = {
+        "2.6": ((3, 9), (3, 13)),
+        "2.5": ((3, 8), (3, 11)),
+        "2.4": ((3, 8), (3, 11)),
+        "2.3": ((3, 8), (3, 11)),
+        "2.2": ((3, 8), (3, 11)),
+        "2.1": ((3, 8), (3, 11)),
+        "2.0": ((3, 8), (3, 11)),
+    }
+    return compat.get(major_minor)
+
+
+def _summarize_failed_checks(checks):
+    failed = []
+    category_map = {}
+    for item in checks:
+        if bool(item.get("ok", False)):
+            continue
+        name = item.get("name")
+        category = _classify_check_name(name)
+        failed_entry = {
+            "name": name,
+            "category": category,
+            "actual": _jsonable(item.get("actual")),
+            "expected": _jsonable(item.get("expected")),
+            "path": item.get("path"),
+        }
+        failed.append(failed_entry)
+        category_state = category_map.setdefault(category, {"count": 0, "checks": []})
+        category_state["count"] += 1
+        category_state["checks"].append(name)
+    return {
+        "failed_count": len(failed),
+        "failed_checks": failed,
+        "blocking_categories": category_map,
+    }
 
 
 def parse_args():
@@ -254,6 +399,43 @@ def _check_condition_artifacts(checks, candidate_dirs):
                 },
             }
         )
+    return resolved_maps
+
+
+def _style_success_supervision_summary(hparams, resolved_condition_maps):
+    style_success_lambda = float(hparams.get("lambda_style_success_rank", 0.0) or 0.0)
+    weak_label_counts = {
+        field: int(len(resolved_condition_maps.get(field, {})))
+        for field in ("emotion", "accent")
+    }
+    usable_weak_label_fields = {
+        field: count
+        for field, count in weak_label_counts.items()
+        if int(count) > 1
+    }
+    pair_enabled = style_success_lambda > 0.0
+    weak_label_ranking_available = pair_enabled and len(usable_weak_label_fields) > 0
+    mode = (
+        "disabled"
+        if not pair_enabled
+        else (
+            "paired_plus_weak_label_ranking"
+            if weak_label_ranking_available
+            else "paired_only"
+        )
+    )
+    return {
+        "lambda_style_success_rank": style_success_lambda,
+        "mode": mode,
+        "pair_enabled": bool(pair_enabled),
+        "weak_label_ranking_available_from_artifacts": bool(weak_label_ranking_available),
+        "usable_weak_label_fields": usable_weak_label_fields,
+        "weak_label_label_counts": weak_label_counts,
+        "source": "condition_artifacts",
+        "note": (
+            "artifact-level preview only; actual batch negatives still depend on per-item emotion_id/accent_id coverage"
+        ),
+    }
 
 
 def _resolve_config_chain(config_path, loaded=None):
@@ -879,12 +1061,58 @@ def run_prep(args):
     )
     _check_close(checks, "forcing_prob_init", hparams.get("forcing_prob_init", 1.0), 1.0)
     _check_close(checks, "forcing_prob_final", hparams.get("forcing_prob_final", 0.0), 0.0)
+    _check_runtime_requirement_pins(
+        checks,
+        ROOT_DIR / "requirements.txt",
+        package_names=("torch", "torchaudio", "torchdyn", "textgrid"),
+    )
+    repo_requirements = _load_repo_requirements(ROOT_DIR)
+    pinned_torchaudio = repo_requirements.get("torchaudio")
+    pinned_python_range = _resolve_torchaudio_python_range(pinned_torchaudio)
+    if pinned_python_range is not None:
+        py_version = tuple(int(part) for part in sys.version_info[:2])
+        py_min, py_max = pinned_python_range
+        torchaudio_importable_now = True
+        try:
+            importlib.import_module("torchaudio")
+        except Exception:
+            torchaudio_importable_now = False
+        _check_true(
+            checks,
+            "runtime_python_version_compatible_with_pinned_torchaudio",
+            (py_min <= py_version <= py_max) or torchaudio_importable_now,
+            actual={
+                "python_version": f"{py_version[0]}.{py_version[1]}",
+                "pinned_torchaudio": pinned_torchaudio,
+                "out_of_range_but_importable": bool(
+                    not (py_min <= py_version <= py_max) and torchaudio_importable_now
+                ),
+            },
+            expected={
+                "python_min": f"{py_min[0]}.{py_min[1]}",
+                "python_max": f"{py_max[0]}.{py_max[1]}",
+                "pinned_torchaudio": pinned_torchaudio,
+            },
+        )
     _check_importable(checks, "runtime_import_torchaudio", "torchaudio")
     _check_importable(checks, "runtime_import_textgrid", "textgrid")
     _check_importable(checks, "runtime_import_torchdyn", "torchdyn")
-    _check_condition_artifacts(
+    condition_artifact_dirs = [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")]
+    resolved_condition_maps = _check_condition_artifacts(
         checks,
-        [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")],
+        condition_artifact_dirs,
+    )
+    style_success_supervision = _style_success_supervision_summary(
+        hparams,
+        resolved_condition_maps,
+    )
+    checks.append(
+        {
+            "name": "style_success_supervision_mode",
+            "ok": True,
+            "actual": _jsonable(style_success_supervision),
+            "expected": "informational",
+        }
     )
     _check_close(
         checks,
@@ -1042,6 +1270,33 @@ def run_prep(args):
             "expected": ">= 0.0",
         }
     )
+    dynamic_timbre_budget_uv_floor = float(hparams.get("dynamic_timbre_budget_uv_floor", 0.25))
+    checks.append(
+        {
+            "name": "dynamic_timbre_budget_uv_floor_range",
+            "ok": 0.0 <= dynamic_timbre_budget_uv_floor <= 1.0,
+            "actual": dynamic_timbre_budget_uv_floor,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    dynamic_timbre_budget_energy_floor = float(hparams.get("dynamic_timbre_budget_energy_floor", 0.10))
+    checks.append(
+        {
+            "name": "dynamic_timbre_budget_energy_floor_range",
+            "ok": 0.0 <= dynamic_timbre_budget_energy_floor <= 1.0,
+            "actual": dynamic_timbre_budget_energy_floor,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    dynamic_timbre_budget_energy_power = float(hparams.get("dynamic_timbre_budget_energy_power", 0.5))
+    checks.append(
+        {
+            "name": "dynamic_timbre_budget_energy_power_positive",
+            "ok": dynamic_timbre_budget_energy_power > 0.0,
+            "actual": dynamic_timbre_budget_energy_power,
+            "expected": "> 0.0",
+        }
+    )
 
     _check_exists(checks, "binary_data_dir_exists", hparams.get("binary_data_dir"))
     _check_exists(checks, "processed_data_dir_exists", hparams.get("processed_data_dir"))
@@ -1051,14 +1306,17 @@ def run_prep(args):
             "train.data",
             "train.idx",
             "train_lengths.npy",
+            "train_ref_indices.npy",
             "train_spk_ids.npy",
             "valid.data",
             "valid.idx",
             "valid_lengths.npy",
+            "valid_ref_indices.npy",
             "valid_spk_ids.npy",
             "test.data",
             "test.idx",
             "test_lengths.npy",
+            "test_ref_indices.npy",
             "test_spk_ids.npy",
         ):
             _check_exists(
@@ -1075,6 +1333,12 @@ def run_prep(args):
 
     reference_preview_steps = (0, 20000, 40000, 70000, 100000)
     forcing_preview_steps = (0, 12000, 20000, 60000, 100000)
+    failed_summary = _summarize_failed_checks(checks)
+    non_contract_categories = {"runtime_dependencies", "data_staging", "data_dependent_preview"}
+    code_contract_ready = all(
+        item.get("ok", False) or _classify_check_name(item.get("name")) in non_contract_categories
+        for item in checks
+    )
     summary = {
         "config": args.config,
         "config_chain": config_chain,
@@ -1087,6 +1351,7 @@ def run_prep(args):
         "mainline_controls": _jsonable(controls.as_dict()),
         "train_batch_mainline_controls": None if batch_controls is None else _jsonable(batch_controls.as_dict()),
         "resolved_profile": _jsonable(resolved_profile),
+        "style_success_supervision": _jsonable(style_success_supervision),
         "reference_curriculum_preview": [
             _jsonable({"step": int(step), **resolve_reference_curriculum(step, hparams)})
             for step in reference_preview_steps
@@ -1104,7 +1369,10 @@ def run_prep(args):
         ],
         "dynamic_timbre_boundary_preview": _jsonable(boundary_preview),
         "checks": _jsonable(checks),
+        "failed_summary": failed_summary,
+        "code_contract_ready": bool(code_contract_ready),
         "ready": bool(all(item["ok"] for item in checks)),
+        "train_ready_now": bool(all(item["ok"] for item in checks)),
     }
     output_path = Path(args.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

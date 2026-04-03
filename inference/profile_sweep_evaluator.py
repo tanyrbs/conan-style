@@ -94,6 +94,18 @@ def _voiced_stats(f0):
     }
 
 
+def _lazy_import_streaming_engine():
+    try:
+        from inference.Conan import StreamingVoiceConversion
+
+        return StreamingVoiceConversion
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to import the Conan streaming inference stack for profile-sweep evaluation. "
+            "Check that torchaudio matches torch and that Emformer runtime dependencies are installed."
+        ) from exc
+
+
 class AudioFeatureCache:
     def __init__(self, hparams):
         self.hparams = hparams
@@ -281,9 +293,8 @@ class StyleProfileSweepEvaluator:
         )
 
     def _build_engine(self):
-        from inference.Conan import StreamingVoiceConversion
-
         if self.engine is None:
+            StreamingVoiceConversion = _lazy_import_streaming_engine()
             self.engine = StreamingVoiceConversion(self.hparams)
         if self.use_model_metrics and self.model_cache is None:
             self.model_cache = ModelFeatureCache(self.engine)
@@ -332,6 +343,8 @@ class StyleProfileSweepEvaluator:
             "timbre_ref": model_input.get("ref_timbre_wav"),
             "style_ref": model_input.get("ref_style_wav"),
             "dynamic_timbre_ref": model_input.get("ref_dynamic_timbre_wav"),
+            "emotion_ref": model_input.get("ref_emotion_wav"),
+            "accent_ref": model_input.get("ref_accent_wav"),
         }
         for prefix, ref_path in explicit_refs.items():
             if not ref_path:
@@ -395,6 +408,16 @@ class StyleProfileSweepEvaluator:
                 "elapsed_sec": entry.get("elapsed_sec"),
             }
         )
+        explicit_reference_requested = any(
+            model_input.get(key)
+            for key in (
+                "ref_timbre_wav",
+                "ref_style_wav",
+                "ref_dynamic_timbre_wav",
+                "ref_emotion_wav",
+                "ref_accent_wav",
+            )
+        )
         if self.include_research_metadata:
             metrics.update(
                 {
@@ -404,13 +427,15 @@ class StyleProfileSweepEvaluator:
                     "ref_timbre_wav": model_input.get("ref_timbre_wav"),
                     "ref_style_wav": model_input.get("ref_style_wav"),
                     "ref_dynamic_timbre_wav": model_input.get("ref_dynamic_timbre_wav"),
+                    "ref_emotion_wav": model_input.get("ref_emotion_wav"),
+                    "ref_accent_wav": model_input.get("ref_accent_wav"),
                 }
             )
             for key in PROFILE_META_KEYS:
                 if key not in metrics:
                     metrics[key] = model_input.get(key)
         metrics.update(self._evaluate_model_metrics(gen_path, src_path, ref_path))
-        if self.include_research_metadata:
+        if explicit_reference_requested:
             metrics.update(self._evaluate_explicit_reference_metrics(gen_path, model_input))
         return metrics
 

@@ -1,11 +1,12 @@
 # Conan canonical mainline
 
-Updated: 2026-04-03
+Updated: 2026-04-04
 
 This repository snapshot keeps only the Conan single-reference strong-style mainline.
 
-Review-archive note: this lightweight code snapshot does **not** bundle large binary artifacts.
-Before running prep / training / inference, stage the actual processed data, binary data, and Conan / Emformer / vocoder checkpoints at the configured paths.
+Review-archive note: do **not** infer train-readiness from repository text alone.
+Some checkouts may already have staged `data/*` and `checkpoints/*` artifacts at the canonical paths, while others may not.
+Treat the prep gate plus short smoke runs as the source of truth for whether the current local checkout is actually ready.
 
 ## Canonical configs
 
@@ -23,6 +24,7 @@ Both are aligned to the same shipped surface:
 - `style_to_pitch_residual: true`
 - `style_to_pitch_residual_include_timbre: false`
 - `global_timbre_to_pitch: false`
+- post-rhythm pitch-canvas projection remains best-effort; when no rhythm frame-index canvas is emitted, shipped runtime falls back to source-aligned residual application and surfaces the realized canvas in metadata
 
 Training now opens the mainline upper-bound modules by curriculum:
 
@@ -56,11 +58,16 @@ Implementation note for this 2026-04-03 closure pass:
 
 Important: this mainline is a **bounded single-reference factorization contract**, not a proof of perfect disentanglement. The code explicitly surfaces `factorization_guaranteed: false`; the shipped losses constrain identity drift, timbre budget, pitch residual safety, and late-owner dominance, but they do not mathematically guarantee that every internal branch learns a unique semantic role.
 
-`lambda_style_success_rank` is intentionally training-side only. It does not open a new inference control surface; instead it adds a lower-bound style-success signal that combines paired self/reference alignment with weak-label batch ranking when metadata negatives are available. If the staged condition artifacts expose no usable label buckets (`num_labels == 0`), the weak-label branch naturally degenerates toward paired alignment rather than meaningful cross-label ranking.
+`lambda_style_success_rank` is intentionally training-side only. It does not open a new inference control surface; instead it adds a lower-bound style-success signal that combines paired self/reference alignment with weak-label batch ranking when metadata negatives are available. The target side is kept reference-derived only: self-derived runtime summaries such as `style_trace_pooled` / `style_trace_blended_with_reference` are excluded from that lower-bound target so the loss does not quietly grade the owner-style branch against its own pooled output. `tasks/Conan/mainline_train_prep.py` now reports whether the staged artifacts imply `paired_plus_weak_label_ranking` or only `paired_only`; if the staged condition artifacts expose no usable label buckets (`num_labels <= 1`), the weak-label branch naturally degenerates toward paired alignment rather than meaningful cross-label ranking. In the currently staged LibriTTS-single artifacts in this checkout, those weak-label buckets are empty, so the prep summary resolves to `paired_only`.
 
 An additional optional research regularizer is now wired but still shipped as `0.0` by default: `lambda_style_timbre_runtime_overlap`. It does not claim disentanglement; it simply measures and, when enabled, penalizes excessive frame-wise overlap between `style_decoder_residual` and `dynamic_timbre_decoder_residual_prebudget`. Importantly, explicit ablation runs can now enable it while staying on `control_loss_profile: mainline_minimal`; the schedule layer no longer silently zeroes that opt-in regularizer.
 
-Treat `style_decoder_residual` as the public owner-style contract. Keep `fast_style_decoder_residual`, `slow_style_decoder_residual`, router gates, and burst scores as **internal realization / diagnostics variables**, not semantically identifiable public factors.
+Treat `style_decoder_residual` as the public owner-style contract. Keep `fast_style_decoder_residual`, `slow_style_decoder_residual`, router gates, and burst scores as **internal realization / diagnostics variables**, not semantically identifiable public factors. The style-side regularizers and the style-success anchor now also follow that same contract: they prefer `style_decoder_residual` directly instead of supervising a raw fast+slow combination and accidentally overweighting the slow branch.
+
+Evaluation readiness is now split more honestly as well:
+
+- `inference/run_style_profile_evaluation.py` no longer hard-crashes at import time when the optional `inference/research/` package is absent; factorized swap reporting is now lazy / best-effort
+- explicit timbre/style/dynamic-timbre/emotion/accent reference metrics are no longer hidden behind `include_research_metadata`; if a sweep row actually carries explicit reference wavs, the evaluator now computes the matching validation metrics even on the default canonical path
 
 ## Data layout
 
@@ -99,10 +106,9 @@ So:
 
 ## Audited mainline contract and environment caveat
 
-This repo encodes the intended canonical mainline contract, but universal verification still depends on staged real data,
-compatible `torchaudio` / CUDA runtime libraries, and running the prep gate plus smoke commands in your own environment.
+This repo encodes the intended canonical mainline contract, but universal verification still depends on the **current local environment** and on running the prep gate plus smoke commands in that environment.
 Treat `tasks/Conan/mainline_train_prep.py` and a short real-data smoke run as the source of truth for train-readiness.
-That prep gate validates the shipped canonical config; optional research regularizers such as `lambda_style_timbre_runtime_overlap` remain opt-in ablations, not part of the default prep pass.
+That prep gate validates the shipped canonical config; optional research regularizers such as `lambda_style_timbre_runtime_overlap` remain opt-in ablations, not part of the default prep pass. It also now checks exact `requirements.txt` pins for `torch` / `torchaudio` / `torchdyn` / `textgrid`, plus Python-vs-pinned-`torchaudio` compatibility. So `code_contract_ready: true` no longer implies `train_ready_now: true`.
 
 Key audited properties in the checked-in code:
 
@@ -112,6 +118,8 @@ Key audited properties in the checked-in code:
 - canonical training batches now lock `style_strength` to the resolved `style_profile` unless `allow_item_style_strength_override` is explicitly enabled
 - canonical mainline profile surface now only approves `style_strength` as a direct override; other profile-key deviations are treated as research overrides and coerced back unless explicitly allowed
 - resolved mainline controls now stay authoritative for TVT prior/runtime flags and pitch-residual scale / semitone / smoothing
+- style conditioning now consumes the resolved mainline `style_strength` instead of a hidden raw-kwargs alias
+- dynamic-timbre budget internals (`runtime_dynamic_timbre_style_budget_slow_style_weight` / `runtime_dynamic_timbre_style_budget_epsilon`) and upper-bound curriculum knobs are hparam-owned on closed mainline rather than per-request overrides
 - dynamic timbre is not allowed to leak into `style_to_pitch_residual` on the shipped mainline path
 - when no external speaker verifier is configured, the identity loss is evaluated in a frozen internal speaker space instead of a trainable one
 - decoder runtime now consumes `slow_style_trace` directly instead of keeping it as a log-only byproduct
@@ -122,7 +130,7 @@ Key audited properties in the checked-in code:
 - dynamic timbre now follows a consistent residual semantic on both TVT and non-TVT paths
 - dynamic timbre boundary suppression no longer collapses to a global mask on dense HuBERT-style unit sequences
 - style-to-pitch residual smoothing is post-canvas and mask-aware, and the safe loss now combines **robust target alignment + one-sided safe budget + target-slope matching** when a bounded target residual is available instead of flattening any raw local movement
-- direct library-style inference (`set_hparams(..., global_hparams=False)` + `StreamingVoiceConversion(...)`) no longer depends on the global singleton hparams dict during style/timbre runtime
+- direct library-style inference (`set_hparams(..., global_hparams=False)` + `StreamingVoiceConversion(...)`) no longer requires the global singleton hparams dict on the canonical style/timbre path, although some legacy fallback reads still exist outside that main path
 - binary indexed datasets produced under NumPy 2.x remain readable in the shipped NumPy 1.x conda environment
 - internal runtime glue is now split by responsibility:
   - `modules/Conan/common_utils.py` owns shared lightweight helpers

@@ -50,8 +50,6 @@ STYLE_RUNTIME_KEYS = (
     "runtime_dynamic_timbre_style_budget_enabled",
     "runtime_dynamic_timbre_style_budget_ratio",
     "runtime_dynamic_timbre_style_budget_margin",
-    "runtime_dynamic_timbre_style_budget_slow_style_weight",
-    "runtime_dynamic_timbre_style_budget_epsilon",
 )
 
 REFERENCE_CONTRACT_MODES = (
@@ -114,8 +112,18 @@ def canonicalize_reference_bundle(
     default_ref=None,
     prompt_fallback_to_style: bool = False,
     contract_mode: Optional[str] = None,
+    allow_split_reference_inputs: bool = False,
 ):
     bundle = bundle or {}
+    allow_split_reference_inputs = bool(
+        allow_split_reference_inputs
+        or first_present(
+            bundle,
+            "allow_split_reference_inputs",
+            "allow_factorized_reference_bundle",
+            default=False,
+        )
+    )
     existing_contract = first_present(bundle, "reference_contract", default={}) or {}
     contract_mode = normalize_reference_contract_mode(
         first_present(bundle, "reference_contract_mode", default=contract_mode),
@@ -123,8 +131,12 @@ def canonicalize_reference_bundle(
     )
     resolved_ref = first_present(bundle, "ref", default=default_ref)
     explicit_ref = resolved_ref is not None
-    explicit_timbre_value = first_present(bundle, "ref_timbre", "timbre", default=None)
-    if "explicit_timbre" in existing_contract:
+    explicit_timbre_value = (
+        first_present(bundle, "ref_timbre", "timbre", default=None)
+        if allow_split_reference_inputs
+        else None
+    )
+    if allow_split_reference_inputs and "explicit_timbre" in existing_contract:
         explicit_timbre = bool(existing_contract.get("explicit_timbre"))
     else:
         explicit_timbre = explicit_timbre_value is not None
@@ -132,13 +144,21 @@ def canonicalize_reference_bundle(
     if not explicit_timbre:
         resolved_timbre = resolved_ref
 
-    explicit_style_value = first_present(bundle, "ref_style", "style", default=None)
-    explicit_dynamic_timbre_value = first_present(bundle, "ref_dynamic_timbre", "dynamic_timbre", default=None)
-    if "explicit_style" in existing_contract:
+    explicit_style_value = (
+        first_present(bundle, "ref_style", "style", default=None)
+        if allow_split_reference_inputs
+        else None
+    )
+    explicit_dynamic_timbre_value = (
+        first_present(bundle, "ref_dynamic_timbre", "dynamic_timbre", default=None)
+        if allow_split_reference_inputs
+        else None
+    )
+    if allow_split_reference_inputs and "explicit_style" in existing_contract:
         explicit_style = bool(existing_contract.get("explicit_style"))
     else:
         explicit_style = explicit_style_value is not None
-    if "explicit_dynamic_timbre" in existing_contract:
+    if allow_split_reference_inputs and "explicit_dynamic_timbre" in existing_contract:
         explicit_dynamic_timbre = bool(existing_contract.get("explicit_dynamic_timbre"))
     else:
         explicit_dynamic_timbre = explicit_dynamic_timbre_value is not None
@@ -177,6 +197,7 @@ def canonicalize_reference_bundle(
             "summary_source",
             default=resolved_style if resolved_style is not None else resolved_timbre,
         ),
+        "allow_split_reference_inputs": bool(allow_split_reference_inputs),
         "reference_contract_mode": contract_mode,
         "reference_contract": contract,
     }
@@ -205,6 +226,7 @@ def resolve_reference_bundle(
             default_ref=fallback_ref,
             prompt_fallback_to_style=prompt_fallback_to_style,
             contract_mode=first_present(source, "reference_contract_mode", default=contract_mode),
+            allow_split_reference_inputs=allow_split_reference_inputs,
         )
     return canonicalize_reference_bundle(
         {
@@ -246,6 +268,7 @@ def resolve_reference_bundle(
         default_ref=fallback_ref,
         prompt_fallback_to_style=prompt_fallback_to_style,
         contract_mode=contract_mode,
+        allow_split_reference_inputs=allow_split_reference_inputs,
     )
 
 
@@ -271,6 +294,7 @@ def build_reference_bundle_from_batch(sample: Mapping[str, Any], default_ref=Non
         raw_bundle,
         default_ref=default_ref,
         contract_mode=first_present(sample, "reference_contract_mode"),
+        allow_split_reference_inputs=allow_split_reference_inputs,
     )
 
 
@@ -284,6 +308,7 @@ def build_reference_bundle_from_inputs(
     ref_accent=None,
     prompt_fallback_to_style: bool = False,
     reference_contract_mode: Optional[str] = None,
+    allow_split_reference_inputs: bool = False,
 ):
     raw_bundle = {
         "ref": ref,
@@ -299,6 +324,7 @@ def build_reference_bundle_from_inputs(
         default_ref=ref,
         prompt_fallback_to_style=prompt_fallback_to_style,
         contract_mode=reference_contract_mode,
+        allow_split_reference_inputs=allow_split_reference_inputs,
     )
 
 
@@ -345,6 +371,9 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
     # forward/runtime. Model-build-only hparams (for example
     # dynamic_timbre_material_router_bias, which only initializes module bias
     # state in Conan.__init__) must stay out of per-request/runtime kwargs.
+    # A few runtime-consumed stabilizers are also intentionally excluded here
+    # because closed-mainline owns them via shipped hparams rather than
+    # per-request/profile override surface.
     return {
         "style_profile": first_present(
             source,
@@ -471,21 +500,23 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
             source,
             "runtime_dynamic_timbre_style_budget_margin",
         ),
-        "runtime_dynamic_timbre_style_budget_slow_style_weight": first_present(
-            source,
-            "runtime_dynamic_timbre_style_budget_slow_style_weight",
-        ),
-        "runtime_dynamic_timbre_style_budget_epsilon": first_present(
-            source,
-            "runtime_dynamic_timbre_style_budget_epsilon",
-        ),
     }
 
 
 def bundle_to_model_kwargs(reference_bundle: Optional[Mapping[str, Any]], **extra_kwargs):
     model_kwargs: Dict[str, Any] = {}
     if reference_bundle is not None:
-        normalized_bundle = canonicalize_reference_bundle(reference_bundle)
+        normalized_bundle = canonicalize_reference_bundle(
+            reference_bundle,
+            allow_split_reference_inputs=bool(
+                first_present(
+                    reference_bundle,
+                    "allow_split_reference_inputs",
+                    "allow_factorized_reference_bundle",
+                    default=False,
+                )
+            ),
+        )
         model_kwargs["reference_bundle"] = normalized_bundle
         contract = normalized_bundle.get("reference_contract", {}) or {}
         explicit_field_flags = {

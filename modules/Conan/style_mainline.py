@@ -39,6 +39,20 @@ VALID_STYLE_MEMORY_MODES = (
 MAINLINE_STYLE_STRENGTH_MIN = 0.50
 MAINLINE_STYLE_STRENGTH_MAX = 1.80
 
+MAINLINE_HPARAM_PROTECTED_RUNTIME_KEYS = frozenset(
+    {
+        "runtime_dynamic_timbre_style_budget_slow_style_weight",
+        "runtime_dynamic_timbre_style_budget_epsilon",
+        "style_to_pitch_residual_apply_during_teacher_forcing",
+        "upper_bound_curriculum_enabled",
+        "expressive_upper_bound_curriculum_enabled",
+        "upper_bound_curriculum_start_steps",
+        "expressive_upper_bound_curriculum_start_steps",
+        "upper_bound_curriculum_end_steps",
+        "expressive_upper_bound_curriculum_end_steps",
+    }
+)
+
 def sanitize_scalar_range(
     value,
     *,
@@ -222,40 +236,46 @@ def _is_closed_mainline_style_profile(
     )
 
 
-def _direct_style_runtime_override_allowed(
+def _runtime_resolution_mode(
     keys: tuple[str, ...],
     *,
     overrides: Optional[Mapping[str, Any]] = None,
     hparams: Optional[Mapping[str, Any]] = None,
     profile_defaults: Optional[Mapping[str, Any]] = None,
-) -> bool:
+) -> str:
     if not _is_closed_mainline_style_profile(
         profile_defaults,
         overrides=overrides,
         hparams=hparams,
     ):
-        return True
+        return "direct"
     normalized_keys = {str(key) for key in keys if isinstance(key, str)}
+    if len(normalized_keys & MAINLINE_HPARAM_PROTECTED_RUNTIME_KEYS) > 0:
+        return "hparam"
     surface_keys = _style_profile_surface_keys()
     if len(normalized_keys & surface_keys) == 0 and not normalized_keys.intersection(
         {"style_strength", "style_strengths", "dynamic_timbre_strength", "dynamic_timbre_strengths"}
     ):
-        return True
+        return "direct"
     if normalized_keys.intersection({"style_strength", "style_strengths"}):
-        return True
+        return "direct"
     if normalized_keys.intersection({"dynamic_timbre_strength", "dynamic_timbre_strengths"}):
-        return bool(
-            first_present(
-                overrides,
-                "allow_explicit_dynamic_timbre_strength",
-                default=first_present(
-                    hparams,
+        return (
+            "direct"
+            if bool(
+                first_present(
+                    overrides,
                     "allow_explicit_dynamic_timbre_strength",
-                    default=False,
-                ),
+                    default=first_present(
+                        hparams,
+                        "allow_explicit_dynamic_timbre_strength",
+                        default=False,
+                    ),
+                )
             )
+            else "profile"
         )
-    return False
+    return "profile"
 
 
 def resolve_style_runtime_value(
@@ -267,12 +287,13 @@ def resolve_style_runtime_value(
 ):
     if profile_defaults is None:
         profile_defaults = _resolve_style_profile_defaults(overrides, hparams=hparams)
-    if _direct_style_runtime_override_allowed(
+    resolution_mode = _runtime_resolution_mode(
         tuple(keys),
         overrides=overrides,
         hparams=hparams,
         profile_defaults=profile_defaults,
-    ):
+    )
+    if resolution_mode == "direct":
         return first_present(
             overrides,
             *keys,
@@ -281,6 +302,12 @@ def resolve_style_runtime_value(
                 *keys,
                 default=first_present(profile_defaults, *keys, default=default),
             ),
+        )
+    if resolution_mode == "hparam":
+        return first_present(
+            hparams,
+            *keys,
+            default=first_present(profile_defaults, *keys, default=default),
         )
     return first_present(profile_defaults, *keys, default=default)
 
@@ -294,45 +321,37 @@ def resolve_expressive_upper_bound_progress(
 ) -> float:
     if bool(infer):
         return 1.0
+    profile_defaults = _resolve_style_profile_defaults(overrides, hparams=hparams)
     enabled = bool(
-        first_present(
-            overrides,
+        resolve_style_runtime_value(
             "upper_bound_curriculum_enabled",
             "expressive_upper_bound_curriculum_enabled",
-            default=first_present(
-                hparams,
-                "upper_bound_curriculum_enabled",
-                "expressive_upper_bound_curriculum_enabled",
-                default=True,
-            ),
+            overrides=overrides,
+            hparams=hparams,
+            profile_defaults=profile_defaults,
+            default=True,
         )
     )
     if not enabled:
         return 1.0
     start = int(
-        first_present(
-            overrides,
+        resolve_style_runtime_value(
             "upper_bound_curriculum_start_steps",
             "expressive_upper_bound_curriculum_start_steps",
-            default=first_present(
-                hparams,
-                "upper_bound_curriculum_start_steps",
-                "expressive_upper_bound_curriculum_start_steps",
-                default=20000,
-            ),
+            overrides=overrides,
+            hparams=hparams,
+            profile_defaults=profile_defaults,
+            default=20000,
         )
     )
     end = int(
-        first_present(
-            overrides,
+        resolve_style_runtime_value(
             "upper_bound_curriculum_end_steps",
             "expressive_upper_bound_curriculum_end_steps",
-            default=first_present(
-                hparams,
-                "upper_bound_curriculum_end_steps",
-                "expressive_upper_bound_curriculum_end_steps",
-                default=80000,
-            ),
+            overrides=overrides,
+            hparams=hparams,
+            profile_defaults=profile_defaults,
+            default=80000,
         )
     )
     step = max(int(global_step), 0)
@@ -603,9 +622,9 @@ def build_style_mainline_surface_payload(
         "projector_writeback_allowed": False,
         "timing_authority": "decoder_only_no_timing_writeback",
         "pitch_authority": (
-            "content_plus_style_intent_auto_post_rhythm"
+            "content_plus_style_intent_auto_best_effort_post_rhythm"
             if bool(controls.style_to_pitch_residual) and str(controls.style_to_pitch_residual_mode) == "auto"
-            else "content_plus_post_rhythm_style_intent"
+            else "content_plus_requested_best_effort_post_rhythm_style_intent"
             if bool(controls.style_to_pitch_residual) and str(controls.style_to_pitch_residual_mode) == "post_rhythm"
             else "content_plus_source_aligned_style_residual"
             if bool(controls.style_to_pitch_residual)

@@ -9,11 +9,21 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from inference.profile_sweep_evaluator import StyleProfileSweepEvaluator
-from inference.research.factorized_swap_report import write_factorized_swap_report
 from utils.commons.hparams import hparams, set_hparams
 
 CANONICAL_CONFIG = "egs/conan_mainline_infer.yaml"
 CANONICAL_EXP_NAME = "Conan"
+
+
+def _maybe_write_factorized_swap_report(sweep_dir):
+    try:
+        from inference.research.factorized_swap_report import write_factorized_swap_report
+    except Exception as exc:
+        return None, f"optional factorized report unavailable: {type(exc).__name__}: {exc}"
+    try:
+        return write_factorized_swap_report(sweep_dir), None
+    except Exception as exc:
+        return None, f"factorized report generation failed: {type(exc).__name__}: {exc}"
 
 
 def write_augmented_evaluation_report(sweep_dir, report):
@@ -98,14 +108,24 @@ def main():
     )
     report, rows = evaluator.evaluate_all()
     factorized_report = None
+    factorized_report_note = None
     has_factorized_rows = any(
         bool(row.get("factorized_references_requested")) or row.get("swap_variant") is not None
         for row in rows
     )
-    if should_write_factorized_report and has_factorized_rows:
-        factorized_report = write_factorized_swap_report(args.sweep_dir)
-        report["factorized_swap_report"] = factorized_report
-        write_augmented_evaluation_report(args.sweep_dir, report)
+    if should_write_factorized_report:
+        if has_factorized_rows:
+            factorized_report, factorized_report_note = _maybe_write_factorized_swap_report(args.sweep_dir)
+            if factorized_report is not None:
+                report["factorized_swap_report"] = factorized_report
+            if factorized_report_note is not None:
+                report["factorized_swap_report_note"] = factorized_report_note
+            write_augmented_evaluation_report(args.sweep_dir, report)
+        else:
+            report["factorized_swap_report_note"] = (
+                "--enable_factorized_report was set but the sweep contains no explicit factorized rows."
+            )
+            write_augmented_evaluation_report(args.sweep_dir, report)
     print("Style profile evaluation finished:", report)
 
 

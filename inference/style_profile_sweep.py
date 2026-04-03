@@ -18,7 +18,11 @@ from pathlib import Path
 
 import numpy as np
 
-from inference.conan_request import ADVANCED_CONTROL_KEYS, has_distinct_split_reference_inputs
+from inference.conan_request import (
+    ADVANCED_CONTROL_KEYS,
+    UNSUPPORTED_INTERNAL_REQUEST_KEYS,
+    has_distinct_split_reference_inputs,
+)
 from modules.Conan.style_profiles import available_mainline_style_profiles, resolve_style_profile
 from utils.audio.io import save_wav
 
@@ -28,6 +32,18 @@ CASE_META_KEYS = {
     "profiles",
     "profile_overrides",
 }
+
+
+def _lazy_import_streaming_engine():
+    try:
+        from inference.Conan import StreamingVoiceConversion
+
+        return StreamingVoiceConversion
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to import the Conan streaming inference stack for style-profile sweep. "
+            "Check that torchaudio matches torch and that Emformer runtime dependencies are installed."
+        ) from exc
 
 def slugify_filename(text, default="case"):
     text = str(text or "").strip()
@@ -70,12 +86,12 @@ class StyleProfileSweepRunner:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.engine = engine if engine is not None else self._build_engine()
         self._advanced_control_warning_emitted = False
+        self._internal_control_warning_emitted = False
         self.allow_advanced_controls = bool(allow_advanced_controls)
         self.allow_split_reference_inputs = bool(allow_split_reference_inputs)
 
     def _build_engine(self):
-        from inference.Conan import StreamingVoiceConversion
-
+        StreamingVoiceConversion = _lazy_import_streaming_engine()
         return StreamingVoiceConversion(self.hparams)
 
     def _default_output_dir(self):
@@ -117,11 +133,23 @@ class StyleProfileSweepRunner:
         allow_advanced_controls = bool(
             base_input.get("allow_advanced_controls", self.allow_advanced_controls)
         )
+        ignored_internal_keys = [
+            key for key in UNSUPPORTED_INTERNAL_REQUEST_KEYS if base_input.get(key) is not None
+        ]
+        if ignored_internal_keys and not self._internal_control_warning_emitted:
+            warnings.warn(
+                "Ignoring unsupported internal-only control keys in style_profile_sweep.py: "
+                f"{ignored_internal_keys}. These knobs stay hparam-owned on the closed mainline path.",
+                stacklevel=2,
+            )
+            self._internal_control_warning_emitted = True
+        for key in ignored_internal_keys:
+            base_input.pop(key, None)
         if not allow_advanced_controls:
             ignored_advanced_keys = [key for key in ADVANCED_CONTROL_KEYS if base_input.get(key) is not None]
             if ignored_advanced_keys and not self._advanced_control_warning_emitted:
                 warnings.warn(
-                    "Ignoring advanced non-mainline control keys in style_profile_sweep.py: "
+                    "Ignoring unsupported or non-mainline control keys in style_profile_sweep.py: "
                     f"{ignored_advanced_keys}. Set allow_advanced_controls=true only for "
                     "explicit research/ablation sweeps.",
                     stacklevel=2,

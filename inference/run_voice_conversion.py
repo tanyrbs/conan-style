@@ -166,9 +166,9 @@ class VoiceConversionRunner:
         )
         if ignored_advanced_keys and not self._advanced_control_warning_emitted:
             warnings.warn(
-                "Ignoring advanced non-mainline control keys in run_voice_conversion.py: "
-                f"{ignored_advanced_keys}. Set allow_advanced_controls=true in the manifest "
-                "only for explicit research/ablation runs.",
+                "Ignoring unsupported or non-mainline control keys in run_voice_conversion.py: "
+                f"{ignored_advanced_keys}. Use allow_advanced_controls=true only for explicit "
+                "research/ablation runs; internal hparam-owned knobs remain unavailable from the request surface.",
                 stacklevel=2,
             )
             self._advanced_control_warning_emitted = True

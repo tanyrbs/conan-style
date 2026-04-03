@@ -35,7 +35,11 @@ from modules.Conan.style_profiles import (
     available_mainline_style_profiles,
     resolve_style_profile,
 )
-from inference.conan_request import CONDITION_FIELDS, has_distinct_split_reference_inputs
+from inference.conan_request import (
+    ADVANCED_STYLE_RUNTIME_KEYS,
+    CONDITION_FIELDS,
+    has_distinct_split_reference_inputs,
+)
 from utils.commons.condition_labels import load_condition_id_maps, resolve_condition_label_id
 # Emformer feature extractor
 from modules.Emformer.emformer import EmformerDistillModel
@@ -308,6 +312,7 @@ class StreamingVoiceConversion:
                     "reference_contract_mode",
                     self.hparams.get("reference_contract_mode", "collapsed_reference"),
                 ),
+                allow_split_reference_inputs=split_reference_inputs,
             )
         else:
             bundle = build_reference_bundle_from_inputs(
@@ -322,6 +327,7 @@ class StreamingVoiceConversion:
                     "reference_contract_mode",
                     self.hparams.get("reference_contract_mode", "collapsed_reference"),
                 ),
+                allow_split_reference_inputs=split_reference_inputs,
             )
         return bundle, {
             "split_reference_inputs": bool(split_reference_inputs),
@@ -354,13 +360,7 @@ class StreamingVoiceConversion:
     def _build_style_runtime_kwargs(self, inp: Dict, *, resolved_style_profile: Optional[Dict] = None):
         resolved_style_profile = resolved_style_profile or self._resolve_style_profile(inp)
         runtime_source = dict(self._resolved_style_profile_to_runtime_kwargs(resolved_style_profile))
-        allow_research_overrides = inp.get("allow_mainline_profile_research_overrides", None)
-        if allow_research_overrides is not None:
-            runtime_source["allow_mainline_profile_research_overrides"] = allow_research_overrides
-        for key in (
-            "runtime_dynamic_timbre_style_budget_slow_style_weight",
-            "runtime_dynamic_timbre_style_budget_epsilon",
-        ):
+        for key in ADVANCED_STYLE_RUNTIME_KEYS:
             value = inp.get(key, None)
             if value is not None:
                 runtime_source[key] = value
@@ -647,12 +647,14 @@ class StreamingVoiceConversion:
             "expressive_upper_bound_progress",
             "runtime_dynamic_timbre_style_budget_ratio",
             "runtime_dynamic_timbre_style_budget_margin",
-            "runtime_dynamic_timbre_style_budget_slow_style_weight",
-            "runtime_dynamic_timbre_style_budget_epsilon",
         )
         bool_fields = (
             "style_to_pitch_residual_include_timbre",
             "style_to_pitch_residual_uses_timbre_context",
+            "style_to_pitch_residual_post_rhythm_requested",
+            "style_to_pitch_residual_post_rhythm_available",
+            "style_to_pitch_residual_post_rhythm_runtime_available",
+            "style_to_pitch_residual_post_rhythm_projection_used",
             "dynamic_timbre_coarse_style_context_applied",
             "dynamic_timbre_tvt_enabled",
             "dynamic_timbre_tvt_deferred_by_curriculum",
@@ -663,6 +665,8 @@ class StreamingVoiceConversion:
         )
         string_fields = (
             "style_to_pitch_residual_canvas",
+            "style_to_pitch_residual_requested_mode",
+            "style_to_pitch_residual_canvas_fallback_reason",
             "timbre_query_style_scale_source",
         )
         for key in float_fields:

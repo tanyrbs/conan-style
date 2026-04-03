@@ -30,6 +30,7 @@ from modules.Conan.style_mainline import (
     build_style_mainline_surface_payload,
     resolve_expressive_upper_bound_progress,
     resolve_style_mainline_controls,
+    resolve_style_runtime_value,
 )
 from modules.Conan.style_conditioning import ConanStyleConditioningMixin
 from modules.Conan.style_timbre_runtime import (
@@ -415,9 +416,12 @@ class Conan(
         ret["style_mainline"] = style_mainline.as_dict()
         ret["expressive_upper_bound_progress"] = float(expressive_upper_bound_progress)
         ret["upper_bound_curriculum_enabled"] = bool(
-            kwargs.get(
+            resolve_style_runtime_value(
                 "upper_bound_curriculum_enabled",
-                self.hparams.get("upper_bound_curriculum_enabled", True),
+                "expressive_upper_bound_curriculum_enabled",
+                overrides=kwargs,
+                hparams=self.hparams,
+                default=True,
             )
         )
         ret["decoder_style_condition_mode"] = style_mainline.mode

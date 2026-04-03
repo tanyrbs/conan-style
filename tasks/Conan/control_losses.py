@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from modules.Conan.control.separation_metrics import (
     build_sequence_weight as _shared_sequence_weight,
     masked_sequence_cosine,
-    resolve_sample_voiced_weight,
+    resolve_dynamic_timbre_frame_weight,
     weighted_mean as _shared_weighted_mean,
 )
 from modules.Conan.control.style_success import (
@@ -13,6 +13,7 @@ from modules.Conan.control.style_success import (
     STYLE_SUCCESS_RANK_WEIGHT,
     mean_optional_vectors,
     normalized_summary_batch,
+    resolve_style_success_anchor,
     style_success_negative_mask,
     style_success_supervision_scale,
     style_success_target_global_summary,
@@ -98,10 +99,24 @@ def _masked_sequence_mean(sequence, mask=None):
 
 
 def _style_representation(output):
+    style_owner = output.get("style_decoder_residual")
+    style_owner_mask = output.get("style_decoder_residual_mask")
+    if isinstance(style_owner, torch.Tensor):
+        return _masked_sequence_mean(style_owner, style_owner_mask)
     combined_style_trace, combined_style_trace_mask = resolve_combined_style_trace(output)
     return _masked_sequence_mean(
         combined_style_trace,
         combined_style_trace_mask,
+    )
+
+
+def _fast_style_representation(output):
+    fast_summary = _summary_vector(output.get("style_trace_summary"))
+    if isinstance(fast_summary, torch.Tensor) and fast_summary.dim() == 2:
+        return fast_summary
+    return _masked_sequence_mean(
+        output.get("style_trace"),
+        output.get("style_trace_mask"),
     )
 
 
@@ -158,17 +173,34 @@ def _sequence_abs_mean(value):
     return None
 
 
-def _sequence_weight(mask=None, *, reference=None, boundary_mask=None, voiced_weight=None):
+def _sequence_weight(mask=None, *, reference=None, boundary_mask=None, voiced_weight=None, frame_weight=None):
     return _shared_sequence_weight(
         mask,
         reference=reference,
         boundary_mask=boundary_mask,
         voiced_weight=voiced_weight,
+        frame_weight=frame_weight,
     )
 
 
 def _weighted_mean(value, weight=None):
     return _shared_weighted_mean(value, weight)
+
+
+def _resolve_dynamic_timbre_budget_support_weight(sample, output, config, reference):
+    if not isinstance(reference, torch.Tensor):
+        return None
+    return resolve_dynamic_timbre_frame_weight(
+        sample.get("uv") if isinstance(sample, dict) else None,
+        sample.get("energy") if isinstance(sample, dict) else None,
+        reference,
+        mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask"))
+        if isinstance(output, dict)
+        else None,
+        uv_floor=float(config.get("dynamic_timbre_budget_uv_floor", 0.25)),
+        energy_floor=float(config.get("dynamic_timbre_budget_energy_floor", 0.10)),
+        energy_power=float(config.get("dynamic_timbre_budget_energy_power", 0.5)),
+    )
 
 
 def _weighted_smooth_l1(value, target, weight=None, *, beta=1.0):
@@ -198,16 +230,6 @@ def _sum_optional_scalars(*values):
     return total
 
 
-def _detached_budget_reference(value, *, margin: float = 0.0):
-    if not isinstance(value, torch.Tensor):
-        return None
-    reference = value.detach()
-    margin = float(margin)
-    if margin != 0.0:
-        reference = reference + margin
-    return reference
-
-
 def _mean_optional_scalars(*values):
     present = [value for value in values if isinstance(value, torch.Tensor)]
     if not present:
@@ -230,7 +252,32 @@ def _sum_optional_maps(*values):
     return total
 
 
-def _adapter_stage_energy_map(stage_outputs, *, stage_names=None, branch_keys=()):
+def _sum_optional_sequences(*values):
+    present = [value for value in values if isinstance(value, torch.Tensor)]
+    if not present:
+        return None
+    total = present[0]
+    for value in present[1:]:
+        if tuple(value.shape) != tuple(total.shape):
+            continue
+        total = total + value
+    return total
+
+
+def _stage_energy_map(stage_meta, *, branch_keys=(), combine_before_energy=False):
+    if not isinstance(stage_meta, dict):
+        return None
+    if bool(combine_before_energy):
+        combined = _sum_optional_sequences(*[stage_meta.get(key) for key in branch_keys])
+        combined_energy = _sequence_abs_mean(combined)
+        if isinstance(combined_energy, torch.Tensor):
+            return combined_energy
+    return _sum_optional_maps(
+        *[_sequence_abs_mean(stage_meta.get(key)) for key in branch_keys]
+    )
+
+
+def _adapter_stage_energy_map(stage_outputs, *, stage_names=None, branch_keys=(), combine_before_energy=False):
     if not isinstance(stage_outputs, dict):
         return None
     if stage_names is not None:
@@ -239,10 +286,10 @@ def _adapter_stage_energy_map(stage_outputs, *, stage_names=None, branch_keys=()
     for stage_name, stage_meta in stage_outputs.items():
         if stage_names is not None and str(stage_name).lower() not in stage_names:
             continue
-        if not isinstance(stage_meta, dict):
-            continue
-        branch_total = _sum_optional_maps(
-            *[_sequence_abs_mean(stage_meta.get(key)) for key in branch_keys]
+        branch_total = _stage_energy_map(
+            stage_meta,
+            branch_keys=branch_keys,
+            combine_before_energy=combine_before_energy,
         )
         if isinstance(branch_total, torch.Tensor):
             total = branch_total if total is None else _sum_optional_maps(total, branch_total)
@@ -397,6 +444,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         return float(config.get(key, 0.0))
 
     style_repr = _style_representation(output)
+    fast_style_repr = _fast_style_representation(output)
     slow_style_repr = _slow_style_representation(output)
     style_memory_repr = _masked_sequence_mean(
         output.get("style_trace_memory"),
@@ -503,9 +551,11 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
 
     style_success_rank_lambda = _lambda("lambda_style_success_rank")
     if style_success_rank_lambda > 0:
-        style_success_anchor = mean_optional_vectors(
+        style_success_anchor = resolve_style_success_anchor(
             style_repr,
             slow_style_repr,
+            fast_style_summary=fast_style_repr,
+            combined_style_summary=style_repr,
         )
         style_success_target = mean_optional_vectors(
             style_success_target_global_summary(output),
@@ -565,6 +615,9 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                     )
                     targets = torch.arange(anchor_bank.size(0), device=anchor_bank.device)
                     rank_loss = F.cross_entropy(logits[valid_rows], targets[valid_rows])
+                    valid_row_fraction = valid_rows.float().mean().detach()
+                    output["style_success_rank_support_scale"] = valid_row_fraction
+                    rank_loss = rank_loss * valid_row_fraction
                     total_style_success = (
                         rank_loss * rank_weight
                         if total_style_success is None
@@ -652,20 +705,19 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         )
         timbre_budget = budget_terms.get("timbre_energy")
         style_budget = budget_terms.get("style_energy")
-        voiced_weight = None
-        sample_uv = sample.get("uv")
-        if (
-            isinstance(sample_uv, torch.Tensor)
-            and isinstance(timbre_budget, torch.Tensor)
-            and sample_uv.dim() == 2
-            and tuple(sample_uv.shape) == tuple(timbre_budget.shape)
-        ):
-            voiced_weight = (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(timbre_budget.device)
+        budget_support_weight = _resolve_dynamic_timbre_budget_support_weight(
+            sample,
+            output,
+            config,
+            timbre_budget,
+        )
+        if isinstance(budget_support_weight, torch.Tensor):
+            output["dynamic_timbre_budget_support_weight"] = budget_support_weight.detach()
         valid_weight = _sequence_weight(
             output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
             reference=timbre_budget,
             boundary_mask=output.get("dynamic_timbre_boundary_mask"),
-            voiced_weight=voiced_weight,
+            frame_weight=budget_support_weight,
         )
         budget_terms_reduced = []
         prebudget_term = _reduce_budget_overflow(
@@ -681,34 +733,37 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             budget_terms_reduced.append(prebudget_term)
 
         stage_outputs = output.get("decoder_style_adapter_stages")
-        stage_style_budget = _adapter_stage_energy_map(
-            stage_outputs,
-            stage_names=("mid", "late"),
-            branch_keys=("global_style_delta", "slow_style_delta", "style_trace_delta"),
-        )
-        stage_timbre_budget = _adapter_stage_energy_map(
-            stage_outputs,
-            stage_names=("mid", "late"),
-            branch_keys=("dynamic_timbre_delta",),
-        )
-        if isinstance(stage_style_budget, torch.Tensor) and isinstance(stage_timbre_budget, torch.Tensor):
-            stage_valid_weight = _sequence_weight(
-                output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
-                reference=stage_timbre_budget,
-                boundary_mask=output.get("dynamic_timbre_boundary_mask"),
-                voiced_weight=voiced_weight,
-            )
-            stage_term = _reduce_budget_overflow(
-                stage_timbre_budget,
-                stage_style_budget,
-                budget_ratio=budget_ratio,
-                budget_margin=budget_margin,
-                weight=stage_valid_weight,
-                relative_weight=relative_budget_weight,
-                budget_epsilon=budget_epsilon,
-            )
-            if stage_term is not None:
-                budget_terms_reduced.append(stage_term)
+        if isinstance(stage_outputs, dict):
+            for stage_name in ("mid", "late"):
+                stage_meta = stage_outputs.get(stage_name)
+                stage_style_budget = _stage_energy_map(
+                    stage_meta,
+                    branch_keys=("global_style_delta", "slow_style_delta", "style_trace_delta"),
+                    combine_before_energy=True,
+                )
+                stage_timbre_budget = _stage_energy_map(
+                    stage_meta,
+                    branch_keys=("dynamic_timbre_delta",),
+                )
+                if not isinstance(stage_style_budget, torch.Tensor) or not isinstance(stage_timbre_budget, torch.Tensor):
+                    continue
+                stage_valid_weight = _sequence_weight(
+                    output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                    reference=stage_timbre_budget,
+                    boundary_mask=output.get("dynamic_timbre_boundary_mask"),
+                    frame_weight=budget_support_weight,
+                )
+                stage_term = _reduce_budget_overflow(
+                    stage_timbre_budget,
+                    stage_style_budget,
+                    budget_ratio=budget_ratio,
+                    budget_margin=budget_margin,
+                    weight=stage_valid_weight,
+                    relative_weight=relative_budget_weight,
+                    budget_epsilon=budget_epsilon,
+                )
+                if stage_term is not None:
+                    budget_terms_reduced.append(stage_term)
 
         reduced_budget = _mean_optional_scalars(*budget_terms_reduced)
         if reduced_budget is not None:
@@ -725,8 +780,10 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             isinstance(style_decoder_residual, torch.Tensor)
             and isinstance(dynamic_timbre_prebudget, torch.Tensor)
         ):
-            voiced_weight = resolve_sample_voiced_weight(
-                sample.get("uv"),
+            support_weight = _resolve_dynamic_timbre_budget_support_weight(
+                sample,
+                output,
+                config,
                 dynamic_timbre_prebudget,
             )
             overlap_terms = masked_sequence_cosine(
@@ -734,7 +791,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                 dynamic_timbre_prebudget,
                 mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
                 boundary_mask=output.get("dynamic_timbre_boundary_mask"),
-                voiced_weight=voiced_weight,
+                frame_weight=support_weight,
                 absolute=bool(config.get("style_timbre_runtime_overlap_use_abs", True)),
                 margin=float(config.get("style_timbre_runtime_overlap_margin", 0.10)),
             )
@@ -932,12 +989,19 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         stage_outputs = output.get("decoder_style_adapter_stages")
         late_stage = stage_outputs.get("late") if isinstance(stage_outputs, dict) else None
         if isinstance(late_stage, dict):
-            late_style_map = _sum_optional_maps(
-                _sequence_abs_mean(late_stage.get("global_style_delta")),
-                _sequence_abs_mean(late_stage.get("style_trace_delta")),
+            late_style_map = _stage_energy_map(
+                late_stage,
+                branch_keys=("global_style_delta", "style_trace_delta"),
+                combine_before_energy=True,
             )
-            late_timbre_map = _sequence_abs_mean(late_stage.get("dynamic_timbre_delta"))
-            late_anchor_map = _sequence_abs_mean(late_stage.get("global_timbre_delta"))
+            late_timbre_map = _stage_energy_map(
+                late_stage,
+                branch_keys=("dynamic_timbre_delta",),
+            )
+            late_anchor_map = _stage_energy_map(
+                late_stage,
+                branch_keys=("global_timbre_delta",),
+            )
             late_reference_map = (
                 late_timbre_map
                 if isinstance(late_timbre_map, torch.Tensor)
@@ -955,84 +1019,55 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             late_style_energy = _weighted_mean(late_style_map, late_valid_weight)
             late_timbre_energy = _weighted_mean(late_timbre_map, late_valid_weight)
             late_anchor_energy = _weighted_mean(late_anchor_map, late_valid_weight)
-            if (
-                late_owner_lambda > 0
-                and isinstance(late_style_map, torch.Tensor)
-                and isinstance(late_timbre_map, torch.Tensor)
-            ):
+            if late_owner_lambda > 0:
                 owner_ratio = float(config.get("decoder_late_timbre_owner_ratio", 0.50))
                 owner_margin = float(config.get("decoder_late_owner_margin", 0.0))
-                owner_reference_map = _detached_budget_reference(
+                reduced_late_owner = _reduce_budget_overflow(
+                    late_timbre_map,
                     late_style_map,
-                    margin=owner_margin,
+                    budget_ratio=owner_ratio,
+                    budget_margin=owner_margin,
+                    weight=late_valid_weight,
                 )
-                late_owner_overflow = (
-                    F.relu(late_timbre_map - owner_ratio * owner_reference_map)
-                    if isinstance(owner_reference_map, torch.Tensor)
-                    else None
-                )
-                reduced_late_owner = _weighted_mean(late_owner_overflow, late_valid_weight)
                 if reduced_late_owner is None and isinstance(late_style_energy, torch.Tensor) and isinstance(late_timbre_energy, torch.Tensor):
-                    owner_reference = _detached_budget_reference(
+                    reduced_late_owner = _reduce_budget_overflow(
+                        late_timbre_energy,
                         late_style_energy,
-                        margin=owner_margin,
+                        budget_ratio=owner_ratio,
+                        budget_margin=owner_margin,
                     )
-                    if isinstance(owner_reference, torch.Tensor):
-                        reduced_late_owner = F.relu(
-                            late_timbre_energy - owner_ratio * owner_reference
-                        )
                 if reduced_late_owner is not None:
                     losses["decoder_late_owner"] = (
                         reduced_late_owner * late_owner_lambda
-                    )
-            elif (
-                late_owner_lambda > 0
-                and isinstance(late_style_energy, torch.Tensor)
-                and isinstance(late_timbre_energy, torch.Tensor)
-            ):
-                owner_ratio = float(config.get("decoder_late_timbre_owner_ratio", 0.50))
-                owner_margin = float(config.get("decoder_late_owner_margin", 0.0))
-                owner_reference = _detached_budget_reference(
-                    late_style_energy,
-                    margin=owner_margin,
-                )
-                if isinstance(owner_reference, torch.Tensor):
-                    losses["decoder_late_owner"] = (
-                        F.relu(late_timbre_energy - owner_ratio * owner_reference) * late_owner_lambda
                     )
             if late_anchor_lambda > 0 and isinstance(late_anchor_energy, torch.Tensor):
                 anchor_reference_map = late_style_map
                 if not isinstance(anchor_reference_map, torch.Tensor):
                     anchor_reference_map = _sequence_abs_mean(output.get("style_decoder_residual"))
-                if isinstance(anchor_reference_map, torch.Tensor):
-                    anchor_ratio = float(config.get("decoder_late_anchor_budget_ratio", 0.35))
-                    anchor_floor = float(config.get("decoder_late_anchor_budget_floor", 0.0))
-                    anchor_reference_map = _detached_budget_reference(anchor_reference_map)
-                    late_anchor_overflow = (
-                        F.relu(
-                            late_anchor_map - anchor_ratio * anchor_reference_map - anchor_floor
-                        )
-                        if isinstance(late_anchor_map, torch.Tensor)
-                        and isinstance(anchor_reference_map, torch.Tensor)
-                        else None
-                    )
-                    reduced_anchor_budget = _weighted_mean(
-                        late_anchor_overflow,
+                anchor_ratio = float(config.get("decoder_late_anchor_budget_ratio", 0.35))
+                anchor_floor = float(config.get("decoder_late_anchor_budget_floor", 0.0))
+                reduced_anchor_budget = _reduce_budget_overflow(
+                    late_anchor_map,
+                    anchor_reference_map,
+                    budget_ratio=anchor_ratio,
+                    budget_margin=anchor_floor,
+                    weight=late_valid_weight,
+                )
+                if reduced_anchor_budget is None:
+                    anchor_reference = _weighted_mean(
+                        anchor_reference_map,
                         late_valid_weight,
                     )
-                    if reduced_anchor_budget is None:
-                        anchor_reference = _weighted_mean(
-                            anchor_reference_map,
-                            late_valid_weight,
+                    if not isinstance(anchor_reference, torch.Tensor):
+                        anchor_reference = _tensor_abs_mean(output.get("style_decoder_residual"))
+                    if isinstance(anchor_reference, torch.Tensor):
+                        reduced_anchor_budget = _reduce_budget_overflow(
+                            late_anchor_energy,
+                            anchor_reference,
+                            budget_ratio=anchor_ratio,
+                            budget_margin=anchor_floor,
                         )
-                        if not isinstance(anchor_reference, torch.Tensor):
-                            anchor_reference = _tensor_abs_mean(output.get("style_decoder_residual"))
-                        anchor_reference = _detached_budget_reference(anchor_reference)
-                        if isinstance(anchor_reference, torch.Tensor):
-                            reduced_anchor_budget = F.relu(
-                                late_anchor_energy - anchor_ratio * anchor_reference - anchor_floor
-                            )
-                    if reduced_anchor_budget is not None:
-                        losses["decoder_late_anchor_budget"] = (
-                            reduced_anchor_budget * late_anchor_lambda
-                        )
+                if reduced_anchor_budget is not None:
+                    losses["decoder_late_anchor_budget"] = (
+                        reduced_anchor_budget * late_anchor_lambda
+                    )

@@ -50,8 +50,7 @@ def parse_args():
         default="",
         help="Optional output directory override.",
     )
-    args, _ = parser.parse_known_args()
-    return args
+    return parser.parse_args()
 
 
 def main():

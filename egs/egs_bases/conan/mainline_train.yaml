@@ -72,6 +72,9 @@ lambda_style_timbre_runtime_overlap: 0.0
 dynamic_timbre_gate_target: 0.35
 dynamic_timbre_budget_ratio: 0.4
 dynamic_timbre_budget_margin: 0.0
+dynamic_timbre_budget_uv_floor: 0.25
+dynamic_timbre_budget_energy_floor: 0.1
+dynamic_timbre_budget_energy_power: 0.5
 pitch_residual_huber_delta: 0.02
 pitch_residual_budget_weight: 0.15
 pitch_residual_budget_margin: 0.015

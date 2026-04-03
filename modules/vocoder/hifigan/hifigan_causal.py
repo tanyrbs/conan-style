@@ -349,7 +349,7 @@ class DiscriminatorP(torch.nn.Module):
         super(DiscriminatorP, self).__init__()
         self.use_cond = use_cond
         if use_cond:
-            from utils.hparams import hparams
+            from utils.commons.hparams import hparams
             t = hparams['hop_size']
             self.cond_net = torch.nn.ConvTranspose1d(80, 1, t * 2, stride=t, padding=t // 2)
             c_in = 2

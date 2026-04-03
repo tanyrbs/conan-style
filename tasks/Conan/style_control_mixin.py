@@ -307,6 +307,5 @@ class ConanStyleControlMixin:
                     output,
                     specs=(
                         ("vq_loss", "vq_loss", True),
-                        ("ppl", "ppl", True),
                     ),
                 )

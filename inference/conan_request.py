@@ -11,7 +11,7 @@ PUBLIC_CONTROL_KEYS = (
     "style_strength",
 )
 
-ADVANCED_CONTROL_KEYS = (
+ADVANCED_CONDITION_CONTROL_KEYS = (
     "emotion",
     "emotion_id",
     "emotion_strength",
@@ -21,6 +21,67 @@ ADVANCED_CONTROL_KEYS = (
     "arousal",
     "valence",
     "energy",
+)
+
+ADVANCED_MODEL_CONTROL_KEYS = (
+    "dynamic_timbre_strength",
+)
+
+ADVANCED_STYLE_RUNTIME_KEYS = (
+    "allow_mainline_profile_research_overrides",
+    "allow_explicit_dynamic_timbre_strength",
+    "decoder_style_condition_mode",
+    "global_timbre_to_pitch",
+    "style_to_pitch_residual",
+    "style_to_pitch_residual_include_timbre",
+    "style_to_pitch_residual_mode",
+    "style_to_pitch_residual_scale",
+    "style_to_pitch_residual_max_semitones",
+    "style_to_pitch_residual_smooth_factor",
+    "global_style_anchor_strength",
+    "style_trace_mode",
+    "style_memory_mode",
+    "fast_style_strength_scale",
+    "slow_style_strength_scale",
+    "style_router_enabled",
+    "style_temperature",
+    "global_style_trace_blend",
+    "dynamic_timbre_memory_mode",
+    "dynamic_timbre_style_condition_scale",
+    "dynamic_timbre_temperature",
+    "dynamic_timbre_gate_scale",
+    "dynamic_timbre_gate_bias",
+    "dynamic_timbre_boundary_suppress_strength",
+    "dynamic_timbre_boundary_radius",
+    "dynamic_timbre_anchor_preserve_strength",
+    "dynamic_timbre_use_tvt",
+    "dynamic_timbre_tvt_prior_scale",
+    "style_query_global_summary_scale",
+    "dynamic_timbre_coarse_style_context_scale",
+    "dynamic_timbre_query_style_condition_scale",
+    "dynamic_timbre_style_context_stopgrad",
+    "runtime_dynamic_timbre_style_budget_enabled",
+    "runtime_dynamic_timbre_style_budget_ratio",
+    "runtime_dynamic_timbre_style_budget_margin",
+)
+
+ADVANCED_CONTROL_KEYS = (
+    ADVANCED_CONDITION_CONTROL_KEYS
+    + ADVANCED_MODEL_CONTROL_KEYS
+    + ADVANCED_STYLE_RUNTIME_KEYS
+)
+
+UNSUPPORTED_INTERNAL_REQUEST_KEYS = (
+    "style_condition_strength",
+    "runtime_dynamic_timbre_style_budget_slow_style_weight",
+    "runtime_dynamic_timbre_style_budget_epsilon",
+    "style_to_pitch_residual_apply_during_teacher_forcing",
+    "upper_bound_curriculum_enabled",
+    "expressive_upper_bound_curriculum_enabled",
+    "upper_bound_curriculum_start_steps",
+    "expressive_upper_bound_curriculum_start_steps",
+    "upper_bound_curriculum_end_steps",
+    "expressive_upper_bound_curriculum_end_steps",
 )
 
 SPLIT_REFERENCE_KEYS = (
@@ -63,14 +124,23 @@ def build_mainline_request_input(
                 request[key] = value
     else:
         ignored_advanced_keys = [key for key in ADVANCED_CONTROL_KEYS if source.get(key) is not None]
+    ignored_advanced_keys.extend(
+        key
+        for key in UNSUPPORTED_INTERNAL_REQUEST_KEYS
+        if source.get(key) is not None and key not in ignored_advanced_keys
+    )
     return request, ignored_advanced_keys
 
 
 __all__ = [
     "ADVANCED_CONTROL_KEYS",
+    "ADVANCED_CONDITION_CONTROL_KEYS",
+    "ADVANCED_MODEL_CONTROL_KEYS",
+    "ADVANCED_STYLE_RUNTIME_KEYS",
     "CONDITION_FIELDS",
     "PUBLIC_CONTROL_KEYS",
     "SPLIT_REFERENCE_KEYS",
+    "UNSUPPORTED_INTERNAL_REQUEST_KEYS",
     "build_mainline_request_input",
     "has_distinct_split_reference_inputs",
 ]

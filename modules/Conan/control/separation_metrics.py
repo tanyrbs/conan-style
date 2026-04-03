@@ -14,7 +14,7 @@ def normalize_sequence_mask(mask, sequence):
     return mask.bool().to(sequence.device)
 
 
-def build_sequence_weight(mask=None, *, reference=None, boundary_mask=None, voiced_weight=None):
+def build_sequence_weight(mask=None, *, reference=None, boundary_mask=None, voiced_weight=None, frame_weight=None):
     device = None
     dtype = torch.float32
     shape = None
@@ -35,11 +35,15 @@ def build_sequence_weight(mask=None, *, reference=None, boundary_mask=None, voic
     if weight is None:
         return None
 
-    if isinstance(voiced_weight, torch.Tensor):
-        if voiced_weight.dim() == 3 and voiced_weight.size(-1) == 1:
-            voiced_weight = voiced_weight.squeeze(-1)
-        if voiced_weight.dim() == 2 and tuple(voiced_weight.shape) == tuple(weight.shape):
-            weight = weight * voiced_weight.to(device=weight.device, dtype=weight.dtype).clamp(0.0, 1.0)
+    applied_frame_weight = frame_weight if isinstance(frame_weight, torch.Tensor) else voiced_weight
+    if isinstance(applied_frame_weight, torch.Tensor):
+        if applied_frame_weight.dim() == 3 and applied_frame_weight.size(-1) == 1:
+            applied_frame_weight = applied_frame_weight.squeeze(-1)
+        if applied_frame_weight.dim() == 2 and tuple(applied_frame_weight.shape) == tuple(weight.shape):
+            weight = weight * applied_frame_weight.to(
+                device=weight.device,
+                dtype=weight.dtype,
+            ).clamp(0.0, 1.0)
 
     if isinstance(boundary_mask, torch.Tensor):
         if boundary_mask.dim() == 3 and boundary_mask.size(-1) == 1:
@@ -70,6 +74,51 @@ def resolve_sample_voiced_weight(sample_uv, reference):
     return (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(reference.device)
 
 
+def resolve_dynamic_timbre_frame_weight(
+    sample_uv,
+    sample_energy,
+    reference,
+    *,
+    mask=None,
+    uv_floor=0.25,
+    energy_floor=0.10,
+    energy_power=0.5,
+):
+    reference_energy = sequence_energy_map(reference)
+    if not isinstance(reference_energy, torch.Tensor):
+        return None
+    device = reference_energy.device
+    dtype = reference_energy.dtype
+    shape = tuple(reference_energy.shape)
+
+    support = None
+    uv_floor = max(0.0, min(1.0, float(uv_floor)))
+    if isinstance(sample_uv, torch.Tensor):
+        if sample_uv.dim() == 3 and sample_uv.size(-1) == 1:
+            sample_uv = sample_uv.squeeze(-1)
+        if sample_uv.dim() == 2 and tuple(sample_uv.shape) == shape:
+            voiced = (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(device=device, dtype=dtype)
+            support = uv_floor + (1.0 - uv_floor) * voiced
+
+    energy_source = sequence_energy_map(sample_energy)
+    if not isinstance(energy_source, torch.Tensor) or tuple(energy_source.shape) != shape:
+        energy_source = reference_energy.detach()
+    else:
+        energy_source = energy_source.to(device=device, dtype=dtype).abs()
+
+    sequence_mask = normalize_sequence_mask(mask, energy_source)
+    if sequence_mask is not None:
+        energy_source = energy_source.masked_fill(sequence_mask, 0.0)
+
+    energy_floor = max(0.0, min(1.0, float(energy_floor)))
+    energy_power = max(float(energy_power), 1.0e-4)
+    energy_scale = energy_source.amax(dim=1, keepdim=True).clamp_min(1.0e-6)
+    normalized_energy = (energy_source / energy_scale).clamp(0.0, 1.0)
+    energy_support = energy_floor + (1.0 - energy_floor) * normalized_energy.pow(energy_power)
+    support = energy_support if support is None else torch.maximum(support, energy_support)
+    return support.to(device=device, dtype=dtype)
+
+
 def sequence_energy_map(value):
     if not isinstance(value, torch.Tensor):
         return None
@@ -80,7 +129,7 @@ def sequence_energy_map(value):
     return None
 
 
-def sequence_energy_mean(value, *, mask=None, boundary_mask=None, voiced_weight=None):
+def sequence_energy_mean(value, *, mask=None, boundary_mask=None, voiced_weight=None, frame_weight=None):
     energy = sequence_energy_map(value)
     if not isinstance(energy, torch.Tensor):
         return None
@@ -89,6 +138,7 @@ def sequence_energy_mean(value, *, mask=None, boundary_mask=None, voiced_weight=
         reference=energy,
         boundary_mask=boundary_mask,
         voiced_weight=voiced_weight,
+        frame_weight=frame_weight,
     )
     return weighted_mean(energy, weight)
 
@@ -100,6 +150,7 @@ def masked_sequence_cosine(
     mask=None,
     boundary_mask=None,
     voiced_weight=None,
+    frame_weight=None,
     absolute=False,
     margin=0.0,
     eps=1e-6,
@@ -128,6 +179,7 @@ def masked_sequence_cosine(
         reference=cosine_map,
         boundary_mask=boundary_mask,
         voiced_weight=voiced_weight,
+        frame_weight=frame_weight,
     )
     reduced = weighted_mean(penalty_map, weight)
     return {
@@ -142,6 +194,7 @@ __all__ = [
     "build_sequence_weight",
     "masked_sequence_cosine",
     "normalize_sequence_mask",
+    "resolve_dynamic_timbre_frame_weight",
     "resolve_sample_voiced_weight",
     "sequence_energy_map",
     "sequence_energy_mean",

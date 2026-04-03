@@ -385,14 +385,25 @@ class ConanStyleConditioningMixin:
             batch_size=batch_size,
             device=device,
         )
+        style_mainline = ret.get("style_mainline") if isinstance(ret, dict) else None
+        resolved_style_strength = first_present(
+            style_mainline,
+            "style_strength",
+            default=kwargs.get("style_strength", kwargs.get("style_strengths", 1.0)),
+        )
+        style_strength_source = (
+            "style_mainline_resolved"
+            if isinstance(style_mainline, dict) and style_mainline.get("style_strength") is not None
+            else "kwargs_style_strength"
+        )
         style_strength = self._resolve_strength(
-            kwargs.get(
-                "style_condition_strength",
-                kwargs.get("style_strength", kwargs.get("style_strengths", 1.0)),
-            ),
+            resolved_style_strength,
             batch_size=batch_size,
             device=device,
         )
+        if isinstance(ret, dict):
+            ret["style_condition_strength_source"] = str(style_strength_source)
+            ret["style_condition_strength_runtime"] = style_strength.squeeze(-1)
         accent_strength = self._resolve_strength(
             kwargs.get("accent_strength", kwargs.get("accent_strengths", 1.0)),
             batch_size=batch_size,

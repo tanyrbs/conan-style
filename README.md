@@ -104,6 +104,8 @@ Key audited properties in the checked-in code:
 - when no external speaker verifier is configured, the identity loss is evaluated in a frozen internal speaker space instead of a trainable one
 - decoder runtime now consumes `slow_style_trace` directly instead of keeping it as a log-only byproduct
 - runtime dynamic-timbre budgeting now uses both the owner-style residual and the slow-style residual as its reference, while diagnostics/losses observe the pre-budget residual
+- control-loss/runtime glue is now split one layer further:
+  - `modules/Conan/style_timbre_runtime.py` owns query-side style assembly, timbre-query preparation, runtime budget application, and decoder bundle realization
 - fast style / TVT timbre / pitch residual now share one upper-bound curriculum instead of all starting at step 0
 - dynamic timbre now follows a consistent residual semantic on both TVT and non-TVT paths
 - dynamic timbre boundary suppression no longer collapses to a global mask on dense HuBERT-style unit sequences
@@ -127,8 +129,11 @@ New control diagnostics from this closure pass include:
 - `diag_dynamic_timbre_prebudget_norm`
 - `diag_dynamic_timbre_postbudget_norm`
 - `diag_dynamic_timbre_post_to_pre_budget_ratio`
+- `diag_runtime_dynamic_timbre_style_budget_overflow_mean/std`
+- `diag_runtime_dynamic_timbre_style_budget_relative_overflow_mean/std`
 - `diag_identity_backend_is_external`
 - `diag_identity_encoder_frozen_for_loss`
+- `diag_output_identity_target_cos`
 
 Latest real-data regeneration / training run completed in this workspace:
 

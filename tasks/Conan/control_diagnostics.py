@@ -512,6 +512,9 @@ def collect_control_diagnostics(output, sample, config):
         timbre_anchor_cos = _cosine_mean(timbre_repr, global_timbre_anchor)
         if timbre_anchor_cos is not None:
             diagnostics["diag_timbre_anchor_cos"] = timbre_anchor_cos
+        output_identity_target_embed = summary_vector(
+            output.get("output_identity_target_embed")
+        )
         output_identity_cos = _cosine_mean(output_identity_embed, global_timbre_anchor)
         if output_identity_cos is not None:
             diagnostics["diag_output_identity_anchor_cos"] = output_identity_cos
@@ -519,6 +522,13 @@ def collect_control_diagnostics(output, sample, config):
         output_identity_ref_cos = _cosine_mean(output_identity_embed, reference_identity_embed)
         if output_identity_ref_cos is not None:
             diagnostics["diag_output_identity_ref_cos"] = output_identity_ref_cos
+        output_identity_target_cos = _cosine_mean(
+            output_identity_embed,
+            output_identity_target_embed,
+        )
+        if output_identity_target_cos is not None:
+            diagnostics["diag_output_identity_target_cos"] = output_identity_target_cos
+            diagnostics["diag_output_identity_target_distance"] = 1.0 - output_identity_target_cos
         query_cos = _cosine_mean(
             style_query_repr,
             timbre_query_repr,
@@ -590,6 +600,37 @@ def collect_control_diagnostics(output, sample, config):
             diagnostics["diag_runtime_dynamic_timbre_style_budget_clip_frac"] = runtime_budget_clip_frac.to(
                 **tensor_kwargs
             )
+        for output_key, diag_key in (
+            (
+                "runtime_dynamic_timbre_style_budget_overflow",
+                "diag_runtime_dynamic_timbre_style_budget_overflow",
+            ),
+            (
+                "runtime_dynamic_timbre_style_budget_relative_overflow",
+                "diag_runtime_dynamic_timbre_style_budget_relative_overflow",
+            ),
+        ):
+            diagnostics.update(
+                _simple_sequence_statistics(
+                    output.get(output_key),
+                    output.get("dynamic_timbre_mask"),
+                    prefix=diag_key,
+                )
+            )
+        dynamic_timbre_prebudget = output.get("dynamic_timbre_decoder_residual_prebudget")
+        if isinstance(dynamic_timbre_prebudget, torch.Tensor) and dynamic_timbre_prebudget.dim() == 3:
+            prebudget_mask = _normalize_mask(
+                output.get("dynamic_timbre_mask"),
+                dynamic_timbre_prebudget,
+            )
+            prebudget_norm = dynamic_timbre_prebudget.float().norm(dim=-1)
+            if prebudget_mask is None:
+                valid_prebudget = prebudget_norm.reshape(-1)
+            else:
+                valid_prebudget = prebudget_norm[(~prebudget_mask)]
+            if valid_prebudget.numel() > 0:
+                diagnostics["diag_dynamic_timbre_prebudget_mean"] = valid_prebudget.mean()
+                diagnostics["diag_dynamic_timbre_prebudget_std"] = valid_prebudget.std(unbiased=False)
         for output_key, diag_key in (
             ("reference_curriculum_progress", "diag_reference_curriculum_progress"),
             ("reference_curriculum_external_prob", "diag_reference_curriculum_external_prob"),

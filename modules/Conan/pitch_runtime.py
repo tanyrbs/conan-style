@@ -156,6 +156,10 @@ class ConanStylePitchRuntimeMixin:
                     ret["runtime_dynamic_timbre_style_energy"] = budget_meta["style_energy"]
                 if isinstance(budget_meta.get("timbre_energy"), torch.Tensor):
                     ret["runtime_dynamic_timbre_dynamic_energy"] = budget_meta["timbre_energy"]
+                if isinstance(budget_meta.get("overflow"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_style_budget_overflow"] = budget_meta["overflow"]
+                if isinstance(budget_meta.get("relative_overflow"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_style_budget_relative_overflow"] = budget_meta["relative_overflow"]
                 ret["runtime_dynamic_timbre_style_budget_skip_reason"] = budget_meta.get("skip_reason")
                 ret["runtime_dynamic_timbre_style_budget_applied"] = budget_meta.get("applied", False)
                 clip_frac = budget_meta.get("active_fraction")

@@ -73,6 +73,7 @@ This closure pass also tightens two previously weakly-realized parts of the cont
 
 - `slow_style_trace` is now actually passed into the decoder runtime bundle, so the decoder's coarse slow-style path is no longer only described in theory
 - runtime dynamic-timbre budgeting now references both the combined owner-style residual and the slow-style residual, while the training loss prefers the **pre-budget** dynamic-timbre residual
+- runtime style/timbre glue is now factored into `modules/Conan/style_timbre_runtime.py`, so `Conan.forward()` stays orchestration-oriented instead of mixing query preparation, owner resolution, timbre runtime, and decoder-bundle assembly in one block
 
 Canonical mainline profile parsing is also stricter now:
 
@@ -220,6 +221,7 @@ python inference/run_streaming_latency_report.py
   - `modules/Conan/common_utils.py` for shared helper resolution / sequence expansion
   - `modules/Conan/pitch_canvas_utils.py` for pitch-canvas runtime semantics
   - `modules/Conan/decoder_style_runtime.py` for decoder style bundle contract assembly
+  - `modules/Conan/style_timbre_runtime.py` for query-side style/timbre runtime realization
 - layer-2 maintainability refactor now also keeps:
   - `modules/Conan/pitch_runtime.py` as the mixin layer for pitch generation + style-to-pitch runtime logic
   - `modules/Conan/common.py` as the single source of truth for lightweight mapping lookup helpers
@@ -235,8 +237,11 @@ python inference/run_streaming_latency_report.py
   - `diag_dynamic_timbre_prebudget_norm`
   - `diag_dynamic_timbre_postbudget_norm`
   - `diag_dynamic_timbre_post_to_pre_budget_ratio`
+  - `diag_runtime_dynamic_timbre_style_budget_overflow_mean/std`
+  - `diag_runtime_dynamic_timbre_style_budget_relative_overflow_mean/std`
   - `diag_identity_backend_is_external`
   - `diag_identity_encoder_frozen_for_loss`
+  - `diag_output_identity_target_cos`
 
 ## 9. Repo cleanup policy in this snapshot
 

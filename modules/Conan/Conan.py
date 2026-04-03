@@ -22,22 +22,20 @@ from modules.Conan.control import (
 from modules.Conan.reference_bundle import resolve_reference_bundle
 from modules.Conan.reference_cache import resolve_reference_cache
 from modules.Conan.decoder_style_adapter import ConanDecoderStyleAdapter
-from modules.Conan.decoder_style_runtime import build_runtime_decoder_style_bundle
 from modules.Conan.pitch_runtime import ConanPitchGenerationMixin, ConanStylePitchRuntimeMixin
 from modules.Conan.tvt_memory import ContentSynchronousTimbreFuser, GlobalTimbreMemory
 from modules.Conan.decoder_style_bundle import validate_decoder_style_bundle
-from modules.Conan.common_utils import expand_sequence_like
 from modules.Conan.style_mainline import (
     build_style_mainline_memory_payload,
     build_style_mainline_surface_payload,
     resolve_expressive_upper_bound_progress,
-    resolve_style_profile_defaults,
     resolve_style_mainline_controls,
-    resolve_style_runtime_value,
 )
-from modules.Conan.style_realization_builder import build_style_realization_payload
-from modules.Conan.style_trace_utils import combine_style_traces, resolve_combined_style_trace
 from modules.Conan.style_conditioning import ConanStyleConditioningMixin
+from modules.Conan.style_timbre_runtime import (
+    prepare_style_query_runtime_inputs,
+    realize_style_timbre_decoder_runtime,
+)
 from modules.commons.transformer import SinusoidalPositionalEmbedding
 
 Flow_DECODERS = {
@@ -463,269 +461,45 @@ class Conan(
             ref_accent=reference_bundle["ref_accent"],
             reference_cache=reference_cache,
         )
-        global_timbre_anchor_runtime = global_timbre_anchor * global_style_anchor_strength
-        if not style_mainline.apply_global_style_anchor:
-            global_timbre_anchor_runtime = torch.zeros_like(global_timbre_anchor_runtime)
-        ret["global_timbre_anchor_runtime"] = global_timbre_anchor_runtime
-        # Query path is strictly content+condition (no global timbre anchor injection).
-        base_condition_inp = content_embed + condition_embed
-        ret["query_condition_inp"] = base_condition_inp
-        pitch_inp = base_condition_inp
-        if style_mainline.apply_global_style_anchor and style_mainline.global_timbre_to_pitch:
-            pitch_inp = pitch_inp + global_timbre_anchor_runtime
-        ret["pitch_condition_inp"] = pitch_inp
-        ret["global_timbre_to_pitch_applied"] = bool(
-            style_mainline.apply_global_style_anchor and style_mainline.global_timbre_to_pitch
-        )
-        style_profile_defaults = resolve_style_profile_defaults(kwargs, hparams=self.hparams)
-        global_style_query_prior = expand_sequence_like(
-            global_style_summary,
-            content_embed.size(1),
-            device=content_embed.device,
-            dtype=content_embed.dtype,
-        )
-        style_query_global_summary_scale = float(
-            resolve_style_runtime_value(
-                "style_query_global_summary_scale",
-                overrides=kwargs,
-                hparams=self.hparams,
-                profile_defaults=style_profile_defaults,
-                default=0.0,
-            )
-        )
-        style_query_base = base_condition_inp
-        if isinstance(global_style_query_prior, torch.Tensor) and style_query_global_summary_scale != 0.0:
-            style_query_base = style_query_base + style_query_global_summary_scale * global_style_query_prior
-        if self.style_query_norm is not None:
-            style_query_base = self.style_query_norm(style_query_base)
-        ret["global_style_query_prior"] = global_style_query_prior
-        ret["style_query_global_summary_scale"] = style_query_global_summary_scale
-        ret["style_query_base"] = style_query_base
-        ret["query_anchor_split_applied"] = True
-        style_query_inp = (
-            self.style_query_proj(style_query_base)
-            if self.style_query_proj is not None else style_query_base
-        )
-        ret["style_query_inp"] = style_query_inp
-        fast_style_decoder_residual = None
-        slow_style_decoder_residual = None
-        M_style_final = None
-        M_style_mask = None
-        dynamic_timbre_decoder_residual = None
-
-        has_cached_timbre = reference_cache.get("timbre_memory") is not None or reference_cache.get("timbre_memory_slow") is not None
-        style_trace_available = False
-        dynamic_timbre_available = False
-        style_trace_source = "disabled_by_mode" if not style_mainline.apply_style_trace else "missing"
-        dynamic_timbre_source = "disabled_by_mode" if not style_mainline.apply_dynamic_timbre else "missing"
-        style_strength = self._resolve_strength(
-            style_mainline.style_strength,
-            batch_size=content.size(0),
-            device=content.device,
-        )
-        dynamic_timbre_strength = self._resolve_strength(
-            style_mainline.dynamic_timbre_strength,
-            batch_size=content.size(0),
-            device=content.device,
-        )
-        style_payload = build_style_realization_payload(
+        query_runtime = prepare_style_query_runtime_inputs(
             self,
-            query=style_query_inp,
-            ret=ret,
-            reference_cache=reference_cache,
-            ref_style=ref_style,
-            infer=infer,
-            global_steps=global_steps,
-            controls=style_mainline,
+            content=content,
+            content_embed=content_embed,
+            condition_embed=condition_embed,
+            global_timbre_anchor=global_timbre_anchor,
             global_style_summary=global_style_summary,
-            style_strength=style_strength,
-            forcing_schedule_state=kwargs.get("forcing_schedule_state"),
-            upper_bound_progress=expressive_upper_bound_progress,
+            global_style_anchor_strength=global_style_anchor_strength,
+            style_mainline=style_mainline,
+            kwargs=kwargs,
+            ret=ret,
         )
-        style_trace_available = bool(style_payload.get("style_trace_available", False))
-        style_trace_source = str(style_payload.get("style_trace_source", style_trace_source))
-        fast_style_decoder_residual = style_payload.get("fast_style_decoder_residual")
-        slow_style_decoder_residual = style_payload.get("slow_style_decoder_residual")
-        M_style_final = style_payload.get("style_decoder_residual")
-        M_style_mask = style_payload.get("style_decoder_residual_mask")
-        global_style_summary_runtime = style_payload.get("global_style_summary_runtime", global_style_summary)
-        global_style_summary_runtime_source = style_payload.get(
-            "global_style_summary_runtime_source",
-            reference_cache.get("global_style_summary_source", "reference_cache")
-            if isinstance(reference_cache, dict)
-            else "reference_cache",
-        )
-        if M_style_final is None:
-            M_style_final, M_style_mask = resolve_combined_style_trace(
-                {
-                    "style_trace": fast_style_decoder_residual,
-                    "slow_style_trace": slow_style_decoder_residual,
-                    "style_trace_mask": ret.get("style_trace_mask"),
-                    "slow_style_trace_mask": ret.get("slow_style_trace_mask"),
-                }
-            )
-        if M_style_final is None:
-            M_style_final = combine_style_traces(
-                fast_style_decoder_residual,
-                slow_style_decoder_residual,
-            )
-            M_style_mask = ret.get("style_trace_mask", ret.get("slow_style_trace_mask"))
-        ret["main_style_owner_residual"] = M_style_final
-        ret["style_owner_source"] = style_payload.get("style_owner_source", ret.get("style_owner_source", "missing"))
-        dynamic_timbre_coarse_style_context_scale = float(
-            resolve_style_runtime_value(
-                "dynamic_timbre_coarse_style_context_scale",
-                overrides=kwargs,
-                hparams=self.hparams,
-                profile_defaults=style_profile_defaults,
-                default=0.0,
-            )
-        )
-        # Dynamic timbre may only condition on the unified local style owner.
-        dynamic_timbre_style_context_stopgrad = bool(
-            resolve_style_runtime_value(
-                "dynamic_timbre_style_context_stopgrad",
-                overrides=kwargs,
-                hparams=self.hparams,
-                profile_defaults=style_profile_defaults,
-                default=True,
-            )
-        )
-        content_padding_mask = content.eq(self.content_padding_idx)
-        dynamic_timbre_style_context = self._prepare_dynamic_timbre_style_context(
-            M_style_final,
-            padding_mask=content_padding_mask,
-            stopgrad=dynamic_timbre_style_context_stopgrad,
-        )
-        ret["dynamic_timbre_style_context_raw"] = M_style_final
-        ret["dynamic_timbre_style_context"] = dynamic_timbre_style_context
-        ret["dynamic_timbre_coarse_style_context_scale"] = dynamic_timbre_coarse_style_context_scale
-        ret["dynamic_timbre_coarse_style_context_scale_requested"] = dynamic_timbre_coarse_style_context_scale
-        ret["dynamic_timbre_coarse_style_context_applied"] = False
-        ret["timbre_query_style_context_applied"] = False
-        ret["dynamic_timbre_style_context_stopgrad"] = dynamic_timbre_style_context_stopgrad
-        ret["dynamic_timbre_style_context_owner_safe"] = isinstance(dynamic_timbre_style_context, torch.Tensor)
-        ret["dynamic_timbre_style_context_bridge"] = (
-            "layernorm_stopgrad" if dynamic_timbre_style_context_stopgrad else "layernorm"
-        )
-        query_style_scale_override = resolve_style_runtime_value(
-            "dynamic_timbre_query_style_condition_scale",
-            overrides=kwargs,
-            hparams=self.hparams,
-            profile_defaults=style_profile_defaults,
-            default=0.0,
-        )
-        if query_style_scale_override is None:
-            query_style_scale_override = 0.0
-        ret["dynamic_timbre_query_style_condition_scale_requested"] = float(
-            query_style_scale_override
-        )
-        ret["dynamic_timbre_query_style_condition_scale"] = float(query_style_scale_override)
-        if float(query_style_scale_override) != 0.0:
-            timbre_query_style_scale = float(query_style_scale_override)
-            timbre_query_style_scale_source = "query_style_condition"
-        elif float(dynamic_timbre_coarse_style_context_scale) != 0.0:
-            timbre_query_style_scale = float(dynamic_timbre_coarse_style_context_scale)
-            timbre_query_style_scale_source = "coarse_style_context"
-        else:
-            timbre_query_style_scale = 0.0
-            timbre_query_style_scale_source = "disabled"
-        ret["timbre_query_style_scale"] = timbre_query_style_scale
-        ret["timbre_query_style_scale_source"] = timbre_query_style_scale_source
-        timbre_query_base = base_condition_inp
-        if isinstance(dynamic_timbre_style_context, torch.Tensor) and timbre_query_style_scale != 0.0:
-            timbre_query_base = timbre_query_base + timbre_query_style_scale * dynamic_timbre_style_context
-            ret["timbre_query_style_context_applied"] = True
-            ret["dynamic_timbre_coarse_style_context_applied"] = bool(
-                timbre_query_style_scale_source == "coarse_style_context"
-            )
-        if self.timbre_query_norm is not None:
-            timbre_query_base = self.timbre_query_norm(timbre_query_base)
-        timbre_query_inp = (
-            self.timbre_query_proj(timbre_query_base)
-            if self.timbre_query_proj is not None else timbre_query_base
-        )
-        ret["timbre_query_base"] = timbre_query_base
-        ret["timbre_query_inp"] = timbre_query_inp
-        ret["timbre_query_follows_style_owner"] = True
-        if style_payload.get("style_trace_skip_reason") is not None:
-            ret["style_trace_skip_reason"] = style_payload.get("style_trace_skip_reason")
-        if (
-            self.use_dynamic_timbre
-            and style_mainline.apply_dynamic_timbre
-            and (ref_dynamic_timbre is not None or has_cached_timbre)
-        ):
-            dynamic_timbre = self.get_dynamic_timbre(
-                timbre_query_inp,
-                ref_dynamic_timbre,
-                ret,
-                infer=infer,
-                global_steps=global_steps,
-                reference_cache=reference_cache,
-                memory_mode=style_mainline.dynamic_timbre_memory_mode,
-                timbre_temperature=style_mainline.dynamic_timbre_temperature,
-                style_context=dynamic_timbre_style_context,
-                style_condition_scale=style_mainline.dynamic_timbre_style_condition_scale,
-                gate_scale=style_mainline.dynamic_timbre_gate_scale,
-                gate_bias=style_mainline.dynamic_timbre_gate_bias,
-                boundary_suppress_strength=style_mainline.dynamic_timbre_boundary_suppress_strength,
-                boundary_radius=style_mainline.dynamic_timbre_boundary_radius,
-                anchor_preserve_strength=style_mainline.dynamic_timbre_anchor_preserve_strength,
-                style_context_prepared=True,
-                tvt_prior_scale=float(style_mainline.dynamic_timbre_tvt_prior_scale),
-                use_tvt=bool(style_mainline.dynamic_timbre_use_tvt),
-                upper_bound_progress=expressive_upper_bound_progress,
-            )
-            dynamic_timbre_decoder_residual = dynamic_timbre * dynamic_timbre_strength
-            ret["dynamic_timbre_decoder_residual_prebudget"] = dynamic_timbre_decoder_residual
-            dynamic_timbre_decoder_residual = self._apply_runtime_dynamic_timbre_budget(
-                dynamic_timbre_decoder_residual,
-                style_decoder_residual=M_style_final,
-                slow_style_decoder_residual=slow_style_decoder_residual,
-                content=content,
-                kwargs=kwargs,
-                ret=ret,
-            )
-            dynamic_timbre_available = True
-            dynamic_timbre_source = "reference_cache" if has_cached_timbre else "reference_audio"
-        if self.use_dynamic_timbre and not style_mainline.apply_dynamic_timbre:
-            ret["dynamic_timbre_skip_reason"] = "decoder_style_condition_mode"
-        elif self.use_dynamic_timbre and not dynamic_timbre_available and not (ref_dynamic_timbre is not None or has_cached_timbre):
-            ret["dynamic_timbre_skip_reason"] = "reference_missing"
-        ret["style_trace_applied"] = bool(style_trace_available)
-        ret["dynamic_timbre_applied"] = bool(dynamic_timbre_available)
-        ret["fast_style_decoder_residual"] = fast_style_decoder_residual
-        ret["style_decoder_residual"] = M_style_final
-        ret["style_decoder_residual_mask"] = M_style_mask
-        ret["slow_style_decoder_residual"] = slow_style_decoder_residual
-        ret["dynamic_timbre_decoder_residual"] = dynamic_timbre_decoder_residual
-        ret["global_style_summary_runtime"] = global_style_summary_runtime
-        ret["global_style_summary_runtime_source"] = global_style_summary_runtime_source
-        ret["decoder_style_bundle"], decoder_signal_eps = build_runtime_decoder_style_bundle(
-            decoder_style_adapter=self.decoder_style_adapter,
+        pitch_inp = query_runtime["pitch_inp"]
+        style_timbre_runtime = realize_style_timbre_decoder_runtime(
+            self,
+            content=content,
+            base_condition_inp=query_runtime["base_condition_inp"],
+            style_query_inp=query_runtime["style_query_inp"],
+            style_profile_defaults=query_runtime["style_profile_defaults"],
             reference_cache=reference_cache,
             reference_contract=ret.get("reference_contract"),
+            ref_style=ref_style,
+            ref_dynamic_timbre=ref_dynamic_timbre,
             style_mainline=style_mainline,
             global_timbre_anchor=global_timbre_anchor,
-            global_timbre_anchor_runtime=global_timbre_anchor_runtime,
-            global_style_summary_runtime=global_style_summary_runtime,
-            global_style_summary_runtime_source=global_style_summary_runtime_source,
-            slow_style_trace=slow_style_decoder_residual,
-            slow_style_trace_mask=ret.get("slow_style_trace_mask"),
-            slow_style_source=ret.get("slow_style_trace_source_runtime", "missing"),
-            M_style=M_style_final,
-            M_style_mask=M_style_mask,
-            M_timbre=dynamic_timbre_decoder_residual,
-            M_timbre_mask=ret.get("dynamic_timbre_mask"),
-            M_timbre_source=dynamic_timbre_source,
+            global_timbre_anchor_runtime=query_runtime["global_timbre_anchor_runtime"],
+            global_style_summary=global_style_summary,
+            infer=infer,
+            global_steps=global_steps,
+            kwargs=kwargs,
+            ret=ret,
+            expressive_upper_bound_progress=expressive_upper_bound_progress,
         )
-        ret["decoder_style_bundle_effective_signal_epsilon"] = decoder_signal_eps
         ret["style_mainline_surface"] = build_style_mainline_surface_payload(
             style_mainline,
-            style_trace_available=style_trace_available,
-            dynamic_timbre_available=dynamic_timbre_available,
-            style_trace_source=style_trace_source,
-            dynamic_timbre_source=dynamic_timbre_source,
+            style_trace_available=style_timbre_runtime["style_trace_available"],
+            dynamic_timbre_available=style_timbre_runtime["dynamic_timbre_available"],
+            style_trace_source=style_timbre_runtime["style_trace_source"],
+            dynamic_timbre_source=style_timbre_runtime["dynamic_timbre_source"],
         )
         ret["pitch_embed"] = pitch_inp
 

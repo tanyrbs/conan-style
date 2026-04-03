@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 
+from modules.Conan.dynamic_timbre_control import resolve_dynamic_timbre_budget_terms
 from modules.Conan.style_trace_utils import resolve_combined_style_trace
 from tasks.Conan.control_schedule import MAINLINE_MINIMAL_CONTROL_LAMBDAS
 
@@ -394,7 +395,9 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
     output_identity_lambda = _lambda("lambda_output_identity_cosine")
     if output_identity_lambda > 0:
         output_identity_embed = _summary_vector(output.get("output_identity_embed"))
-        output_identity_target = _summary_vector(output.get("output_identity_reference_target"))
+        output_identity_target = _summary_vector(output.get("output_identity_target_embed"))
+        if output_identity_target is None:
+            output_identity_target = _summary_vector(output.get("output_identity_reference_target"))
         if output_identity_target is None:
             output_identity_target = _summary_vector(
                 output.get("output_identity_anchor_target", output.get("global_timbre_anchor"))
@@ -467,34 +470,96 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
 
     dynamic_timbre_budget_lambda = _lambda("lambda_dynamic_timbre_budget")
     if dynamic_timbre_budget_lambda > 0:
-        style_budget = None
-        timbre_budget = None
+        budget_ratio = float(
+            output.get(
+                "runtime_dynamic_timbre_style_budget_ratio",
+                config.get(
+                    "runtime_dynamic_timbre_style_budget_ratio",
+                    config.get("dynamic_timbre_budget_ratio", 0.40),
+                ),
+            )
+        )
+        budget_margin = float(
+            output.get(
+                "runtime_dynamic_timbre_style_budget_margin",
+                config.get(
+                    "runtime_dynamic_timbre_style_budget_margin",
+                    config.get("dynamic_timbre_budget_margin", 0.0),
+                ),
+            )
+        )
+        budget_slow_style_weight = float(
+            output.get(
+                "runtime_dynamic_timbre_style_budget_slow_style_weight",
+                config.get(
+                    "runtime_dynamic_timbre_style_budget_slow_style_weight",
+                    config.get("dynamic_timbre_budget_slow_style_weight", 1.0),
+                ),
+            )
+        )
+        budget_epsilon = float(
+            output.get(
+                "runtime_dynamic_timbre_style_budget_epsilon",
+                config.get(
+                    "runtime_dynamic_timbre_style_budget_epsilon",
+                    config.get("dynamic_timbre_budget_epsilon", 1e-6),
+                ),
+            )
+        )
+        relative_budget_weight = float(config.get("dynamic_timbre_budget_relative_weight", 0.0))
         style_decoder_residual = output.get("style_decoder_residual")
         slow_style_decoder_residual = output.get("slow_style_decoder_residual")
         dynamic_timbre_decoder_residual = output.get(
             "dynamic_timbre_decoder_residual_prebudget",
             output.get("dynamic_timbre_decoder_residual"),
         )
-        slow_style_weight = float(
-            output.get(
-                "runtime_dynamic_timbre_style_budget_slow_style_weight",
-                config.get("runtime_dynamic_timbre_style_budget_slow_style_weight", 1.0),
-            )
+        budget_terms = resolve_dynamic_timbre_budget_terms(
+            dynamic_timbre_decoder_residual,
+            style_residual=style_decoder_residual,
+            slow_style_residual=slow_style_decoder_residual,
+            padding_mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+            budget_ratio=budget_ratio,
+            budget_margin=budget_margin,
+            slow_style_weight=budget_slow_style_weight,
+            budget_epsilon=budget_epsilon,
         )
-        if isinstance(style_decoder_residual, torch.Tensor):
-            style_budget = _sequence_abs_mean(style_decoder_residual.detach())
-        if isinstance(slow_style_decoder_residual, torch.Tensor):
-            slow_style_budget = _sequence_abs_mean(slow_style_decoder_residual.detach())
-            if isinstance(slow_style_budget, torch.Tensor):
-                slow_style_budget = slow_style_budget * slow_style_weight
-                style_budget = (
-                    slow_style_budget
-                    if style_budget is None
-                    else _sum_optional_maps(style_budget, slow_style_budget)
+        timbre_budget = budget_terms.get("timbre_energy")
+        style_budget = budget_terms.get("style_energy")
+        voiced_weight = None
+        sample_uv = sample.get("uv")
+        if (
+            isinstance(sample_uv, torch.Tensor)
+            and isinstance(timbre_budget, torch.Tensor)
+            and sample_uv.dim() == 2
+            and tuple(sample_uv.shape) == tuple(timbre_budget.shape)
+        ):
+            voiced_weight = (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(timbre_budget.device)
+        valid_weight = _sequence_weight(
+            output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+            reference=timbre_budget,
+            boundary_mask=output.get("dynamic_timbre_boundary_mask"),
+            voiced_weight=voiced_weight,
+        )
+        local_budget = budget_terms.get("overflow")
+        reduced_budget = (
+            _weighted_mean(local_budget, valid_weight)
+            if isinstance(local_budget, torch.Tensor)
+            else None
+        )
+        if relative_budget_weight > 0.0:
+            relative_budget = budget_terms.get("relative_overflow")
+            relative_reduced_budget = (
+                _weighted_mean(relative_budget, valid_weight)
+                if isinstance(relative_budget, torch.Tensor)
+                else None
+            )
+            if relative_reduced_budget is not None:
+                reduced_budget = (
+                    relative_budget_weight * relative_reduced_budget
+                    if reduced_budget is None
+                    else reduced_budget + relative_budget_weight * relative_reduced_budget
                 )
-        if isinstance(dynamic_timbre_decoder_residual, torch.Tensor):
-            timbre_budget = _sequence_abs_mean(dynamic_timbre_decoder_residual)
-        if style_budget is None or timbre_budget is None:
+        if reduced_budget is None:
             stage_outputs = output.get("decoder_style_adapter_stages")
             stage_style_budget = _adapter_stage_energy_map(
                 stage_outputs,
@@ -506,44 +571,19 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                 stage_names=("mid", "late"),
                 branch_keys=("dynamic_timbre_delta",),
             )
-            if style_budget is None:
-                style_budget = stage_style_budget
-            if timbre_budget is None:
-                timbre_budget = stage_timbre_budget
-        if isinstance(style_budget, torch.Tensor) and isinstance(timbre_budget, torch.Tensor):
-            budget_ratio = float(
-                output.get(
-                    "runtime_dynamic_timbre_style_budget_ratio",
-                    config.get(
-                        "runtime_dynamic_timbre_style_budget_ratio",
-                        config.get("dynamic_timbre_budget_ratio", 0.40),
-                    ),
+            if isinstance(stage_style_budget, torch.Tensor) and isinstance(stage_timbre_budget, torch.Tensor):
+                stage_valid_weight = _sequence_weight(
+                    output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                    reference=stage_timbre_budget,
+                    boundary_mask=output.get("dynamic_timbre_boundary_mask"),
+                    voiced_weight=voiced_weight,
                 )
-            )
-            budget_margin = float(
-                output.get(
-                    "runtime_dynamic_timbre_style_budget_margin",
-                    config.get(
-                        "runtime_dynamic_timbre_style_budget_margin",
-                        config.get("dynamic_timbre_budget_margin", 0.0),
-                    ),
+                stage_overflow = F.relu(
+                    stage_timbre_budget - budget_ratio * stage_style_budget.detach() - budget_margin
                 )
-            )
-            style_budget_reference = style_budget.detach()
-            voiced_weight = None
-            sample_uv = sample.get("uv")
-            if isinstance(sample_uv, torch.Tensor) and sample_uv.dim() == 2 and tuple(sample_uv.shape) == tuple(timbre_budget.shape):
-                voiced_weight = (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(timbre_budget.device)
-            valid_weight = _sequence_weight(
-                output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
-                reference=timbre_budget,
-                boundary_mask=output.get("dynamic_timbre_boundary_mask"),
-                voiced_weight=voiced_weight,
-            )
-            local_budget = F.relu(timbre_budget - budget_ratio * style_budget_reference - budget_margin)
-            reduced_budget = _weighted_mean(local_budget, valid_weight)
-            if reduced_budget is not None:
-                losses["dynamic_timbre_budget"] = reduced_budget * dynamic_timbre_budget_lambda
+                reduced_budget = _weighted_mean(stage_overflow, stage_valid_weight)
+        if reduced_budget is not None:
+            losses["dynamic_timbre_budget"] = reduced_budget * dynamic_timbre_budget_lambda
 
     pitch_residual_safe_lambda = _lambda("lambda_pitch_residual_safe")
     if pitch_residual_safe_lambda > 0:

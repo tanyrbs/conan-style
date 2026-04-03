@@ -192,8 +192,11 @@ class ConanStyleControlMixin:
         output["identity_encoder_frozen_for_loss"] = bool(
             identity_encoder_backend == "model_encode_spk_embed_frozen_for_loss"
         )
+        identity_target_embed = None
         if isinstance(global_timbre_anchor, torch.Tensor):
-            output["output_identity_anchor_target"] = global_timbre_anchor.detach()
+            detached_global_timbre_anchor = global_timbre_anchor.detach()
+            output["output_identity_anchor_target"] = detached_global_timbre_anchor
+            identity_target_embed = detached_global_timbre_anchor
             output["output_identity_target_source"] = "global_timbre_anchor"
         if isinstance(reference_mels, torch.Tensor):
             with torch.no_grad():
@@ -205,7 +208,10 @@ class ConanStyleControlMixin:
                     detached_reference_identity_embed = reference_identity_embed.detach()
                     output["reference_identity_embed"] = detached_reference_identity_embed
                     output["output_identity_reference_target"] = detached_reference_identity_embed
+                    identity_target_embed = detached_reference_identity_embed
                     output["output_identity_target_source"] = "reference_identity_embed"
+        if isinstance(identity_target_embed, torch.Tensor):
+            output["output_identity_target_embed"] = identity_target_embed
 
     def add_control_losses(self, output, sample, losses):
         regularization_config = resolve_control_regularization_config(hparams, self.global_step)

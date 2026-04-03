@@ -175,6 +175,109 @@ def apply_boundary_suppression_to_gate(
     return gate * boundary_scale, boundary_scale
 
 
+def _normalize_padding_mask(
+    padding_mask: Optional[torch.Tensor],
+    reference: Optional[torch.Tensor],
+):
+    if not isinstance(padding_mask, torch.Tensor) or not isinstance(reference, torch.Tensor):
+        return None
+    if padding_mask.dim() == 3 and padding_mask.size(-1) == 1:
+        padding_mask = padding_mask.squeeze(-1)
+    if padding_mask.dim() != 2 or tuple(padding_mask.shape) != tuple(reference.shape[:2]):
+        return None
+    return padding_mask.bool().to(reference.device)
+
+
+def compute_sequence_residual_energy(
+    value: Optional[torch.Tensor],
+    *,
+    padding_mask: Optional[torch.Tensor] = None,
+):
+    if not isinstance(value, torch.Tensor) or value.dim() != 3:
+        return None
+    energy = value.abs().mean(dim=-1)
+    normalized_padding_mask = _normalize_padding_mask(padding_mask, value)
+    if normalized_padding_mask is not None:
+        energy = energy.masked_fill(normalized_padding_mask, 0.0)
+    return energy
+
+
+def resolve_dynamic_timbre_budget_terms(
+    timbre_residual: Optional[torch.Tensor],
+    *,
+    style_residual: Optional[torch.Tensor] = None,
+    slow_style_residual: Optional[torch.Tensor] = None,
+    padding_mask: Optional[torch.Tensor] = None,
+    budget_ratio: float = 0.50,
+    budget_margin: float = 0.0,
+    slow_style_weight: float = 1.0,
+    budget_epsilon: float = 1e-6,
+):
+    if not isinstance(timbre_residual, torch.Tensor):
+        return {
+            "applied": False,
+            "skip_reason": "missing_aligned",
+        }
+
+    normalized_padding_mask = _normalize_padding_mask(padding_mask, timbre_residual)
+    timbre_energy = compute_sequence_residual_energy(
+        timbre_residual,
+        padding_mask=normalized_padding_mask,
+    )
+    style_energy = compute_sequence_residual_energy(
+        style_residual,
+        padding_mask=normalized_padding_mask,
+    )
+    if isinstance(style_energy, torch.Tensor):
+        style_energy = style_energy.detach()
+    slow_energy = compute_sequence_residual_energy(
+        slow_style_residual,
+        padding_mask=normalized_padding_mask,
+    )
+    if isinstance(slow_energy, torch.Tensor):
+        slow_energy = slow_energy.detach()
+        style_energy = (
+            slow_style_weight * slow_energy
+            if style_energy is None
+            else style_energy + slow_style_weight * slow_energy
+        )
+    if style_energy is None or not isinstance(timbre_energy, torch.Tensor):
+        return {
+            "applied": False,
+            "skip_reason": "style_owner_missing",
+        }
+
+    budget_epsilon = max(float(budget_epsilon), 1e-8)
+    allowed_energy = float(budget_ratio) * style_energy + float(budget_margin)
+    denom = timbre_energy.clamp_min(budget_epsilon)
+    budget_scale = torch.minimum(torch.ones_like(timbre_energy), allowed_energy / denom)
+    over_budget = timbre_energy > allowed_energy
+    overflow = F.relu(timbre_energy - allowed_energy)
+    relative_overflow = overflow / allowed_energy.clamp_min(budget_epsilon)
+
+    if normalized_padding_mask is not None:
+        valid = (~normalized_padding_mask).to(timbre_energy.dtype)
+        budget_scale = budget_scale * valid + (1.0 - valid)
+        over_budget = over_budget & valid.bool()
+        overflow = overflow * valid
+        relative_overflow = relative_overflow * valid
+
+    return {
+        "applied": bool(over_budget.any()),
+        "skip_reason": None,
+        "budget_scale": budget_scale,
+        "timbre_energy": timbre_energy,
+        "style_energy": style_energy,
+        "allowed_energy": allowed_energy,
+        "over_budget_mask": over_budget,
+        "overflow": overflow,
+        "relative_overflow": relative_overflow,
+        "active_fraction": over_budget.float().mean(),
+        "budget_epsilon": budget_epsilon,
+        "padding_mask": normalized_padding_mask,
+    }
+
+
 def apply_runtime_budget_to_dynamic_timbre(
     aligned: Optional[torch.Tensor],
     *,
@@ -189,56 +292,34 @@ def apply_runtime_budget_to_dynamic_timbre(
     if not isinstance(aligned, torch.Tensor):
         return aligned, {"applied": False, "skip_reason": "missing_aligned"}
 
-    style_energy = None
-    if isinstance(style_residual, torch.Tensor):
-        style_energy = style_residual.detach().abs().mean(dim=-1)
-    if isinstance(slow_style_residual, torch.Tensor):
-        slow_energy = slow_style_residual.detach().abs().mean(dim=-1)
-        style_energy = slow_style_weight * slow_energy if style_energy is None else (style_energy + slow_style_weight * slow_energy)
-    if style_energy is None:
-        return aligned, {"applied": False, "skip_reason": "style_owner_missing"}
-
-    timbre_energy = aligned.abs().mean(dim=-1)
-    allowed_energy = float(budget_ratio) * style_energy + float(budget_margin)
-    budget_epsilon = max(float(budget_epsilon), 1e-8)
-    denom = timbre_energy.clamp_min(budget_epsilon)
-    budget_scale = torch.minimum(torch.ones_like(timbre_energy), allowed_energy / denom)
-    over_budget = timbre_energy > allowed_energy
-
-    if isinstance(padding_mask, torch.Tensor):
-        if padding_mask.dim() == 3 and padding_mask.size(-1) == 1:
-            padding_mask = padding_mask.squeeze(-1)
-        if padding_mask.dim() == 2 and tuple(padding_mask.shape) == tuple(timbre_energy.shape):
-            valid = (~padding_mask.bool()).to(timbre_energy.dtype)
-            budget_scale = budget_scale * valid + (1.0 - valid)
-            over_budget = over_budget & valid.bool()
+    metadata = resolve_dynamic_timbre_budget_terms(
+        aligned,
+        style_residual=style_residual,
+        slow_style_residual=slow_style_residual,
+        padding_mask=padding_mask,
+        budget_ratio=budget_ratio,
+        budget_margin=budget_margin,
+        slow_style_weight=slow_style_weight,
+        budget_epsilon=budget_epsilon,
+    )
+    budget_scale = metadata.get("budget_scale")
+    if not isinstance(budget_scale, torch.Tensor):
+        return aligned, metadata
 
     controlled = aligned * budget_scale.unsqueeze(-1)
-    if isinstance(padding_mask, torch.Tensor):
-        if padding_mask.dim() == 3 and padding_mask.size(-1) == 1:
-            padding_mask = padding_mask.squeeze(-1)
-        if padding_mask.dim() == 2 and tuple(padding_mask.shape) == tuple(timbre_energy.shape):
-            controlled = controlled.masked_fill(padding_mask.unsqueeze(-1).bool(), 0.0)
-
-    metadata = {
-        "applied": over_budget.any(),
-        "skip_reason": None,
-        "budget_scale": budget_scale,
-        "timbre_energy": timbre_energy,
-        "style_energy": style_energy,
-        "allowed_energy": allowed_energy,
-        "over_budget_mask": over_budget,
-        "active_fraction": over_budget.float().mean(),
-        "budget_epsilon": budget_epsilon,
-    }
+    normalized_padding_mask = metadata.get("padding_mask")
+    if isinstance(normalized_padding_mask, torch.Tensor):
+        controlled = controlled.masked_fill(normalized_padding_mask.unsqueeze(-1), 0.0)
     return controlled, metadata
 
 
 __all__ = [
     "DynamicTimbreControlConfig",
+    "compute_sequence_residual_energy",
     "apply_boundary_suppression_to_gate",
     "apply_runtime_budget_to_dynamic_timbre",
     "build_dynamic_timbre_boundary_mask",
     "recenter_dynamic_timbre_to_anchor",
+    "resolve_dynamic_timbre_budget_terms",
     "resolve_dynamic_timbre_control",
 ]

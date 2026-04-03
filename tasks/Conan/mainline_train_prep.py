@@ -4,8 +4,10 @@ import importlib
 import json
 import os
 import numpy as np
+import re
 import sys
 import torch
+import yaml
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -26,6 +28,7 @@ from tasks.Conan.control_schedule import (
 )
 from tasks.Conan.reference_curriculum import resolve_reference_curriculum
 from tasks.Conan.forcing_schedule import resolve_forcing_schedule
+from utils.commons.condition_labels import CONDITION_FIELDS, load_condition_id_maps, resolve_condition_label_id
 from utils.commons.hparams import hparams, set_hparams
 
 
@@ -60,6 +63,24 @@ REQUIRED_PRESENT_KEYS = (
     "lambda_pitch_residual_safe",
     "lambda_decoder_late_owner",
 )
+
+CANONICAL_REMOVED_CONFIG_KEYS = (
+    "disc_norm",
+    "disc_reduction",
+    "dur_level",
+    "speaker_verifier_backend",
+    "speaker_verifier_ckpt",
+    "timbre_reg_start_steps",
+    "timbre_reg_warmup_steps",
+    "timbre_reg_init_scale",
+    "timbre_reg_final_scale",
+    "use_reference_bundle",
+    "use_reference_cache",
+    "use_spk_prompt",
+    "valid_plot_prob",
+)
+
+TOP_LEVEL_KEY_PATTERN = re.compile(r"^([A-Za-z0-9_]+):")
 
 
 def parse_args():
@@ -175,6 +196,129 @@ def _check_importable(checks, name, module_name):
         )
 
 
+def _check_condition_artifacts(checks, candidate_dirs):
+    resolved_maps = load_condition_id_maps(candidate_dirs, fields=CONDITION_FIELDS)
+    for field in CONDITION_FIELDS:
+        map_paths = [
+            os.path.join(str(data_dir), f"{field}_map.json")
+            for data_dir in candidate_dirs
+            if data_dir
+        ]
+        set_paths = [
+            os.path.join(str(data_dir), f"{field}_set.json")
+            for data_dir in candidate_dirs
+            if data_dir
+        ]
+        map_exists = any(os.path.exists(path) for path in map_paths)
+        set_exists = any(os.path.exists(path) for path in set_paths)
+        mapping = resolved_maps.get(field, {})
+        if not map_exists and not set_exists:
+            checks.append(
+                {
+                    "name": f"condition_artifacts_{field}",
+                    "ok": True,
+                    "actual": "not_present",
+                    "expected": "optional",
+                }
+            )
+            continue
+        roundtrip_ok = True
+        roundtrip_mismatches = []
+        for label, expected_id in mapping.items():
+            actual_id = resolve_condition_label_id(mapping, label, default=-1)
+            if int(actual_id) != int(expected_id):
+                roundtrip_ok = False
+                roundtrip_mismatches.append(
+                    {
+                        "label": label,
+                        "expected": int(expected_id),
+                        "actual": int(actual_id),
+                    }
+                )
+        checks.append(
+            {
+                "name": f"condition_artifacts_{field}",
+                "ok": bool((not set_exists or map_exists) and roundtrip_ok),
+                "actual": {
+                    "map_exists": bool(map_exists),
+                    "set_exists": bool(set_exists),
+                    "num_labels": int(len(mapping)),
+                    "roundtrip_mismatches": roundtrip_mismatches[:8],
+                },
+                "expected": {
+                    "map_exists_if_set_exists": True,
+                    "roundtrip_consistent": True,
+                },
+            }
+        )
+
+
+def _resolve_config_chain(config_path, loaded=None):
+    if not config_path:
+        return []
+    normalized = os.path.normpath(str(config_path))
+    if not os.path.exists(normalized):
+        return []
+    if loaded is None:
+        loaded = set()
+    if normalized in loaded:
+        return []
+    loaded.add(normalized)
+    chain = []
+    try:
+        with open(normalized, "r", encoding="utf-8") as f:
+            config_data = yaml.safe_load(f) or {}
+    except Exception:
+        config_data = {}
+    base_configs = config_data.get("base_config")
+    if base_configs:
+        if not isinstance(base_configs, list):
+            base_configs = [base_configs]
+        for base_config in base_configs:
+            resolved_base = str(base_config)
+            if resolved_base.startswith('.'):
+                resolved_base = os.path.normpath(os.path.join(os.path.dirname(normalized), resolved_base))
+            chain.extend(_resolve_config_chain(resolved_base, loaded=loaded))
+    chain.append(normalized)
+    return chain
+
+
+def _scan_top_level_config_keys(config_path):
+    seen = {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            for lineno, line in enumerate(f, start=1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if line.startswith((" ", "\t")):
+                    continue
+                match = TOP_LEVEL_KEY_PATTERN.match(line)
+                if match is None:
+                    continue
+                key = match.group(1)
+                seen.setdefault(key, []).append(lineno)
+    except FileNotFoundError:
+        return {}, {}
+    duplicates = {key: lines for key, lines in seen.items() if len(lines) > 1}
+    return duplicates, seen
+
+
+def _scan_config_chain(config_path):
+    config_chain = _resolve_config_chain(config_path)
+    duplicate_occurrences = {}
+    top_level_occurrences = {}
+    for path in config_chain:
+        duplicates, seen = _scan_top_level_config_keys(path)
+        if duplicates:
+            duplicate_occurrences[path] = duplicates
+        for key, line_numbers in seen.items():
+            entries = top_level_occurrences.setdefault(key, [])
+            for line_number in line_numbers:
+                entries.append({"path": path, "line": int(line_number)})
+    return config_chain, duplicate_occurrences, top_level_occurrences
+
+
 def _jsonable(value):
     try:
         import torch
@@ -193,6 +337,7 @@ def _jsonable(value):
 
 def run_prep(args):
     set_hparams(config=args.config, print_hparams=False)
+    config_chain, config_duplicates, config_top_level_keys = _scan_config_chain(args.config)
     if getattr(args, "binary_data_dir", None):
         hparams["binary_data_dir"] = str(args.binary_data_dir)
     controls = resolve_style_mainline_controls(hparams=hparams)
@@ -243,6 +388,19 @@ def run_prep(args):
         preset=hparams.get("style_profile", "strong_style"),
     )
     regularization = resolve_control_regularization_config(hparams, global_step=0)
+    use_external_speaker_verifier = bool(hparams.get("use_external_speaker_verifier", False))
+    freeze_internal_identity_encoder_for_loss = bool(
+        hparams.get("freeze_internal_identity_encoder_for_loss", True)
+    )
+    identity_loss_constraint_mode = (
+        "external_speaker_verifier"
+        if use_external_speaker_verifier
+        else (
+            "internal_encoder_frozen_for_loss"
+            if freeze_internal_identity_encoder_for_loss
+            else "internal_encoder_trainable_for_loss"
+        )
+    )
     upper_bound_preview_0 = resolve_expressive_upper_bound_progress(0, hparams=hparams)
     upper_bound_preview_20000 = resolve_expressive_upper_bound_progress(20000, hparams=hparams)
     upper_bound_preview_50000 = resolve_expressive_upper_bound_progress(50000, hparams=hparams)
@@ -304,6 +462,22 @@ def run_prep(args):
         batch_controls_error = f"{type(exc).__name__}: {exc}"
 
     checks = []
+    _check_true(
+        checks,
+        "config_top_level_duplicate_keys_absent",
+        len(config_duplicates) == 0,
+        actual=config_duplicates if config_duplicates else {},
+        expected="no duplicate top-level keys",
+    )
+    for key in CANONICAL_REMOVED_CONFIG_KEYS:
+        locations = config_top_level_keys.get(key, [])
+        _check_true(
+            checks,
+            f"config_removed_key_absent::{key}",
+            len(locations) == 0,
+            actual={"present": bool(locations), "locations": locations},
+            expected={"present": False},
+        )
     _check_equal(checks, "reference_contract_mode", hparams.get("reference_contract_mode"), "collapsed_reference")
     _check_equal(checks, "decoder_style_condition_mode", controls.mode, "mainline_full")
     _check_equal(checks, "global_timbre_to_pitch", bool(controls.global_timbre_to_pitch), False)
@@ -382,6 +556,12 @@ def run_prep(args):
         controls.dynamic_timbre_strength,
         resolved_profile.get("dynamic_timbre_strength", controls.dynamic_timbre_strength),
         tol=1e-6,
+    )
+    _check_equal(
+        checks,
+        "style_profile_controls_dynamic_timbre_strength_source",
+        getattr(controls, "dynamic_timbre_strength_source", None),
+        "derived_from_style_strength",
     )
     _check_close(
         checks,
@@ -501,6 +681,12 @@ def run_prep(args):
             resolved_profile.get("dynamic_timbre_strength", batch_controls.dynamic_timbre_strength),
             tol=1e-6,
         )
+        _check_equal(
+            checks,
+            "train_batch_dynamic_timbre_strength_source_matches_profile",
+            getattr(batch_controls, "dynamic_timbre_strength_source", None),
+            "derived_from_style_strength",
+        )
         _check_close(
             checks,
             "train_batch_style_temperature_matches_profile",
@@ -545,6 +731,19 @@ def run_prep(args):
         "runtime_dynamic_timbre_style_budget_margin",
         hparams.get("runtime_dynamic_timbre_style_budget_margin", 0.0),
         0.0,
+    )
+    _check_close(
+        checks,
+        "runtime_dynamic_timbre_style_budget_slow_style_weight",
+        hparams.get("runtime_dynamic_timbre_style_budget_slow_style_weight", 1.0),
+        1.0,
+    )
+    _check_close(
+        checks,
+        "runtime_dynamic_timbre_style_budget_epsilon",
+        hparams.get("runtime_dynamic_timbre_style_budget_epsilon", 1e-6),
+        1e-6,
+        tol=1e-12,
     )
     _check_close(checks, "dynamic_timbre_budget_ratio", hparams.get("dynamic_timbre_budget_ratio", 0.40), 0.40)
     _check_close(
@@ -591,9 +790,27 @@ def run_prep(args):
     )
     _check_equal(
         checks,
-        "use_external_speaker_verifier",
-        bool(hparams.get("use_external_speaker_verifier", False)),
+        "allow_item_style_strength_override",
+        bool(hparams.get("allow_item_style_strength_override", False)),
         False,
+    )
+    _check_equal(
+        checks,
+        "use_external_speaker_verifier",
+        use_external_speaker_verifier,
+        False,
+    )
+    _check_equal(
+        checks,
+        "freeze_internal_identity_encoder_for_loss",
+        freeze_internal_identity_encoder_for_loss,
+        True,
+    )
+    _check_equal(
+        checks,
+        "identity_loss_constraint_mode",
+        identity_loss_constraint_mode,
+        "internal_encoder_frozen_for_loss",
     )
     _check_equal(
         checks,
@@ -660,6 +877,12 @@ def run_prep(args):
     _check_close(checks, "forcing_prob_init", hparams.get("forcing_prob_init", 1.0), 1.0)
     _check_close(checks, "forcing_prob_final", hparams.get("forcing_prob_final", 0.0), 0.0)
     _check_importable(checks, "runtime_import_torchaudio", "torchaudio")
+    _check_importable(checks, "runtime_import_textgrid", "textgrid")
+    _check_importable(checks, "runtime_import_torchdyn", "torchdyn")
+    _check_condition_artifacts(
+        checks,
+        [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")],
+    )
     _check_close(
         checks,
         "random_speaker_steps_matches_curriculum_end",
@@ -805,6 +1028,13 @@ def run_prep(args):
     forcing_preview_steps = (0, 12000, 20000, 60000, 100000)
     summary = {
         "config": args.config,
+        "config_chain": config_chain,
+        "identity_loss_constraint_mode": identity_loss_constraint_mode,
+        "style_strength_override_mode": (
+            "dataset_item_override_enabled"
+            if bool(hparams.get("allow_item_style_strength_override", False))
+            else "profile_locked"
+        ),
         "mainline_controls": _jsonable(controls.as_dict()),
         "train_batch_mainline_controls": None if batch_controls is None else _jsonable(batch_controls.as_dict()),
         "resolved_profile": _jsonable(resolved_profile),

@@ -36,6 +36,7 @@ from modules.Conan.style_profiles import (
     resolve_style_profile,
 )
 from inference.conan_request import CONDITION_FIELDS, has_distinct_split_reference_inputs
+from utils.commons.condition_labels import load_condition_id_maps, resolve_condition_label_id
 # Emformer feature extractor
 from modules.Emformer.emformer import EmformerDistillModel
 __all__ = ["StreamingVoiceConversion"]
@@ -183,33 +184,13 @@ class StreamingVoiceConversion:
         _ = self.vocoder.spec2wav(np.zeros((4, 80), dtype=np.float32))
 
     def _load_condition_maps(self):
-        condition_maps = {}
-        candidate_dirs = [
-            self.hparams.get("binary_data_dir"),
-            self.hparams.get("processed_data_dir"),
-        ]
-        for field in CONDITION_FIELDS:
-            field_map = None
-            for data_dir in candidate_dirs:
-                if not data_dir:
-                    continue
-                map_path = os.path.join(data_dir, f"{field}_map.json")
-                if os.path.exists(map_path):
-                    with open(map_path, "r", encoding="utf-8") as f:
-                        field_map = {str(label): int(idx) for label, idx in json.load(f).items()}
-                    break
-                vocab_path = os.path.join(data_dir, f"{field}_set.json")
-                if os.path.exists(vocab_path):
-                    with open(vocab_path, "r", encoding="utf-8") as f:
-                        vocab = json.load(f)
-                    field_map = {
-                        str(label): idx
-                        for idx, label in enumerate(vocab)
-                        if label not in (None, "")
-                    }
-                    break
-            condition_maps[field] = field_map or {}
-        return condition_maps
+        return load_condition_id_maps(
+            [
+                self.hparams.get("binary_data_dir"),
+                self.hparams.get("processed_data_dir"),
+            ],
+            fields=CONDITION_FIELDS,
+        )
 
     @staticmethod
     def _write_json(path: str, payload: Dict):
@@ -233,7 +214,19 @@ class StreamingVoiceConversion:
             try:
                 return int(stripped)
             except ValueError:
-                return int(self.condition_maps.get(field, {}).get(stripped, -1))
+                resolved = resolve_condition_label_id(
+                    self.condition_maps.get(field, {}),
+                    stripped,
+                    default=-1,
+                )
+                if resolved >= 0:
+                    return int(resolved)
+                if self.condition_maps.get(field):
+                    known = ", ".join(sorted(self.condition_maps[field].keys())[:12])
+                    raise KeyError(
+                        f"Unknown {field} label '{stripped}'. Available labels: {known or '<none>'}"
+                    )
+                return None
         return None
 
     def _resolve_style_profile(self, inp: Dict):

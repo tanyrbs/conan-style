@@ -35,6 +35,18 @@ class ConanDataset(FastSpeechDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.default_style_strength = _resolve_default_style_strength(self.hparams)
+        self.allow_item_style_strength_override = bool(
+            self.hparams.get("allow_item_style_strength_override", False)
+        )
+
+    def _resolve_item_style_strength(self, item):
+        style_strength_value = self.default_style_strength
+        if self.allow_item_style_strength_override and "style_strength" in item:
+            style_strength_value = item.get("style_strength", self.default_style_strength)
+        return sanitize_mainline_style_strength(
+            style_strength_value,
+            default=self.default_style_strength,
+        )
 
     def __getitem__(self, index):
         sample = super(ConanDataset, self).__getitem__(index)
@@ -52,10 +64,7 @@ class ConanDataset(FastSpeechDataset):
             energy = sample["mel"].abs().mean(dim=-1)
         sample["energy"] = energy[: sample["mel"].shape[0]]
         sample["style_strength"] = _scalar_float(
-            sanitize_mainline_style_strength(
-                item.get("style_strength", self.default_style_strength),
-                default=self.default_style_strength,
-            ),
+            self._resolve_item_style_strength(item),
             default=self.default_style_strength,
         )
         sample["emotion_strength"] = _scalar_float(item.get("emotion_strength", 1.0), default=1.0)

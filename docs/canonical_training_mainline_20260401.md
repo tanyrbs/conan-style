@@ -12,7 +12,7 @@ Mainline target:
 
 ## 2. Canonical configs
 
-Only these two configs remain:
+Only these user-facing entrypoint configs remain:
 
 - binarization: `egs/conan_binarize.yaml`
 - training: `egs/conan_emformer.yaml`
@@ -22,8 +22,9 @@ Both are aligned to the same mainline semantics, including `style_profile: stron
 
 Config layering is now explicit:
 
-- `egs/egs_bases/conan/mainline_core.yaml`
-- `egs/egs_bases/conan/mainline_style_runtime.yaml`
+- `egs/egs_bases/conan/mainline_shared.yaml`
+- `egs/egs_bases/conan/mainline_data.yaml`
+- `egs/egs_bases/conan/mainline_stats.yaml`
 - `egs/egs_bases/conan/mainline_train.yaml`
 
 ## 3. Mainline contract
@@ -35,6 +36,8 @@ Training / inference stay locked to:
 - `style_trace_mode: dual`
 - `style_router_enabled: true`
 - `style_strength` stays inside the shipped mainline range `0.50 .. 1.80`
+- `allow_item_style_strength_override: false`, so training batches keep the resolved profile strength unless you explicitly opt into a research override
+- `dynamic_timbre_strength` is derived from `style_strength` on the canonical path, so these are partially coupled controls rather than fully independent free variables
 - `style_to_pitch_residual: true`
 - `style_to_pitch_residual_include_timbre: false`
 - `global_timbre_to_pitch: false`
@@ -61,7 +64,24 @@ Canonical control regularization stays on the 4-loss pack:
 - `lambda_pitch_residual_safe`
 - `lambda_decoder_late_owner`
 
+This is intentionally a **bounded weak internal factorization** contract, not a proof of perfect disentanglement. The mainline explicitly reports `factorization_guaranteed: false`; the active losses constrain lower-level failure modes, but they do not prove that each latent/control branch has become uniquely interpretable.
+
+When `use_external_speaker_verifier: false`, the identity loss is evaluated through the model's own speaker encoder,
+but the canonical config now freezes that internal encoder during the auxiliary identity-loss pass so the loss behaves like a fixed reference space rather than a moving target.
+
+This closure pass also tightens two previously weakly-realized parts of the contract:
+
+- `slow_style_trace` is now actually passed into the decoder runtime bundle, so the decoder's coarse slow-style path is no longer only described in theory
+- runtime dynamic-timbre budgeting now references both the combined owner-style residual and the slow-style residual, while the training loss prefers the **pre-budget** dynamic-timbre residual
+
+Canonical mainline profile parsing is also stricter now:
+
+- direct mainline overrides are intentionally limited to `style_strength`
+- other profile-key deviations are treated as research overrides and coerced back to the approved mainline defaults unless `allow_mainline_profile_research_overrides: true`
+
 ## 4. Data prerequisites
+
+This lightweight snapshot does **not** bundle the real processed/binary datasets or large checkpoints. The commands below describe the intended mainline flow after those external artifacts are staged.
 
 Default repo paths:
 
@@ -94,6 +114,9 @@ $env:N_PROC='1'; python data_gen/tts/runs/binarize.py --config egs/conan_binariz
 
 ## 6. Training-prep gate
 
+The prep gate is the authoritative train-readiness check for your local environment. A lightweight review archive may still be missing staged data,
+checkpoints, or compatible runtime libraries, so do not treat this document as a universal claim that training has already been verified everywhere.
+
 Before real training, run:
 
 ```bash
@@ -105,6 +128,13 @@ Expected result:
 - `MAINLINE_TRAIN_PREP_OK`
 
 This prep gate now also checks that style-profile defaults really control mainline runtime strengths instead of silently falling back to neutral values.
+
+It now also checks that the runtime dynamic-timbre budget surface matches the shipped mainline contract, including:
+
+- `runtime_dynamic_timbre_style_budget_ratio`
+- `runtime_dynamic_timbre_style_budget_margin`
+- `runtime_dynamic_timbre_style_budget_slow_style_weight`
+- `runtime_dynamic_timbre_style_budget_epsilon`
 
 It also checks that the upper-bound curriculum is enabled, lands on the expected progress points, and stays aligned with forcing / reference curriculum timing.
 
@@ -126,7 +156,7 @@ Exact-step real-data smoke command:
 python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineSmoke --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=100000,num_sanity_val_steps=0,max_updates=1,save_codes=[]"
 ```
 
-Short review-env smoke that was used during the latest audit:
+Recommended short review-env smoke after staging data and a compatible runtime:
 
 ```bash
 conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmokeCpu --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1,num_sanity_val_steps=0,max_updates=2,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[]"
@@ -144,6 +174,7 @@ Notes:
 - use a fresh experiment name for real training output
 - `max_updates` now stops exactly at the requested batch budget instead of overshooting by one step
 - task-side `load_ckpt` warm starts now default to non-strict loading, so older compatible Conan checkpoints can still seed current mainline smoke/fine-tune runs
+- because `slow_style_trace` now really participates in decoder runtime fusion, old checkpoints should be A/B checked if you care about exact pre/post-closure forward parity
 
 ## 7. Mainline inference / evaluation after training
 
@@ -169,12 +200,16 @@ Streaming latency instrumentation:
 python inference/run_streaming_latency_report.py
 ```
 
-## 8. Verified implementation notes as of 2026-04-03
+## 8. Audited implementation notes / intended invariants
 
 - canonical mainline uses `lambda_pitch_residual_safe`; `lambda_dynamic_timbre_boundary` remains `0.0`
-- requested vs effective `style_strength` is now surfaced explicitly, so clamp events are observable
+- requested vs effective `style_strength` is surfaced explicitly, so clamp events are observable
+- canonical training batches keep `style_profile` authoritative unless `allow_item_style_strength_override` is deliberately enabled
 - resolved mainline controls now remain authoritative for TVT prior/runtime flags and pitch-residual scale / semitone / smoothing
 - `style_to_pitch_residual` is style-led on the shipped path; dynamic timbre is not allowed to enter that residual unless a research override is enabled
+- when no external speaker verifier is configured, the identity loss is computed in a frozen internal speaker-embedding space rather than letting that auxiliary encoder drift during the same loss path
+- `slow_style_trace` now enters the decoder runtime bundle directly, so decoder-stage authority separation better matches the intended mainline theory
+- `lambda_dynamic_timbre_budget` now observes the pre-budget dynamic-timbre residual and uses slow-style energy as part of the style-side budget reference, making it a more meaningful training constraint than a post-clip observer
 - fast style / TVT timbre / pitch residual no longer start fully open at step 0; they share one `20000 -> 80000` upper-bound curriculum during training
 - dynamic timbre now uses a unified residual semantic on both TVT and non-TVT paths (`local_delta` relative to the global timbre anchor)
 - dynamic-timbre boundary suppression now detects dense HuBERT-like unit streams and avoids turning token-transition boundaries into a global mask
@@ -196,6 +231,12 @@ python inference/run_streaming_latency_report.py
 - `utils/extract_f0_rmvpe.py` now boots from the repo root, accepts raw RMVPE state-dict checkpoints, and can batch even when metadata lacks explicit duration fields
 - `EmformerDistillModel` now reads `emformer_mode` correctly instead of only the legacy `mode` key
 - Emformer distillation train / infer / validation paths now align targets to the actual streamed-logit length
+- closure-pass diagnostics now expose budget and identity semantics more directly:
+  - `diag_dynamic_timbre_prebudget_norm`
+  - `diag_dynamic_timbre_postbudget_norm`
+  - `diag_dynamic_timbre_post_to_pre_budget_ratio`
+  - `diag_identity_backend_is_external`
+  - `diag_identity_encoder_frozen_for_loss`
 
 ## 9. Repo cleanup policy in this snapshot
 

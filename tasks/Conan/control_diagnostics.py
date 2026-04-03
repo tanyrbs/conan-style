@@ -63,6 +63,14 @@ def _safe_mean_std(value):
     return value.mean(), value.std(unbiased=False)
 
 
+def _categorical_indicator(value, expected, *, device=None):
+    return torch.tensor(
+        1.0 if str(value) == str(expected) else 0.0,
+        dtype=torch.float32,
+        device=device,
+    )
+
+
 def _safe_scalar_ratio(numerator, denominator, *, eps=1e-8):
     if not isinstance(numerator, torch.Tensor) or not isinstance(denominator, torch.Tensor):
         return None
@@ -489,6 +497,12 @@ def collect_control_diagnostics(output, sample, config):
         style_timbre_cos = _cosine_mean(style_repr, timbre_repr)
         if style_timbre_cos is not None:
             diagnostics["diag_style_dynamic_timbre_cos"] = style_timbre_cos
+        fast_slow_style_cos = _cosine_mean(
+            output.get("fast_style_decoder_residual"),
+            output.get("slow_style_decoder_residual"),
+        )
+        if fast_slow_style_cos is not None:
+            diagnostics["diag_fast_slow_style_cos"] = fast_slow_style_cos
         style_global_cos = _cosine_mean(style_repr, global_style_summary)
         if style_global_cos is not None:
             diagnostics["diag_style_global_cos"] = style_global_cos
@@ -518,6 +532,39 @@ def collect_control_diagnostics(output, sample, config):
             diagnostics["diag_output_identity_norm"] = output_identity_norm
         if output_identity_norm_std is not None:
             diagnostics["diag_output_identity_norm_std"] = output_identity_norm_std
+        runtime_budget_clip_frac = output.get("runtime_dynamic_timbre_style_budget_clip_frac")
+        if isinstance(runtime_budget_clip_frac, torch.Tensor):
+            diagnostics["diag_runtime_dynamic_timbre_budget_clip_frac"] = runtime_budget_clip_frac.float().mean()
+        elif runtime_budget_clip_frac is not None:
+            diagnostics["diag_runtime_dynamic_timbre_budget_clip_frac"] = torch.tensor(float(runtime_budget_clip_frac))
+        runtime_budget_applied = output.get("runtime_dynamic_timbre_style_budget_applied")
+        if runtime_budget_applied is not None:
+            diagnostics["diag_runtime_dynamic_timbre_budget_applied"] = torch.tensor(float(bool(runtime_budget_applied)))
+        prebudget_dynamic_timbre = output.get("dynamic_timbre_decoder_residual_prebudget")
+        postbudget_dynamic_timbre = output.get("dynamic_timbre_decoder_residual")
+        prebudget_norm = _delta_norm(prebudget_dynamic_timbre)
+        postbudget_norm = _delta_norm(postbudget_dynamic_timbre)
+        if prebudget_norm is not None:
+            diagnostics["diag_dynamic_timbre_prebudget_norm"] = prebudget_norm
+        if postbudget_norm is not None:
+            diagnostics["diag_dynamic_timbre_postbudget_norm"] = postbudget_norm
+        budget_ratio = _safe_scalar_ratio(postbudget_norm, prebudget_norm)
+        if budget_ratio is not None:
+            diagnostics["diag_dynamic_timbre_post_to_pre_budget_ratio"] = budget_ratio
+        identity_backend = str(output.get("identity_encoder_backend", "none"))
+        diagnostics["diag_identity_backend_is_external"] = torch.tensor(
+            float(identity_backend == "external_speaker_verifier")
+        )
+        diagnostics["diag_identity_encoder_frozen_for_loss"] = torch.tensor(
+            float(
+                bool(
+                    output.get(
+                        "identity_encoder_frozen_for_loss",
+                        output.get("identity_encoder_params_frozen_for_loss", False),
+                    )
+                )
+            )
+        )
         tensor_kwargs = {"dtype": torch.float32}
         if isinstance(style_repr, torch.Tensor):
             tensor_kwargs["device"] = style_repr.device
@@ -559,6 +606,12 @@ def collect_control_diagnostics(output, sample, config):
         for output_key, diag_key in (
             ("reference_curriculum_use_external_ref", "diag_reference_curriculum_use_external_ref"),
             ("forcing_enabled", "diag_prosody_forcing_enabled"),
+            (
+                "identity_encoder_frozen_for_loss"
+                if "identity_encoder_frozen_for_loss" in output
+                else "identity_encoder_params_frozen_for_loss",
+                "diag_output_identity_internal_encoder_frozen",
+            ),
         ):
             value = output.get(output_key, None)
             if value is not None:
@@ -566,6 +619,16 @@ def collect_control_diagnostics(output, sample, config):
                     1.0 if bool(value) else 0.0,
                     **tensor_kwargs,
                 )
+        identity_encoder_backend = output.get("identity_encoder_backend", None)
+        if identity_encoder_backend is not None:
+            diagnostics["diag_output_identity_uses_external_verifier"] = torch.tensor(
+                1.0 if str(identity_encoder_backend) == "external_speaker_verifier" else 0.0,
+                **tensor_kwargs,
+            )
+            diagnostics["diag_output_identity_internal_encoder_trainable"] = torch.tensor(
+                1.0 if str(identity_encoder_backend) == "model_encode_spk_embed_trainable_for_loss" else 0.0,
+                **tensor_kwargs,
+            )
 
         diagnostics.update(
             _decoder_style_adapter_statistics(
@@ -627,6 +690,42 @@ def collect_control_diagnostics(output, sample, config):
                 prefix="diag_dynamic_timbre_boundary_scale",
             )
         )
+        diagnostics.update(
+            _simple_sequence_statistics(
+                output.get("style_router_gate"),
+                output.get("style_trace_mask"),
+                prefix="diag_style_router_gate",
+            )
+        )
+        diagnostics.update(
+            _simple_sequence_statistics(
+                output.get("style_burst_score"),
+                output.get("style_trace_mask"),
+                prefix="diag_style_burst_score",
+            )
+        )
+        style_owner_source = output.get("style_owner_source", None)
+        if style_owner_source is not None:
+            diagnostics["diag_style_owner_source_dual_router"] = _categorical_indicator(
+                style_owner_source,
+                "dual_router",
+                device=tensor_kwargs.get("device", None),
+            )
+            diagnostics["diag_style_owner_source_dual_sum"] = _categorical_indicator(
+                style_owner_source,
+                "dual_sum",
+                device=tensor_kwargs.get("device", None),
+            )
+            diagnostics["diag_style_owner_source_fast_only"] = _categorical_indicator(
+                style_owner_source,
+                "fast_only",
+                device=tensor_kwargs.get("device", None),
+            )
+            diagnostics["diag_style_owner_source_slow_only"] = _categorical_indicator(
+                style_owner_source,
+                "slow_only",
+                device=tensor_kwargs.get("device", None),
+            )
         anchor_shift = output.get("dynamic_timbre_anchor_shift")
         if isinstance(anchor_shift, torch.Tensor):
             anchor_shift_norm, _ = _safe_mean_std(anchor_shift.norm(dim=-1))

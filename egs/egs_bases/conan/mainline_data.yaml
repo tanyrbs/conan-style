@@ -1,0 +1,23 @@
+binary_data_dir: data/binary/libritts_single
+processed_data_dir: data/processed/libritts_single
+binarizer_cls: data_gen.conan_binarizer.ConanBinarizer
+valid_prefixes: []
+test_prefixes: []
+fallback_valid_items_per_speaker: 2
+fallback_test_items_per_speaker: 2
+test_ids: []
+binarization_args:
+  reset_phone_dict: true
+  reset_word_dict: true
+  shuffle: false
+  trim_eos_bos: false
+  trim_sil: false
+  with_align: true
+  with_f0: true
+  with_f0cwt: false
+  with_linear: false
+  with_spk_embed: false
+  with_spk_id: true
+  with_txt: true
+  with_wav: true
+  with_word: true

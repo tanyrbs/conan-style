@@ -1,26 +1,40 @@
-import torch
-import torch.nn as nn
-import torchaudio
+import importlib
 import time
 
+import torch
+import torch.nn as nn
+
+
+def _load_torchaudio():
+    try:
+        return importlib.import_module("torchaudio")
+    except Exception as exc:
+        raise RuntimeError(
+            "EmformerDistillModel requires a working torchaudio installation. "
+            "Check that torch and torchaudio are a compatible pair for the active Python version."
+        ) from exc
+
 class EmformerDistillModel(nn.Module):
-    def __init__(self, hparams, input_dim=80, output_dim=None):  # output_dim now comes from hparams
+    def __init__(self, hparams, input_dim=None, output_dim=None):
         super().__init__()
-        
-        # Get output_dim from hparams if not provided, with fallback to default
+
+        if input_dim is None:
+            input_dim = int(hparams.get('emformer_input_dim', 80))
         if output_dim is None:
-            output_dim = hparams.get('emformer_output_dim', 768)  # Default to 768 if not specified
-        
+            output_dim = int(hparams.get('emformer_output_dim', 768))
+
+        torchaudio = _load_torchaudio()
+        segment_length = max(1, int(hparams['chunk_size']) // 20)
         self.emformer = torchaudio.models.Emformer(
-            input_dim=input_dim,
+            input_dim=int(input_dim),
             num_heads=8,
             ffn_dim=2048,
             num_layers=hparams['emformer_layers'],
-            segment_length=hparams['chunk_size'] // 20,
+            segment_length=segment_length,
             left_context_length=50,
             right_context_length=hparams['right_context'],
         )
-        self.segment_length = hparams['chunk_size'] // 20  # Length per segment in frames
+        self.segment_length = segment_length
         # If output dimension differs from HuBERT, add projection layer
         self.proj = nn.Linear(input_dim, output_dim) if input_dim != output_dim else nn.Identity()
         self.right_context_len = hparams['right_context']

@@ -1,4 +1,5 @@
 base_config:
-- egs/egs_bases/conan/mainline_core.yaml
-- egs/egs_bases/conan/mainline_style_runtime.yaml
+- egs/egs_bases/conan/mainline_shared.yaml
+- egs/egs_bases/conan/mainline_data.yaml
+- egs/egs_bases/conan/mainline_stats.yaml
 work_dir: checkpoints/Conan

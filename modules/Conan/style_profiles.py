@@ -236,55 +236,21 @@ def resolve_style_profile(
         default="mainline_full",
     )
     if profile_track == "mainline":
-        research_like_override = (
-            ("decoder_style_condition_mode" in explicit_override_keys and normalized_mode != "mainline_full")
-            or (
-                "style_to_pitch_residual_include_timbre" in explicit_override_keys
-                and bool(resolved.get("style_to_pitch_residual_include_timbre", False))
-                != bool(base_profile.get("style_to_pitch_residual_include_timbre", False))
-            )
-            or ("global_style_trace_blend" in explicit_override_keys and float(resolved.get("global_style_trace_blend", 0.0)) > 0.0)
-            or ("style_query_global_summary_scale" in explicit_override_keys and float(resolved.get("style_query_global_summary_scale", 0.0)) != 0.0)
-            or ("style_memory_mode" in explicit_override_keys and str(resolved.get("style_memory_mode", "slow")).strip().lower() != str(base_profile.get("style_memory_mode", "slow")).strip().lower())
-            or ("dynamic_timbre_memory_mode" in explicit_override_keys and str(resolved.get("dynamic_timbre_memory_mode", "slow")).strip().lower() != str(base_profile.get("dynamic_timbre_memory_mode", "slow")).strip().lower())
-            or ("dynamic_timbre_coarse_style_context_scale" in explicit_override_keys and float(resolved.get("dynamic_timbre_coarse_style_context_scale", 0.0)) != float(base_profile.get("dynamic_timbre_coarse_style_context_scale", 0.0)))
-            or ("dynamic_timbre_query_style_condition_scale" in explicit_override_keys and float(resolved.get("dynamic_timbre_query_style_condition_scale", 0.0)) != float(base_profile.get("dynamic_timbre_query_style_condition_scale", 0.0)))
-            or ("dynamic_timbre_style_context_stopgrad" in explicit_override_keys and bool(resolved.get("dynamic_timbre_style_context_stopgrad", True)) != bool(base_profile.get("dynamic_timbre_style_context_stopgrad", True)))
-            or ("dynamic_timbre_use_tvt" in explicit_override_keys and bool(resolved.get("dynamic_timbre_use_tvt", True)) != bool(base_profile.get("dynamic_timbre_use_tvt", True)))
-            or ("dynamic_timbre_tvt_prior_scale" in explicit_override_keys and float(resolved.get("dynamic_timbre_tvt_prior_scale", 1.0)) != float(base_profile.get("dynamic_timbre_tvt_prior_scale", 1.0)))
-            or ("runtime_dynamic_timbre_style_budget_ratio" in explicit_override_keys and float(resolved.get("runtime_dynamic_timbre_style_budget_ratio", 0.40)) != float(base_profile.get("runtime_dynamic_timbre_style_budget_ratio", 0.40)))
-            or ("runtime_dynamic_timbre_style_budget_margin" in explicit_override_keys and float(resolved.get("runtime_dynamic_timbre_style_budget_margin", 0.0)) != float(base_profile.get("runtime_dynamic_timbre_style_budget_margin", 0.0)))
-            or ("runtime_dynamic_timbre_style_budget_enabled" in explicit_override_keys and bool(resolved.get("runtime_dynamic_timbre_style_budget_enabled", True)) != bool(base_profile.get("runtime_dynamic_timbre_style_budget_enabled", True)))
+        allowed_mainline_override_keys = {"style_strength"}
+        research_override_keys = sorted(
+            key
+            for key in (explicit_override_keys - allowed_mainline_override_keys)
+            if resolved.get(key) != base_profile.get(key)
         )
+        research_like_override = len(research_override_keys) > 0
         if research_like_override and not allow_mainline_profile_research_overrides:
             warnings.warn(
-                f"Mainline style_profile '{preset_name}' received research-style overrides; coercing back to the profile's approved mainline defaults. "
+                f"Mainline style_profile '{preset_name}' received research-style overrides ({', '.join(research_override_keys)}); "
+                "coercing back to the profile's approved mainline defaults. "
                 "Use 'research_dual' or set allow_mainline_profile_research_overrides=True to keep them.",
                 stacklevel=2,
             )
-            for key in (
-                "decoder_style_condition_mode",
-                "style_trace_mode",
-                "style_router_enabled",
-                "style_to_pitch_residual",
-                "style_to_pitch_residual_include_timbre",
-                "style_to_pitch_residual_mode",
-                "style_to_pitch_residual_scale",
-                "style_to_pitch_residual_max_semitones",
-                "style_to_pitch_residual_smooth_factor",
-                "global_style_trace_blend",
-                "style_query_global_summary_scale",
-                "style_memory_mode",
-                "dynamic_timbre_memory_mode",
-                "dynamic_timbre_coarse_style_context_scale",
-                "dynamic_timbre_query_style_condition_scale",
-                "dynamic_timbre_style_context_stopgrad",
-                "dynamic_timbre_use_tvt",
-                "dynamic_timbre_tvt_prior_scale",
-                "runtime_dynamic_timbre_style_budget_enabled",
-                "runtime_dynamic_timbre_style_budget_ratio",
-                "runtime_dynamic_timbre_style_budget_margin",
-            ):
+            for key in research_override_keys:
                 if key in base_profile:
                     resolved[key] = base_profile[key]
             normalized_mode = normalize_decoder_style_condition_mode(
@@ -293,7 +259,7 @@ def resolve_style_profile(
             )
         elif research_like_override:
             warnings.warn(
-                f"Mainline style_profile '{preset_name}' is being used with research-style overrides. "
+                f"Mainline style_profile '{preset_name}' is being used with research-style overrides ({', '.join(research_override_keys)}). "
                 "Prefer the dedicated research profile if this is intentional.",
                 stacklevel=2,
             )

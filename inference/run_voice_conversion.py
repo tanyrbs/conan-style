@@ -15,7 +15,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from inference.Conan import StreamingVoiceConversion
 from inference.conan_request import build_mainline_request_input, has_distinct_split_reference_inputs
 from utils.audio.io import save_wav
 from utils.commons.hparams import hparams, set_hparams
@@ -23,6 +22,18 @@ from utils.commons.hparams import hparams, set_hparams
 CANONICAL_CONFIG = "egs/conan_mainline_infer.yaml"
 CANONICAL_EXP_NAME = "Conan"
 DEFAULT_PAIR_CONFIG = "inference/conan_single_reference_demo.example.json"
+
+
+def _lazy_import_streaming_engine():
+    try:
+        from inference.Conan import StreamingVoiceConversion
+
+        return StreamingVoiceConversion
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to import the Conan streaming inference stack. "
+            "Check that torchaudio matches torch and that Emformer runtime dependencies are installed."
+        ) from exc
 
 
 def parse_args():
@@ -70,6 +81,7 @@ class VoiceConversionRunner:
         self._advanced_control_warning_emitted = False
 
         print("Initializing StreamingVoiceConversion engine...")
+        StreamingVoiceConversion = _lazy_import_streaming_engine()
         self.engine = StreamingVoiceConversion(hparams)
         print("Engine initialized successfully.")
 

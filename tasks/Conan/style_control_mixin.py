@@ -1,3 +1,5 @@
+from contextlib import contextmanager, nullcontext
+
 import torch
 
 from modules.Conan.reference_bundle import (
@@ -67,6 +69,46 @@ class ConanStyleControlMixin:
             return None
         return self.model.encode_spk_embed
 
+    def _identity_encoder_loss_mode(self):
+        if getattr(self, "speaker_verifier", None) is not None:
+            return "external_speaker_verifier"
+        if bool(hparams.get("freeze_internal_identity_encoder_for_loss", True)):
+            return "model_encode_spk_embed_frozen_for_loss"
+        return "model_encode_spk_embed_trainable_for_loss"
+
+    def _internal_identity_encoder_modules(self):
+        if getattr(self, "model", None) is None:
+            return []
+        modules = []
+        for name in ("global_conv_in", "global_encoder"):
+            module = getattr(self.model, name, None)
+            if module is not None and hasattr(module, "parameters"):
+                modules.append(module)
+        return modules
+
+    @contextmanager
+    def _freeze_internal_identity_encoder_params(self):
+        params = []
+        seen = set()
+        for module in self._internal_identity_encoder_modules():
+            for param in module.parameters():
+                key = id(param)
+                if key in seen:
+                    continue
+                seen.add(key)
+                params.append(param)
+        if not params:
+            yield False
+            return
+        previous_requires_grad = [param.requires_grad for param in params]
+        try:
+            for param in params:
+                param.requires_grad_(False)
+            yield True
+        finally:
+            for param, requires_grad in zip(params, previous_requires_grad):
+                param.requires_grad_(requires_grad)
+
     @staticmethod
     def _normalize_identity_embedding(embedding, mel_btc=None):
         if not isinstance(embedding, torch.Tensor):
@@ -98,7 +140,16 @@ class ConanStyleControlMixin:
         if verifier is not None:
             embedding = encoder(mel_input)
         else:
-            embedding = encoder(mel_input.transpose(1, 2))
+            freeze_internal_encoder = bool(
+                hparams.get("freeze_internal_identity_encoder_for_loss", True)
+            )
+            freeze_context = (
+                self._freeze_internal_identity_encoder_params()
+                if freeze_internal_encoder
+                else nullcontext(False)
+            )
+            with freeze_context:
+                embedding = encoder(mel_input.transpose(1, 2))
         return self._normalize_identity_embedding(embedding, mel_btc=mel_btc)
 
     def _maybe_attach_output_identity_embeddings(self, output, reference_mels=None):
@@ -108,7 +159,10 @@ class ConanStyleControlMixin:
         global_timbre_anchor = output.get("global_timbre_anchor")
         if (
             not isinstance(mel_out, torch.Tensor)
-            or not isinstance(global_timbre_anchor, torch.Tensor)
+            or (
+                not isinstance(global_timbre_anchor, torch.Tensor)
+                and not isinstance(reference_mels, torch.Tensor)
+            )
         ):
             return
         identity_schedule_cfg = hparams.get("control_regularization_schedule", {})
@@ -129,13 +183,18 @@ class ConanStyleControlMixin:
         )
         if not isinstance(output_identity_embed, torch.Tensor):
             return
+        identity_encoder_backend = self._identity_encoder_loss_mode()
         output["output_identity_embed"] = output_identity_embed
-        output["output_identity_anchor_target"] = global_timbre_anchor.detach()
-        output["identity_encoder_backend"] = (
-            "external_speaker_verifier"
-            if getattr(self, "speaker_verifier", None) is not None
-            else "model_encode_spk_embed"
+        output["identity_encoder_backend"] = identity_encoder_backend
+        output["identity_encoder_params_frozen_for_loss"] = bool(
+            identity_encoder_backend == "model_encode_spk_embed_frozen_for_loss"
         )
+        output["identity_encoder_frozen_for_loss"] = bool(
+            identity_encoder_backend == "model_encode_spk_embed_frozen_for_loss"
+        )
+        if isinstance(global_timbre_anchor, torch.Tensor):
+            output["output_identity_anchor_target"] = global_timbre_anchor.detach()
+            output["output_identity_target_source"] = "global_timbre_anchor"
         if isinstance(reference_mels, torch.Tensor):
             with torch.no_grad():
                 reference_identity_embed = self._encode_identity_embedding(
@@ -143,7 +202,10 @@ class ConanStyleControlMixin:
                     detach_input=True,
                 )
                 if isinstance(reference_identity_embed, torch.Tensor):
-                    output["reference_identity_embed"] = reference_identity_embed
+                    detached_reference_identity_embed = reference_identity_embed.detach()
+                    output["reference_identity_embed"] = detached_reference_identity_embed
+                    output["output_identity_reference_target"] = detached_reference_identity_embed
+                    output["output_identity_target_source"] = "reference_identity_embed"
 
     def add_control_losses(self, output, sample, losses):
         regularization_config = resolve_control_regularization_config(hparams, self.global_step)

@@ -677,10 +677,11 @@ class Conan(
                 upper_bound_progress=expressive_upper_bound_progress,
             )
             dynamic_timbre_decoder_residual = dynamic_timbre * dynamic_timbre_strength
+            ret["dynamic_timbre_decoder_residual_prebudget"] = dynamic_timbre_decoder_residual
             dynamic_timbre_decoder_residual = self._apply_runtime_dynamic_timbre_budget(
                 dynamic_timbre_decoder_residual,
                 style_decoder_residual=M_style_final,
-                slow_style_decoder_residual=None,
+                slow_style_decoder_residual=slow_style_decoder_residual,
                 content=content,
                 kwargs=kwargs,
                 ret=ret,
@@ -709,6 +710,9 @@ class Conan(
             global_timbre_anchor_runtime=global_timbre_anchor_runtime,
             global_style_summary_runtime=global_style_summary_runtime,
             global_style_summary_runtime_source=global_style_summary_runtime_source,
+            slow_style_trace=slow_style_decoder_residual,
+            slow_style_trace_mask=ret.get("slow_style_trace_mask"),
+            slow_style_source=ret.get("slow_style_trace_source_runtime", "missing"),
             M_style=M_style_final,
             M_style_mask=M_style_mask,
             M_timbre=dynamic_timbre_decoder_residual,

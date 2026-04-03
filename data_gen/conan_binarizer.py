@@ -10,6 +10,12 @@ import numpy as np
 from tqdm import tqdm
 
 from data_gen.tts.base_binarizer import BaseBinarizer as CanonicalBaseBinarizer, BinarizationError
+from utils.commons.condition_labels import (
+    CONDITION_FIELDS,
+    load_condition_id_maps,
+    resolve_condition_label_id,
+    write_condition_artifacts,
+)
 from utils.commons.hparams import hparams
 from utils.commons.indexed_datasets import IndexedDatasetBuilder
 from utils.commons.multiprocess_utils import multiprocess_run_tqdm
@@ -76,7 +82,7 @@ def _load_cached_f0(wav_fn, *, item_name=None, max_frames=None):
     if not os.path.exists(f0_path):
         raise FileNotFoundError(
             f"Missing cached f0 for {item_name or wav_fn}: {f0_path}. "
-            "Run `python utils/extract_f0_rmvpe.py --config egs/conan_emformer.yaml --pe-ckpt <rmvpe.pt>` first."
+            "Run `python utils/extract_f0_rmvpe.py --config egs/conan_binarize.yaml --pe-ckpt <rmvpe.pt>` first."
         )
     f0 = np.asarray(np.load(f0_path), dtype=np.float32).reshape(-1)
     if f0.size <= 0:
@@ -222,10 +228,6 @@ def _fallback_holdout_by_speaker(
 
     return sorted(reserved_valid - reserved_test), sorted(reserved_test)
 
-
-CONDITION_FIELDS = ("emotion", "style", "accent")
-
-
 def _safe_int(value, default=-1):
     if value is None:
         return int(default)
@@ -309,32 +311,12 @@ class VCBinarizer(ConanBaseBinarizer):
         cache_key = (hparams.get("binary_data_dir"), hparams.get("processed_data_dir"))
         if cls._condition_maps is not None and cls._condition_maps_key == cache_key:
             return cls._condition_maps
-        condition_maps = {}
-        for field in CONDITION_FIELDS:
-            field_map = None
-            for candidate_dir in [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")]:
-                if not candidate_dir:
-                    continue
-                map_candidate = os.path.join(candidate_dir, f"{field}_map.json")
-                if os.path.exists(map_candidate):
-                    field_map = {
-                        str(label): int(idx)
-                        for label, idx in json.load(open(map_candidate, encoding="utf-8")).items()
-                    }
-                    break
-                set_candidate = os.path.join(candidate_dir, f"{field}_set.json")
-                if os.path.exists(set_candidate):
-                    vocab = json.load(open(set_candidate, encoding="utf-8"))
-                    field_map = {
-                        str(label): idx
-                        for idx, label in enumerate(vocab)
-                        if label not in (None, "")
-                    }
-                    break
-            condition_maps[field] = field_map or {}
-        cls._condition_maps = condition_maps
+        cls._condition_maps = load_condition_id_maps(
+            [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")],
+            fields=CONDITION_FIELDS,
+        )
         cls._condition_maps_key = cache_key
-        return condition_maps
+        return cls._condition_maps
 
     @classmethod
     def _resolve_condition_id(cls, item, field):
@@ -348,7 +330,12 @@ class VCBinarizer(ConanBaseBinarizer):
         if isinstance(raw_value, (int, np.integer)):
             return int(raw_value)
         condition_maps = cls._load_condition_maps()
-        return int(condition_maps.get(field, {}).get(str(raw_value), -1))
+        resolved = resolve_condition_label_id(condition_maps.get(field, {}), raw_value, default=-1)
+        if resolved < 0:
+            raise KeyError(
+                f"[{cls.__name__}] Unknown {field} label for {item.get('item_name', '<unknown>')}: {raw_value}"
+            )
+        return int(resolved)
 
     @classmethod
     def _resolve_speaker_id(cls, item_name):
@@ -424,7 +411,6 @@ class VCBinarizer(ConanBaseBinarizer):
 
     def _prepare_condition_metadata(self, items_list):
         condition_maps = {}
-        condition_sets = {}
         for field in CONDITION_FIELDS:
             label_to_id = {}
             id_to_label = {}
@@ -470,20 +456,15 @@ class VCBinarizer(ConanBaseBinarizer):
                 if strength_key in item and item[strength_key] not in (None, ''):
                     item[strength_key] = float(item[strength_key])
 
-            max_id = max(id_to_label.keys(), default=-1)
-            vocab = [None] * (max_id + 1)
-            for idx, label in id_to_label.items():
-                vocab[int(idx)] = str(label)
             condition_maps[field] = {
                 str(label): int(idx)
                 for label, idx in sorted(label_to_id.items(), key=lambda kv: (int(kv[1]), str(kv[0])))
             }
-            condition_sets[field] = vocab
 
         for item in items_list:
             if 'energy' in item and isinstance(item['energy'], str):
                 item['energy'] = [float(x) for x in item['energy'].split()]
-        return condition_maps, condition_sets
+        return condition_maps
 
     def split_train_test_set(self, item_names):
         deterministic_item_names = sorted(deepcopy(item_names))
@@ -526,8 +507,11 @@ class VCBinarizer(ConanBaseBinarizer):
 
     def load_meta_data(self):
         metadata_path = self._metadata_path()
-        items_list = json.load(open(metadata_path, encoding='utf-8'))
-        self.label_maps, self.condition_sets = self._prepare_condition_metadata(items_list)
+        with open(metadata_path, encoding='utf-8') as f:
+            items_list = json.load(f)
+        self.items = {}
+        self.item_names = []
+        self.label_maps = self._prepare_condition_metadata(items_list)
         for r in tqdm(items_list, desc='Loading meta data.'):
             item_name = r['item_name']
             self.items[item_name] = r
@@ -536,22 +520,14 @@ class VCBinarizer(ConanBaseBinarizer):
         self._train_item_names, self._test_item_names, self._valid_item_names = self.split_train_test_set(self.item_names)
 
     def _write_condition_artifacts(self):
-        target_dirs = {self.processed_data_dir, hparams['binary_data_dir']}
-        for target_dir in target_dirs:
-            os.makedirs(target_dir, exist_ok=True)
-            for field in CONDITION_FIELDS:
-                json.dump(
-                    self.label_maps.get(field, {}),
-                    open(os.path.join(target_dir, f"{field}_map.json"), "w", encoding='utf-8'),
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                json.dump(
-                    self.condition_sets.get(field, []),
-                    open(os.path.join(target_dir, f"{field}_set.json"), "w", encoding='utf-8'),
-                    ensure_ascii=False,
-                    indent=2,
-                )
+        write_condition_artifacts(
+            target_dirs={self.processed_data_dir, hparams['binary_data_dir']},
+            label_maps=self.label_maps,
+            items=list(self.items.values()),
+            fields=CONDITION_FIELDS,
+        )
+        type(self)._condition_maps = None
+        type(self)._condition_maps_key = None
 
     @property
     def train_item_names(self):

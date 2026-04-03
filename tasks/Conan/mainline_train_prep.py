@@ -48,6 +48,7 @@ REQUIRED_ZERO_KEYS = (
     "lambda_dynamic_timbre_anchor",
     "lambda_gate_rank",
     "lambda_decoder_late_anchor_budget",
+    "lambda_style_timbre_runtime_overlap",
 )
 
 REQUIRED_POSITIVE_KEYS = (
@@ -55,6 +56,7 @@ REQUIRED_POSITIVE_KEYS = (
     "lambda_dynamic_timbre_budget",
     "lambda_pitch_residual_safe",
     "lambda_decoder_late_owner",
+    "lambda_style_success_rank",
 )
 
 REQUIRED_PRESENT_KEYS = (
@@ -62,6 +64,7 @@ REQUIRED_PRESENT_KEYS = (
     "lambda_dynamic_timbre_budget",
     "lambda_pitch_residual_safe",
     "lambda_decoder_late_owner",
+    "lambda_style_success_rank",
 )
 
 CANONICAL_REMOVED_CONFIG_KEYS = (
@@ -959,9 +962,9 @@ def run_prep(args):
     checks.append(
         {
             "name": "mainline_minimal_active_control_loss_count",
-            "ok": len(active_mainline_control_keys) <= 4,
+            "ok": len(active_mainline_control_keys) <= len(MAINLINE_MINIMAL_CONTROL_LAMBDAS),
             "actual": len(active_mainline_control_keys),
-            "expected": "<= 4",
+            "expected": f"<= {len(MAINLINE_MINIMAL_CONTROL_LAMBDAS)}",
         }
     )
     checks.append(
@@ -993,6 +996,52 @@ def run_prep(args):
                 "expected": True,
             }
         )
+
+    overlap_margin = float(hparams.get("style_timbre_runtime_overlap_margin", 0.10))
+    checks.append(
+        {
+            "name": "style_timbre_runtime_overlap_margin_range",
+            "ok": 0.0 <= overlap_margin < 1.0,
+            "actual": overlap_margin,
+            "expected": "[0.0, 1.0)",
+        }
+    )
+    overlap_use_abs = hparams.get("style_timbre_runtime_overlap_use_abs", True)
+    checks.append(
+        {
+            "name": "style_timbre_runtime_overlap_use_abs_boollike",
+            "ok": isinstance(overlap_use_abs, (bool, int, float)),
+            "actual": overlap_use_abs,
+            "expected": "bool-like",
+        }
+    )
+    pitch_residual_huber_delta = float(hparams.get("pitch_residual_huber_delta", 0.02))
+    checks.append(
+        {
+            "name": "pitch_residual_huber_delta_positive",
+            "ok": pitch_residual_huber_delta > 0.0,
+            "actual": pitch_residual_huber_delta,
+            "expected": "> 0.0",
+        }
+    )
+    pitch_residual_budget_weight = float(hparams.get("pitch_residual_budget_weight", 0.15))
+    checks.append(
+        {
+            "name": "pitch_residual_budget_weight_nonnegative",
+            "ok": pitch_residual_budget_weight >= 0.0,
+            "actual": pitch_residual_budget_weight,
+            "expected": ">= 0.0",
+        }
+    )
+    pitch_residual_budget_margin = float(hparams.get("pitch_residual_budget_margin", 0.015))
+    checks.append(
+        {
+            "name": "pitch_residual_budget_margin_nonnegative",
+            "ok": pitch_residual_budget_margin >= 0.0,
+            "actual": pitch_residual_budget_margin,
+            "expected": ">= 0.0",
+        }
+    )
 
     _check_exists(checks, "binary_data_dir_exists", hparams.get("binary_data_dir"))
     _check_exists(checks, "processed_data_dir_exists", hparams.get("processed_data_dir"))

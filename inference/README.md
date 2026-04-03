@@ -82,6 +82,7 @@ The report surfaces:
 - runtime layout validation now checks for actual checkpoint artifacts, not just directories
 - streaming prefix inference trims missing tail right-context correctly
 - online/offline parity checks now match on both mel length and wav sample length
+- direct library-style inference (`set_hparams(..., global_hparams=False)` + `StreamingVoiceConversion(...)`) no longer depends on the global singleton hparams dict during style/prosody/timbre runtime
 - `EmformerDistillModel` respects `emformer_mode` as the canonical config key
 - vocoder wrappers now expose an explicit streaming capability surface instead of silently implying native streaming support
 

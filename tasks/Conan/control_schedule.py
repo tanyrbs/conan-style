@@ -1,5 +1,6 @@
 STYLE_REGULARIZATION_LAMBDAS = (
     "lambda_style_trace_consistency",
+    "lambda_style_success_rank",
 )
 
 TIMBRE_REGULARIZATION_LAMBDAS = (
@@ -12,10 +13,12 @@ TIMBRE_REGULARIZATION_LAMBDAS = (
     "lambda_gate_rank",
     "lambda_decoder_late_owner",
     "lambda_decoder_late_anchor_budget",
+    "lambda_style_timbre_runtime_overlap",
 )
 
 DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
     "lambda_style_trace_consistency",
+    "lambda_style_success_rank",
     "lambda_output_identity_cosine",
     "lambda_dynamic_timbre_gate",
     "lambda_dynamic_timbre_budget",
@@ -25,6 +28,11 @@ DEFAULT_SCHEDULED_CONTROL_LAMBDAS = (
     "lambda_gate_rank",
     "lambda_decoder_late_owner",
     "lambda_decoder_late_anchor_budget",
+    "lambda_style_timbre_runtime_overlap",
+)
+
+OPTIONAL_MAINLINE_RUNTIME_REGULARIZATION_LAMBDAS = (
+    "lambda_style_timbre_runtime_overlap",
 )
 
 MAINLINE_MINIMAL_CONTROL_LAMBDAS = (
@@ -32,6 +40,7 @@ MAINLINE_MINIMAL_CONTROL_LAMBDAS = (
     "lambda_dynamic_timbre_budget",
     "lambda_pitch_residual_safe",
     "lambda_decoder_late_owner",
+    "lambda_style_success_rank",
 )
 
 VALID_CONTROL_LOSS_PROFILES = (
@@ -160,7 +169,8 @@ def resolve_control_regularization_config(config, global_step, *, schedule_key="
     resolved["control_loss_profile"] = profile
     if profile == "mainline_minimal":
         allowed = set(MAINLINE_MINIMAL_CONTROL_LAMBDAS)
+        allowed_optional = set(OPTIONAL_MAINLINE_RUNTIME_REGULARIZATION_LAMBDAS)
         for key in DEFAULT_SCHEDULED_CONTROL_LAMBDAS:
-            if key not in allowed:
+            if key not in allowed and key not in allowed_optional:
                 resolved[key] = 0.0
     return resolved

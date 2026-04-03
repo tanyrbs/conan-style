@@ -316,7 +316,6 @@ class Trainer:
         # clear cache before training
         if self.on_gpu:
             torch.cuda.empty_cache()
-        dataloader = task_ref.train_dataloader()
         epoch = self.current_epoch
         stop_training = False
         # run all epochs
@@ -324,6 +323,11 @@ class Trainer:
             if self._max_updates_reached():
                 print("| Training end..")
                 break
+            # Rebuild the train dataloader each epoch so list-based batch samplers are
+            # reshuffled instead of freezing one initial batch order for the entire run.
+            if hasattr(task_ref, "_lazy_train_dataloader"):
+                delattr(task_ref, "_lazy_train_dataloader")
+            dataloader = task_ref.train_dataloader()
             # set seed for distributed sampler (enables shuffling for each epoch)
             if self.use_ddp and hasattr(dataloader.sampler, 'set_epoch'):
                 dataloader.sampler.set_epoch(epoch)

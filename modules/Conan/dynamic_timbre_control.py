@@ -202,11 +202,65 @@ def compute_sequence_residual_energy(
     return energy
 
 
+def _match_energy_shape(
+    value: Optional[torch.Tensor],
+    reference: Optional[torch.Tensor],
+):
+    if not isinstance(value, torch.Tensor) or not isinstance(reference, torch.Tensor):
+        return None
+    if tuple(value.shape) != tuple(reference.shape):
+        return None
+    return value
+
+
+def _resolve_style_budget_residuals(
+    *,
+    style_residual: Optional[torch.Tensor] = None,
+    slow_style_residual: Optional[torch.Tensor] = None,
+    style_base_residual: Optional[torch.Tensor] = None,
+    style_innovation_residual: Optional[torch.Tensor] = None,
+):
+    base_residual = (
+        style_base_residual
+        if isinstance(style_base_residual, torch.Tensor)
+        else slow_style_residual
+    )
+    if isinstance(style_innovation_residual, torch.Tensor):
+        innovation_residual = style_innovation_residual
+    elif isinstance(style_residual, torch.Tensor):
+        if isinstance(base_residual, torch.Tensor) and tuple(base_residual.shape) == tuple(style_residual.shape):
+            innovation_residual = style_residual - base_residual
+        else:
+            innovation_residual = style_residual
+    else:
+        innovation_residual = None
+    return base_residual, innovation_residual
+
+
+def _compose_style_budget_energy(
+    style_owner_energy: Optional[torch.Tensor],
+    slow_style_energy: Optional[torch.Tensor],
+    *,
+    slow_style_weight: float = 1.0,
+):
+    slow_style_weight = float(slow_style_weight)
+    if not isinstance(style_owner_energy, torch.Tensor):
+        if not isinstance(slow_style_energy, torch.Tensor):
+            return None, None
+        return slow_style_weight * slow_style_energy, slow_style_energy
+    if not isinstance(slow_style_energy, torch.Tensor):
+        return style_owner_energy, None
+    slow_style_excess = F.relu(slow_style_energy - style_owner_energy)
+    return style_owner_energy + slow_style_weight * slow_style_excess, slow_style_excess
+
+
 def resolve_dynamic_timbre_budget_terms(
     timbre_residual: Optional[torch.Tensor],
     *,
     style_residual: Optional[torch.Tensor] = None,
     slow_style_residual: Optional[torch.Tensor] = None,
+    style_base_residual: Optional[torch.Tensor] = None,
+    style_innovation_residual: Optional[torch.Tensor] = None,
     padding_mask: Optional[torch.Tensor] = None,
     budget_ratio: float = 0.50,
     budget_margin: float = 0.0,
@@ -224,23 +278,58 @@ def resolve_dynamic_timbre_budget_terms(
         timbre_residual,
         padding_mask=normalized_padding_mask,
     )
-    style_energy = compute_sequence_residual_energy(
-        style_residual,
+    style_base_residual, style_innovation_residual = _resolve_style_budget_residuals(
+        style_residual=style_residual,
+        slow_style_residual=slow_style_residual,
+        style_base_residual=style_base_residual,
+        style_innovation_residual=style_innovation_residual,
+    )
+    style_owner_residual = style_residual
+    if not isinstance(style_owner_residual, torch.Tensor):
+        if (
+            isinstance(style_base_residual, torch.Tensor)
+            and isinstance(style_innovation_residual, torch.Tensor)
+            and tuple(style_base_residual.shape) == tuple(style_innovation_residual.shape)
+        ):
+            style_owner_residual = style_base_residual + style_innovation_residual
+        elif isinstance(style_innovation_residual, torch.Tensor):
+            style_owner_residual = style_innovation_residual
+        else:
+            style_owner_residual = style_base_residual
+    style_owner_energy = compute_sequence_residual_energy(
+        style_owner_residual,
         padding_mask=normalized_padding_mask,
     )
-    if isinstance(style_energy, torch.Tensor):
-        style_energy = style_energy.detach()
+    style_base_energy = compute_sequence_residual_energy(
+        style_base_residual,
+        padding_mask=normalized_padding_mask,
+    )
+    style_innovation_energy = compute_sequence_residual_energy(
+        style_innovation_residual,
+        padding_mask=normalized_padding_mask,
+    )
     slow_energy = compute_sequence_residual_energy(
         slow_style_residual,
         padding_mask=normalized_padding_mask,
     )
+    style_owner_energy = _match_energy_shape(style_owner_energy, timbre_energy)
+    style_base_energy = _match_energy_shape(style_base_energy, timbre_energy)
+    style_innovation_energy = _match_energy_shape(style_innovation_energy, timbre_energy)
+    slow_energy = _match_energy_shape(slow_energy, timbre_energy)
+    if isinstance(style_owner_energy, torch.Tensor):
+        style_owner_energy = style_owner_energy.detach()
+    if isinstance(style_base_energy, torch.Tensor):
+        style_base_energy = style_base_energy.detach()
+    if isinstance(style_innovation_energy, torch.Tensor):
+        style_innovation_energy = style_innovation_energy.detach()
     if isinstance(slow_energy, torch.Tensor):
         slow_energy = slow_energy.detach()
-        style_energy = (
-            slow_style_weight * slow_energy
-            if style_energy is None
-            else style_energy + slow_style_weight * slow_energy
-        )
+
+    style_energy, slow_style_excess = _compose_style_budget_energy(
+        style_owner_energy,
+        slow_energy,
+        slow_style_weight=slow_style_weight,
+    )
     if style_energy is None or not isinstance(timbre_energy, torch.Tensor):
         return {
             "applied": False,
@@ -261,6 +350,9 @@ def resolve_dynamic_timbre_budget_terms(
         over_budget = over_budget & valid.bool()
         overflow = overflow * valid
         relative_overflow = relative_overflow * valid
+        active_fraction = (over_budget.float() * valid).sum() / valid.sum().clamp_min(1.0)
+    else:
+        active_fraction = over_budget.float().mean()
 
     return {
         "applied": bool(over_budget.any()),
@@ -268,11 +360,16 @@ def resolve_dynamic_timbre_budget_terms(
         "budget_scale": budget_scale,
         "timbre_energy": timbre_energy,
         "style_energy": style_energy,
+        "style_owner_energy": style_owner_energy,
+        "slow_style_energy": slow_energy,
+        "slow_style_excess_energy": slow_style_excess,
+        "style_base_energy": style_base_energy,
+        "style_innovation_energy": style_innovation_energy,
         "allowed_energy": allowed_energy,
         "over_budget_mask": over_budget,
         "overflow": overflow,
         "relative_overflow": relative_overflow,
-        "active_fraction": over_budget.float().mean(),
+        "active_fraction": active_fraction,
         "budget_epsilon": budget_epsilon,
         "padding_mask": normalized_padding_mask,
     }
@@ -283,6 +380,8 @@ def apply_runtime_budget_to_dynamic_timbre(
     *,
     style_residual: Optional[torch.Tensor] = None,
     slow_style_residual: Optional[torch.Tensor] = None,
+    style_base_residual: Optional[torch.Tensor] = None,
+    style_innovation_residual: Optional[torch.Tensor] = None,
     padding_mask: Optional[torch.Tensor] = None,
     budget_ratio: float = 0.50,
     budget_margin: float = 0.0,
@@ -296,6 +395,8 @@ def apply_runtime_budget_to_dynamic_timbre(
         aligned,
         style_residual=style_residual,
         slow_style_residual=slow_style_residual,
+        style_base_residual=style_base_residual,
+        style_innovation_residual=style_innovation_residual,
         padding_mask=padding_mask,
         budget_ratio=budget_ratio,
         budget_margin=budget_margin,

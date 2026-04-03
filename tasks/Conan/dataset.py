@@ -1,5 +1,6 @@
 from tasks.tts.dataset_utils import FastSpeechDataset
 import torch
+import math
 from modules.Conan.reference_bundle import canonicalize_reference_bundle, normalize_reference_contract_mode
 from modules.Conan.style_mainline import sanitize_mainline_style_strength
 from modules.Conan.style_profiles import resolve_style_profile
@@ -15,7 +16,13 @@ def _scalar_long(value, default=-1):
 def _scalar_float(value, default=0.0):
     if value is None:
         value = default
-    return torch.tensor(float(value), dtype=torch.float32)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = float(default)
+    if not math.isfinite(value):
+        value = float(default)
+    return torch.tensor(value, dtype=torch.float32)
 
 
 def _resolve_default_style_strength(hparams):

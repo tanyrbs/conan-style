@@ -32,7 +32,7 @@ Training now opens the mainline upper-bound modules by curriculum:
 
 Canonical training ramps them from `20000 -> 80000`; inference always uses the full ceiling.
 
-## Canonical 4-loss pack
+## Canonical 5-loss pack
 
 The canonical training mainline keeps exactly these active control losses:
 
@@ -40,16 +40,25 @@ The canonical training mainline keeps exactly these active control losses:
 - `lambda_dynamic_timbre_budget`
 - `lambda_pitch_residual_safe`
 - `lambda_decoder_late_owner`
+- `lambda_style_success_rank`
 
 `lambda_dynamic_timbre_boundary` stays off in the canonical mainline.
 
 Implementation note for this 2026-04-03 closure pass:
 
 - `lambda_dynamic_timbre_budget` now constrains the **pre-budget** dynamic-timbre residual instead of only observing the already-clipped runtime result
-- the budget reference now includes the decoder slow-style residual in addition to the combined style-owner residual
+- the budget reference now uses **owner-style energy + slow-style excess energy**, avoiding a direct slow-style double count when the routed owner is already carrying that authority
+- the budget loss now supervises both the **pre-budget residual** and the **realized decoder-stage deltas**, so it constrains the actual effect space instead of only the pre-projection residual space
+- `lambda_pitch_residual_safe` now uses robust target alignment (`SmoothL1`), adds a one-sided residual budget against the bounded target magnitude, and matches **target slope** when that bounded target exists; the missing-target branch stays conservative (`zero-anchor + raw smoothness`)
 - the decoder runtime bundle now receives the explicit `slow_style_trace`, so the "mid-stage coarse slow-style / late-stage owner-style" story is no longer only theoretical
 
 Important: this mainline is a **bounded single-reference factorization contract**, not a proof of perfect disentanglement. The code explicitly surfaces `factorization_guaranteed: false`; the shipped losses constrain identity drift, timbre budget, pitch residual safety, and late-owner dominance, but they do not mathematically guarantee that every internal branch learns a unique semantic role.
+
+`lambda_style_success_rank` is intentionally training-side only. It does not open a new inference control surface; instead it adds a lower-bound style-success signal that combines paired self/reference alignment with weak-label batch ranking when metadata negatives are available.
+
+An additional optional research regularizer is now wired but still shipped as `0.0` by default: `lambda_style_timbre_runtime_overlap`. It does not claim disentanglement; it simply measures and, when enabled, penalizes excessive frame-wise overlap between `style_decoder_residual` and `dynamic_timbre_decoder_residual_prebudget`. Importantly, explicit ablation runs can now enable it while staying on `control_loss_profile: mainline_minimal`; the schedule layer no longer silently zeroes that opt-in regularizer.
+
+Treat `style_decoder_residual` as the public owner-style contract. Keep `fast_style_decoder_residual`, `slow_style_decoder_residual`, router gates, and burst scores as **internal realization / diagnostics variables**, not semantically identifiable public factors.
 
 ## Data layout
 
@@ -103,13 +112,14 @@ Key audited properties in the checked-in code:
 - dynamic timbre is not allowed to leak into `style_to_pitch_residual` on the shipped mainline path
 - when no external speaker verifier is configured, the identity loss is evaluated in a frozen internal speaker space instead of a trainable one
 - decoder runtime now consumes `slow_style_trace` directly instead of keeping it as a log-only byproduct
-- runtime dynamic-timbre budgeting now uses both the owner-style residual and the slow-style residual as its reference, while diagnostics/losses observe the pre-budget residual
+- runtime dynamic-timbre budgeting now uses owner-style energy plus only the **slow-style excess** beyond that owner reference, while losses/diagnostics observe both the pre-budget residual and the realized decoder-stage deltas
 - control-loss/runtime glue is now split one layer further:
   - `modules/Conan/style_timbre_runtime.py` owns query-side style assembly, timbre-query preparation, runtime budget application, and decoder bundle realization
 - fast style / TVT timbre / pitch residual now share one upper-bound curriculum instead of all starting at step 0
 - dynamic timbre now follows a consistent residual semantic on both TVT and non-TVT paths
 - dynamic timbre boundary suppression no longer collapses to a global mask on dense HuBERT-style unit sequences
-- style-to-pitch residual smoothing is post-canvas and mask-aware
+- style-to-pitch residual smoothing is post-canvas and mask-aware, and the safe loss now combines **robust target alignment + one-sided safe budget + target-slope matching** when a bounded target residual is available instead of flattening any raw local movement
+- direct library-style inference (`set_hparams(..., global_hparams=False)` + `StreamingVoiceConversion(...)`) no longer depends on the global singleton hparams dict during style/timbre runtime
 - binary indexed datasets produced under NumPy 2.x remain readable in the shipped NumPy 1.x conda environment
 - internal runtime glue is now split by responsibility:
   - `modules/Conan/common_utils.py` owns shared lightweight helpers
@@ -131,6 +141,18 @@ New control diagnostics from this closure pass include:
 - `diag_dynamic_timbre_post_to_pre_budget_ratio`
 - `diag_runtime_dynamic_timbre_style_budget_overflow_mean/std`
 - `diag_runtime_dynamic_timbre_style_budget_relative_overflow_mean/std`
+- `diag_runtime_dynamic_timbre_style_owner_energy_mean/std`
+- `diag_runtime_dynamic_timbre_slow_style_excess_energy_mean/std`
+- `diag_decoder_stage_dynamic_timbre_budget_overflow_mean/std`
+- `diag_style_timbre_runtime_cos`
+- `diag_style_timbre_runtime_abs_cos`
+- `diag_style_timbre_runtime_overlap_margin_violation`
+- `diag_style_timbre_runtime_postbudget_abs_cos`
+- `diag_dynamic_timbre_prebudget_to_style_energy_ratio`
+- `diag_dynamic_timbre_postbudget_to_style_energy_ratio`
+- `diag_style_success_pair_cos`
+- `diag_style_success_hard_negative_cos`
+- `diag_style_success_pair_margin`
 - `diag_identity_backend_is_external`
 - `diag_identity_encoder_frozen_for_loss`
 - `diag_output_identity_target_cos`

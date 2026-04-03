@@ -54,6 +54,7 @@ lambda_style_timbre_disentangle: 0.0
 lambda_style_query_var: 0.0
 lambda_global_style_summary_align: 0.0
 lambda_slow_style_summary_align: 0.0
+lambda_style_success_rank: 0.01
 lambda_tv_timbre_smooth: 0.0
 lambda_tv_timbre_anchor: 0.0
 lambda_timbre_anchor_cosine: 0.0
@@ -67,13 +68,19 @@ lambda_pitch_residual_safe: 0.01
 lambda_gate_rank: 0.0
 lambda_decoder_late_owner: 0.015
 lambda_decoder_late_anchor_budget: 0.0
+lambda_style_timbre_runtime_overlap: 0.0
 dynamic_timbre_gate_target: 0.35
 dynamic_timbre_budget_ratio: 0.4
 dynamic_timbre_budget_margin: 0.0
+pitch_residual_huber_delta: 0.02
+pitch_residual_budget_weight: 0.15
+pitch_residual_budget_margin: 0.015
 pitch_residual_smooth_weight: 0.1
 decoder_late_timbre_owner_ratio: 0.5
 decoder_late_anchor_budget_ratio: 0.35
 decoder_late_anchor_budget_floor: 0.0
+style_timbre_runtime_overlap_margin: 0.10
+style_timbre_runtime_overlap_use_abs: true
 control_regularization_schedule:
   type: linear
   lambda_output_identity_cosine:
@@ -96,6 +103,11 @@ control_regularization_schedule:
     warmup: 8000
     initial: 0.0
     target: 0.015
+  lambda_style_success_rank:
+    start: 20000
+    warmup: 16000
+    initial: 0.0
+    target: 0.01
 log_control_diagnostics: true
 control_diagnostics_track_lambdas: true
 valid_use_streaming_prefix_path: true

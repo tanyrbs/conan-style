@@ -65,6 +65,8 @@ class ConanStyleConditioningMixin:
         *,
         style_residual=None,
         slow_style_residual=None,
+        style_base_residual=None,
+        style_innovation_residual=None,
         padding_mask=None,
         budget_ratio=0.50,
         budget_margin=0.0,
@@ -75,6 +77,8 @@ class ConanStyleConditioningMixin:
             aligned,
             style_residual=style_residual,
             slow_style_residual=slow_style_residual,
+            style_base_residual=style_base_residual,
+            style_innovation_residual=style_innovation_residual,
             padding_mask=padding_mask,
             budget_ratio=budget_ratio,
             budget_margin=budget_margin,
@@ -198,7 +202,7 @@ class ConanStyleConditioningMixin:
         if ref_mels is None or self.prosody_extractor is None:
             return {}
         ref_upsample = self._build_ref_upsample(ref_mels)
-        if global_steps > self._get_hparam("vq_start", hparams["vq_start"]) or infer:
+        if global_steps > self._get_hparam("vq_start", hparams.get("vq_start", 0)) or infer:
             prosody_embedding, loss, ppl = self.prosody_extractor(ref_mels, ref_upsample, no_vq=False)
             payload = {"vq_loss": loss, "ppl": ppl}
         else:
@@ -603,7 +607,7 @@ class ConanStyleConditioningMixin:
             if ref_mels is None:
                 raise ValueError("get_prosody requires `ref_mels` or cached `prosody_memory`.")
             ret["ref_upsample"] = self._build_ref_upsample(ref_mels)
-            if global_steps > self._get_hparam("vq_start", hparams["vq_start"]) or infer:
+            if global_steps > self._get_hparam("vq_start", hparams.get("vq_start", 0)) or infer:
                 prosody_embedding, loss, ppl = self.prosody_extractor(ref_mels, ret["ref_upsample"], no_vq=False)
                 ret["vq_loss"] = loss
                 ret["ppl"] = ppl
@@ -624,7 +628,7 @@ class ConanStyleConditioningMixin:
             ret["prosody_forcing_progress"] = float(forcing_schedule_state.get("progress", 0.0))
             ret["prosody_forcing_source"] = "schedule_state"
         else:
-            forcing = bool(global_steps < self._get_hparam("forcing", hparams["forcing"]))
+            forcing = bool(global_steps < self._get_hparam("forcing", hparams.get("forcing", 0)))
             ret["prosody_forcing_schedule_mode"] = "legacy_hard"
             ret["prosody_forcing_prob"] = 1.0 if forcing else 0.0
             ret["prosody_forcing_progress"] = 0.0 if forcing else 1.0
@@ -690,7 +694,10 @@ class ConanStyleConditioningMixin:
                     "get_dynamic_timbre requires `ref_mels` or cached `timbre_memory`."
                 )
             ref_upsample = self._build_ref_upsample(ref_mels)
-            vq_start = self._get_hparam("tv_timbre_vq_start", self._get_hparam("vq_start", hparams["vq_start"]))
+            vq_start = self._get_hparam(
+                "tv_timbre_vq_start",
+                self._get_hparam("vq_start", hparams.get("vq_start", 0)),
+            )
             if global_steps > vq_start or infer:
                 timbre_embedding, timbre_vq_loss, timbre_ppl = self.local_timbre_extractor(ref_mels, ref_upsample)
                 ret["timbre_vq_loss"] = timbre_vq_loss

@@ -202,7 +202,11 @@ class BaseTask(nn.Module):
     ######################
     @classmethod
     def start(cls):
-        os.environ['MASTER_PORT'] = str(random.randint(15000, 30000))
+        master_port = hparams.get('ddp_master_port', None)
+        if master_port is not None:
+            os.environ['MASTER_PORT'] = str(int(master_port))
+        else:
+            os.environ.setdefault('MASTER_PORT', str(random.randint(15000, 30000)))
         random.seed(hparams['seed'])
         np.random.seed(hparams['seed'])
         work_dir = hparams['work_dir']

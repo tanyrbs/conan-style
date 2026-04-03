@@ -188,6 +188,76 @@ def resolve_style_profile_defaults(
     return _resolve_style_profile_defaults(overrides, hparams=hparams)
 
 
+def _style_profile_surface_keys() -> frozenset[str]:
+    try:
+        from modules.Conan.style_profiles import STYLE_PROFILE_KEYS
+    except Exception:
+        return frozenset()
+    return frozenset(STYLE_PROFILE_KEYS)
+
+
+def _is_closed_mainline_style_profile(
+    profile_defaults: Optional[Mapping[str, Any]],
+    *,
+    overrides: Optional[Mapping[str, Any]] = None,
+    hparams: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    if not isinstance(profile_defaults, Mapping) or len(profile_defaults) == 0:
+        return False
+    profile_track = str(
+        profile_defaults.get("style_profile_track", profile_defaults.get("track", ""))
+    ).strip().lower()
+    if profile_track != "mainline":
+        return False
+    return not bool(
+        first_present(
+            overrides,
+            "allow_mainline_profile_research_overrides",
+            default=first_present(
+                hparams,
+                "allow_mainline_profile_research_overrides",
+                default=False,
+            ),
+        )
+    )
+
+
+def _direct_style_runtime_override_allowed(
+    keys: tuple[str, ...],
+    *,
+    overrides: Optional[Mapping[str, Any]] = None,
+    hparams: Optional[Mapping[str, Any]] = None,
+    profile_defaults: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    if not _is_closed_mainline_style_profile(
+        profile_defaults,
+        overrides=overrides,
+        hparams=hparams,
+    ):
+        return True
+    normalized_keys = {str(key) for key in keys if isinstance(key, str)}
+    surface_keys = _style_profile_surface_keys()
+    if len(normalized_keys & surface_keys) == 0 and not normalized_keys.intersection(
+        {"style_strength", "style_strengths", "dynamic_timbre_strength", "dynamic_timbre_strengths"}
+    ):
+        return True
+    if normalized_keys.intersection({"style_strength", "style_strengths"}):
+        return True
+    if normalized_keys.intersection({"dynamic_timbre_strength", "dynamic_timbre_strengths"}):
+        return bool(
+            first_present(
+                overrides,
+                "allow_explicit_dynamic_timbre_strength",
+                default=first_present(
+                    hparams,
+                    "allow_explicit_dynamic_timbre_strength",
+                    default=False,
+                ),
+            )
+        )
+    return False
+
+
 def resolve_style_runtime_value(
     *keys: str,
     overrides: Optional[Mapping[str, Any]] = None,
@@ -197,15 +267,22 @@ def resolve_style_runtime_value(
 ):
     if profile_defaults is None:
         profile_defaults = _resolve_style_profile_defaults(overrides, hparams=hparams)
-    return first_present(
-        overrides,
-        *keys,
-        default=first_present(
-            hparams,
+    if _direct_style_runtime_override_allowed(
+        tuple(keys),
+        overrides=overrides,
+        hparams=hparams,
+        profile_defaults=profile_defaults,
+    ):
+        return first_present(
+            overrides,
             *keys,
-            default=first_present(profile_defaults, *keys, default=default),
-        ),
-    )
+            default=first_present(
+                hparams,
+                *keys,
+                default=first_present(profile_defaults, *keys, default=default),
+            ),
+        )
+    return first_present(profile_defaults, *keys, default=default)
 
 
 def resolve_expressive_upper_bound_progress(
@@ -328,24 +405,14 @@ def resolve_style_mainline_controls(
 ) -> StyleMainlineControls:
     profile_defaults = _resolve_style_profile_defaults(overrides, hparams=hparams)
     mode = normalize_decoder_style_condition_mode(
-        first_present(
-            overrides,
+        resolve_style_runtime_value(
             "decoder_style_condition_mode",
             "style_condition_mode",
             "style_mainline_mode",
-            default=first_present(
-                hparams,
-                "decoder_style_condition_mode",
-                "style_condition_mode",
-                "style_mainline_mode",
-                default=first_present(
-                    profile_defaults,
-                    "decoder_style_condition_mode",
-                    "style_condition_mode",
-                    "style_mainline_mode",
-                    default=default_mode,
-                ),
-            ),
+            overrides=overrides,
+            hparams=hparams,
+            profile_defaults=profile_defaults,
+            default=default_mode,
         ),
         default=default_mode,
     )
@@ -374,14 +441,12 @@ def resolve_style_mainline_controls(
     }[mode]
 
     def _value(*keys: str, default=None):
-        return first_present(
-            overrides,
+        return resolve_style_runtime_value(
             *keys,
-            default=first_present(
-                hparams,
-                *keys,
-                default=first_present(profile_defaults, *keys, default=default),
-            ),
+            overrides=overrides,
+            hparams=hparams,
+            profile_defaults=profile_defaults,
+            default=default,
         )
 
     def _raw_or_float(*keys: str, default=None):

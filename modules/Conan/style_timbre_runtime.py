@@ -14,6 +14,33 @@ from modules.Conan.style_realization_builder import build_style_realization_payl
 from modules.Conan.style_trace_utils import combine_style_traces, resolve_combined_style_trace
 
 
+def _merge_runtime_masks(*masks, reference=None):
+    normalized = []
+    for mask in masks:
+        if not isinstance(mask, torch.Tensor):
+            continue
+        if mask.dim() == 3 and mask.size(-1) == 1:
+            mask = mask.squeeze(-1)
+        if mask.dim() != 2:
+            continue
+        if isinstance(reference, torch.Tensor) and tuple(mask.shape) != tuple(reference.shape[:2]):
+            continue
+        device = reference.device if isinstance(reference, torch.Tensor) else mask.device
+        normalized.append(mask.bool().to(device))
+    if not normalized:
+        return None
+    merged = normalized[0]
+    for mask in normalized[1:]:
+        merged = merged | mask.to(device=merged.device)
+    return merged
+
+
+def _sequence_has_signal(value, *, eps: float = 1.0e-6) -> bool:
+    if not isinstance(value, torch.Tensor) or value.numel() <= 0:
+        return False
+    return bool(value.detach().abs().amax().item() > float(eps))
+
+
 def _resolve_style_owner_residual(style_payload, ret):
     fast_style_decoder_residual = style_payload.get("fast_style_decoder_residual")
     slow_style_decoder_residual = style_payload.get("slow_style_decoder_residual")
@@ -37,11 +64,44 @@ def _resolve_style_owner_residual(style_payload, ret):
             "style_trace_mask",
             ret.get("slow_style_trace_mask"),
         )
+    slow_style_decoder_residual_mask = ret.get("slow_style_trace_mask")
+    style_owner_base_residual = (
+        slow_style_decoder_residual
+        if isinstance(slow_style_decoder_residual, torch.Tensor)
+        else None
+    )
+    style_owner_base_mask = _merge_runtime_masks(
+        slow_style_decoder_residual_mask,
+        reference=style_owner_base_residual,
+    )
+    style_owner_innovation_residual = None
+    style_owner_innovation_mask = None
+    if isinstance(style_decoder_residual, torch.Tensor):
+        if (
+            isinstance(style_owner_base_residual, torch.Tensor)
+            and tuple(style_owner_base_residual.shape) == tuple(style_decoder_residual.shape)
+        ):
+            style_owner_innovation_residual = style_decoder_residual - style_owner_base_residual
+            style_owner_innovation_mask = _merge_runtime_masks(
+                style_decoder_residual_mask,
+                style_owner_base_mask,
+                reference=style_decoder_residual,
+            )
+        else:
+            style_owner_innovation_residual = style_decoder_residual
+            style_owner_innovation_mask = _merge_runtime_masks(
+                style_decoder_residual_mask,
+                reference=style_decoder_residual,
+            )
     return {
         "fast_style_decoder_residual": fast_style_decoder_residual,
         "slow_style_decoder_residual": slow_style_decoder_residual,
         "style_decoder_residual": style_decoder_residual,
         "style_decoder_residual_mask": style_decoder_residual_mask,
+        "style_owner_base_residual": style_owner_base_residual,
+        "style_owner_base_mask": style_owner_base_mask,
+        "style_owner_innovation_residual": style_owner_innovation_residual,
+        "style_owner_innovation_mask": style_owner_innovation_mask,
     }
 
 
@@ -275,6 +335,10 @@ def realize_style_timbre_decoder_runtime(
     slow_style_decoder_residual = style_owner_payload["slow_style_decoder_residual"]
     style_decoder_residual = style_owner_payload["style_decoder_residual"]
     style_decoder_residual_mask = style_owner_payload["style_decoder_residual_mask"]
+    style_owner_base_residual = style_owner_payload["style_owner_base_residual"]
+    style_owner_base_mask = style_owner_payload["style_owner_base_mask"]
+    style_owner_innovation_residual = style_owner_payload["style_owner_innovation_residual"]
+    style_owner_innovation_mask = style_owner_payload["style_owner_innovation_mask"]
     global_style_summary_runtime = style_payload.get(
         "global_style_summary_runtime",
         global_style_summary,
@@ -293,13 +357,20 @@ def realize_style_timbre_decoder_runtime(
     if style_payload.get("style_trace_skip_reason") is not None:
         ret["style_trace_skip_reason"] = style_payload.get("style_trace_skip_reason")
 
+    timbre_style_context_residual = style_owner_innovation_residual
+    timbre_style_context_source = "style_owner_innovation"
+    if not _sequence_has_signal(timbre_style_context_residual):
+        timbre_style_context_residual = style_decoder_residual
+        timbre_style_context_source = "style_owner"
+    ret["dynamic_timbre_style_context_source"] = timbre_style_context_source
+
     timbre_query_payload = _prepare_timbre_query_runtime_inputs(
         model,
         content=content,
         base_condition_inp=base_condition_inp,
         style_profile_defaults=style_profile_defaults,
         kwargs=kwargs,
-        style_decoder_residual=style_decoder_residual,
+        style_decoder_residual=timbre_style_context_residual,
         ret=ret,
     )
     dynamic_timbre_style_context = timbre_query_payload["dynamic_timbre_style_context"]
@@ -340,6 +411,8 @@ def realize_style_timbre_decoder_runtime(
             dynamic_timbre_prebudget,
             style_decoder_residual=style_decoder_residual,
             slow_style_decoder_residual=slow_style_decoder_residual,
+            style_owner_base_residual=style_owner_base_residual,
+            style_owner_innovation_residual=style_owner_innovation_residual,
             content=content,
             kwargs=kwargs,
             ret=ret,
@@ -361,6 +434,10 @@ def realize_style_timbre_decoder_runtime(
     ret["style_decoder_residual"] = style_decoder_residual
     ret["style_decoder_residual_mask"] = style_decoder_residual_mask
     ret["slow_style_decoder_residual"] = slow_style_decoder_residual
+    ret["style_owner_base_residual"] = style_owner_base_residual
+    ret["style_owner_base_mask"] = style_owner_base_mask
+    ret["style_owner_innovation_residual"] = style_owner_innovation_residual
+    ret["style_owner_innovation_mask"] = style_owner_innovation_mask
     ret["dynamic_timbre_decoder_residual"] = dynamic_timbre_decoder_residual
     if dynamic_timbre_prebudget is None:
         ret.setdefault("dynamic_timbre_decoder_residual_prebudget", None)

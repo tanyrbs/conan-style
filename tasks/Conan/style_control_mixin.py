@@ -224,19 +224,19 @@ class ConanStyleControlMixin:
                 output,
                 sample,
                 specs=(
-                    ("emotion_cls", "emotion_logits", "emotion_ids", hparams.get("lambda_emotion_cls", 0.0)),
-                    ("accent_cls", "accent_logits", "accent_ids", hparams.get("lambda_accent_cls", 0.0)),
+                    ("emotion_cls", "emotion_logits", "emotion_ids", regularization_config.get("lambda_emotion_cls", 0.0)),
+                    ("accent_cls", "accent_logits", "accent_ids", regularization_config.get("lambda_accent_cls", 0.0)),
                     (
                         "emotion_prompt_cls",
                         "emotion_prompt_logits",
                         "emotion_ids",
-                        hparams.get("lambda_emotion_prompt_cls", 0.0),
+                        regularization_config.get("lambda_emotion_prompt_cls", 0.0),
                     ),
                     (
                         "accent_prompt_cls",
                         "accent_prompt_logits",
                         "accent_ids",
-                        hparams.get("lambda_accent_prompt_cls", 0.0),
+                        regularization_config.get("lambda_accent_prompt_cls", 0.0),
                     ),
                 ),
             )
@@ -246,19 +246,19 @@ class ConanStyleControlMixin:
                 output,
                 sample,
                 specs=(
-                    ("arousal_reg", "arousal_pred", "arousal", hparams.get("lambda_arousal_reg", 0.0)),
-                    ("valence_reg", "valence_pred", "valence", hparams.get("lambda_valence_reg", 0.0)),
+                    ("arousal_reg", "arousal_pred", "arousal", regularization_config.get("lambda_arousal_reg", 0.0)),
+                    ("valence_reg", "valence_pred", "valence", regularization_config.get("lambda_valence_reg", 0.0)),
                     (
                         "emotion_prompt_arousal_reg",
                         "emotion_prompt_arousal_pred",
                         "arousal",
-                        hparams.get("lambda_emotion_prompt_arousal", 0.0),
+                        regularization_config.get("lambda_emotion_prompt_arousal", 0.0),
                     ),
                     (
                         "emotion_prompt_valence_reg",
                         "emotion_prompt_valence_pred",
                         "valence",
-                        hparams.get("lambda_emotion_prompt_valence", 0.0),
+                        regularization_config.get("lambda_emotion_prompt_valence", 0.0),
                     ),
                 ),
             )
@@ -268,7 +268,7 @@ class ConanStyleControlMixin:
                 losses,
                 output,
                 sample,
-                lambda_energy=hparams.get("lambda_energy", 0.0),
+                lambda_energy=regularization_config.get("lambda_energy", 0.0),
                 nonpadding=self._content_nonpadding(sample),
             )
         if not minimal_profile:

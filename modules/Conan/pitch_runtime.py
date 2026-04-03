@@ -13,7 +13,10 @@ from modules.Conan.pitch_canvas_utils import (
     project_source_sequence_to_pitch_canvas,
     smooth_sequence_2d,
 )
-from modules.Conan.style_mainline import resolve_style_runtime_value
+from modules.Conan.style_mainline import (
+    resolve_style_profile_defaults,
+    resolve_style_runtime_value,
+)
 from utils.audio.pitch.utils import denorm_f0, f0_to_coarse
 
 LOG2_F0_MIN = 6.0
@@ -77,6 +80,8 @@ class ConanStylePitchRuntimeMixin:
         *,
         style_decoder_residual,
         slow_style_decoder_residual=None,
+        style_owner_base_residual=None,
+        style_owner_innovation_residual=None,
         content=None,
         kwargs=None,
         ret=None,
@@ -138,6 +143,8 @@ class ConanStylePitchRuntimeMixin:
             dynamic_timbre_decoder_residual,
             style_residual=style_decoder_residual,
             slow_style_residual=slow_style_decoder_residual,
+            style_base_residual=style_owner_base_residual,
+            style_innovation_residual=style_owner_innovation_residual,
             padding_mask=content_padding_mask,
             budget_ratio=ratio,
             budget_margin=margin,
@@ -154,6 +161,20 @@ class ConanStylePitchRuntimeMixin:
                     ret["runtime_dynamic_timbre_style_budget_cap"] = budget_meta["allowed_energy"]
                 if isinstance(budget_meta.get("style_energy"), torch.Tensor):
                     ret["runtime_dynamic_timbre_style_energy"] = budget_meta["style_energy"]
+                if isinstance(budget_meta.get("style_owner_energy"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_style_owner_energy"] = budget_meta["style_owner_energy"]
+                if isinstance(budget_meta.get("slow_style_energy"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_slow_style_energy"] = budget_meta["slow_style_energy"]
+                if isinstance(budget_meta.get("slow_style_excess_energy"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_slow_style_excess_energy"] = budget_meta[
+                        "slow_style_excess_energy"
+                    ]
+                if isinstance(budget_meta.get("style_base_energy"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_style_base_energy"] = budget_meta["style_base_energy"]
+                if isinstance(budget_meta.get("style_innovation_energy"), torch.Tensor):
+                    ret["runtime_dynamic_timbre_style_innovation_energy"] = budget_meta[
+                        "style_innovation_energy"
+                    ]
                 if isinstance(budget_meta.get("timbre_energy"), torch.Tensor):
                     ret["runtime_dynamic_timbre_dynamic_energy"] = budget_meta["timbre_energy"]
                 if isinstance(budget_meta.get("overflow"), torch.Tensor):
@@ -206,28 +227,38 @@ class ConanStylePitchRuntimeMixin:
         style_mainline_cfg = ret.get("style_mainline")
         if not isinstance(style_mainline_cfg, dict):
             style_mainline_cfg = {}
+        style_profile_defaults = resolve_style_profile_defaults(kwargs, hparams=self.hparams)
         enabled = bool(
-            kwargs.get(
+            resolve_style_runtime_value(
                 "style_to_pitch_residual",
-                style_mainline_cfg.get(
+                overrides=kwargs,
+                hparams=self.hparams,
+                profile_defaults=style_profile_defaults,
+                default=style_mainline_cfg.get(
                     "style_to_pitch_residual",
                     self.hparams.get("style_to_pitch_residual", False),
                 ),
             )
         )
         residual_mode = normalize_style_to_pitch_residual_mode(
-            kwargs.get(
+            resolve_style_runtime_value(
                 "style_to_pitch_residual_mode",
-                style_mainline_cfg.get(
+                overrides=kwargs,
+                hparams=self.hparams,
+                profile_defaults=style_profile_defaults,
+                default=style_mainline_cfg.get(
                     "style_to_pitch_residual_mode",
                     self.hparams.get("style_to_pitch_residual_mode", "auto"),
                 ),
             )
         )
         include_timbre = bool(
-            kwargs.get(
+            resolve_style_runtime_value(
                 "style_to_pitch_residual_include_timbre",
-                style_mainline_cfg.get(
+                overrides=kwargs,
+                hparams=self.hparams,
+                profile_defaults=style_profile_defaults,
+                default=style_mainline_cfg.get(
                     "style_to_pitch_residual_include_timbre",
                     self.hparams.get("style_to_pitch_residual_include_timbre", False),
                 ),
@@ -254,18 +285,24 @@ class ConanStylePitchRuntimeMixin:
         pitch_residual_hidden = torch.cat([decoder_inp, style_residual, timbre_residual], dim=-1)
         pitch_residual_intent = self.style_to_pitch_residual_head(pitch_residual_hidden).squeeze(-1)
         pitch_residual_scale = float(
-            kwargs.get(
+            resolve_style_runtime_value(
                 "style_to_pitch_residual_scale",
-                style_mainline_cfg.get(
+                overrides=kwargs,
+                hparams=self.hparams,
+                profile_defaults=style_profile_defaults,
+                default=style_mainline_cfg.get(
                     "style_to_pitch_residual_scale",
                     self.hparams.get("style_to_pitch_residual_scale", 1.0),
                 ),
             )
         )
         max_semitones = float(
-            kwargs.get(
+            resolve_style_runtime_value(
                 "style_to_pitch_residual_max_semitones",
-                style_mainline_cfg.get(
+                overrides=kwargs,
+                hparams=self.hparams,
+                profile_defaults=style_profile_defaults,
+                default=style_mainline_cfg.get(
                     "style_to_pitch_residual_max_semitones",
                     self.hparams.get("style_to_pitch_residual_max_semitones", 2.5),
                 ),
@@ -279,9 +316,12 @@ class ConanStylePitchRuntimeMixin:
         pitch_residual_intent = torch.tanh(pitch_residual_intent) * max_log2
 
         smooth_factor = float(
-            kwargs.get(
+            resolve_style_runtime_value(
                 "style_to_pitch_residual_smooth_factor",
-                style_mainline_cfg.get(
+                overrides=kwargs,
+                hparams=self.hparams,
+                profile_defaults=style_profile_defaults,
+                default=style_mainline_cfg.get(
                     "style_to_pitch_residual_smooth_factor",
                     self.hparams.get("style_to_pitch_residual_smooth_factor", 0.35),
                 ),

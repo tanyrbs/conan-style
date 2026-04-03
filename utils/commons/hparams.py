@@ -107,9 +107,24 @@ def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, glob
             k, v = new_hparam.split("=")
             v = v.strip("\'\" ")
             config_node = hparams_
-            for k_ in k.split(".")[:-1]:
+            key_path = k.split(".")
+            traversed = []
+            for k_ in key_path[:-1]:
+                traversed.append(k_)
+                if k_ not in config_node or not isinstance(config_node[k_], dict):
+                    current_path = ".".join(traversed)
+                    raise KeyError(
+                        f"Unknown hparam override path '{k}'. "
+                        f"Missing intermediate key '{current_path}'."
+                    )
                 config_node = config_node[k_]
-            k = k.split(".")[-1]
+            k = key_path[-1]
+            if k not in config_node:
+                available_keys = ", ".join(sorted(map(str, config_node.keys())))
+                raise KeyError(
+                    f"Unknown hparam override key '{k}' in '{new_hparam}'. "
+                    f"Available keys at this level: [{available_keys}]"
+                )
             if v in ['True', 'False'] or type(config_node[k]) in [bool, list, dict]:
                 if type(config_node[k]) == list:
                     v = v.replace(" ", ",")

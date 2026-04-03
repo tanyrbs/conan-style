@@ -136,9 +136,10 @@ def _coerce_float(value, default=0.0):
     if value is None:
         return float(default)
     try:
-        return float(value)
+        resolved = float(value)
     except (TypeError, ValueError):
         return float(default)
+    return resolved if np.isfinite(resolved) else float(default)
 
 
 def _coerce_1d_float_array(value):
@@ -241,9 +242,10 @@ def _safe_float(value, default=0.0):
     if value is None:
         return float(default)
     try:
-        return float(value)
+        resolved = float(value)
     except (TypeError, ValueError):
         return float(default)
+    return resolved if np.isfinite(resolved) else float(default)
 
 
 class ConanBaseBinarizer(CanonicalBaseBinarizer):
@@ -291,7 +293,12 @@ class VCBinarizer(ConanBaseBinarizer):
 
     @classmethod
     def _load_spker_map(cls):
-        processed_data_dir = hparams.get("processed_data_dir", None)
+        return cls._load_spker_map_from_dirs(
+            processed_data_dir=hparams.get("processed_data_dir", None),
+        )
+
+    @classmethod
+    def _load_spker_map_from_dirs(cls, *, processed_data_dir=None):
         if cls._spker_map_cache is not None and cls._spker_map_cache_key == processed_data_dir:
             return cls._spker_map_cache
         if not processed_data_dir:
@@ -308,18 +315,25 @@ class VCBinarizer(ConanBaseBinarizer):
 
     @classmethod
     def _load_condition_maps(cls):
-        cache_key = (hparams.get("binary_data_dir"), hparams.get("processed_data_dir"))
+        return cls._load_condition_maps_from_dirs(
+            binary_data_dir=hparams.get("binary_data_dir"),
+            processed_data_dir=hparams.get("processed_data_dir"),
+        )
+
+    @classmethod
+    def _load_condition_maps_from_dirs(cls, *, binary_data_dir=None, processed_data_dir=None):
+        cache_key = (binary_data_dir, processed_data_dir)
         if cls._condition_maps is not None and cls._condition_maps_key == cache_key:
             return cls._condition_maps
         cls._condition_maps = load_condition_id_maps(
-            [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")],
+            [binary_data_dir, processed_data_dir],
             fields=CONDITION_FIELDS,
         )
         cls._condition_maps_key = cache_key
         return cls._condition_maps
 
     @classmethod
-    def _resolve_condition_id(cls, item, field):
+    def _resolve_condition_id(cls, item, field, *, ctx=None):
         explicit_key = f"{field}_id"
         explicit_value = item.get(explicit_key, None)
         if explicit_value is not None:
@@ -329,7 +343,11 @@ class VCBinarizer(ConanBaseBinarizer):
             return -1
         if isinstance(raw_value, (int, np.integer)):
             return int(raw_value)
-        condition_maps = cls._load_condition_maps()
+        ctx = ctx or {}
+        condition_maps = cls._load_condition_maps_from_dirs(
+            binary_data_dir=ctx.get("binary_data_dir", hparams.get("binary_data_dir")),
+            processed_data_dir=ctx.get("processed_data_dir", hparams.get("processed_data_dir")),
+        )
         resolved = resolve_condition_label_id(condition_maps.get(field, {}), raw_value, default=-1)
         if resolved < 0:
             raise KeyError(
@@ -338,8 +356,11 @@ class VCBinarizer(ConanBaseBinarizer):
         return int(resolved)
 
     @classmethod
-    def _resolve_speaker_id(cls, item_name):
-        spker_map = cls._load_spker_map()
+    def _resolve_speaker_id(cls, item_name, *, ctx=None):
+        ctx = ctx or {}
+        spker_map = cls._load_spker_map_from_dirs(
+            processed_data_dir=ctx.get("processed_data_dir", hparams.get("processed_data_dir")),
+        )
         speaker_key = _item_name_speaker_key(item_name)
         if speaker_key not in spker_map:
             raise KeyError(
@@ -454,7 +475,7 @@ class VCBinarizer(ConanBaseBinarizer):
                 item[field] = resolved_label
                 strength_key = f'{field}_strength'
                 if strength_key in item and item[strength_key] not in (None, ''):
-                    item[strength_key] = float(item[strength_key])
+                    item[strength_key] = _safe_float(item[strength_key], default=1.0)
 
             condition_maps[field] = {
                 str(label): int(idx)
@@ -574,7 +595,15 @@ class VCBinarizer(ConanBaseBinarizer):
                 for item_id, meta_item in enumerate(tqdm(meta_data, desc=f'Processing {prefix}'))
             )
         else:
-            iterator = multiprocess_run_tqdm(process_item, args, desc=f'Processing {prefix}')
+            iterator = multiprocess_run_tqdm(
+                process_item,
+                args,
+                init_ctx_func=lambda _wid: {
+                    'processed_data_dir': self.processed_data_dir,
+                    'binary_data_dir': hparams.get('binary_data_dir'),
+                },
+                desc=f'Processing {prefix}',
+            )
         items = []
         for _, item in iterator:
             if item is not None:
@@ -631,7 +660,7 @@ class VCBinarizer(ConanBaseBinarizer):
         return {}
 
     @classmethod
-    def _finalize_common_item(cls, item, *, wav, mel, content, frame_features):
+    def _finalize_common_item(cls, item, *, wav, mel, content, frame_features, ctx=None):
         lengths = [len(content), int(mel.shape[0])]
         for feature_name, feature_value in frame_features.items():
             feature_array = np.asarray(feature_value, dtype=np.float32).reshape(-1)
@@ -649,14 +678,14 @@ class VCBinarizer(ConanBaseBinarizer):
         default_energy = np.abs(mel).mean(axis=-1)
         item['energy'] = _coerce_frame_series(item.get('energy', default_energy), min_length, default_value=0.0)
         for field in CONDITION_FIELDS:
-            item[f'{field}_id'] = cls._resolve_condition_id(item, field)
+            item[f'{field}_id'] = cls._resolve_condition_id(item, field, ctx=ctx)
             item[field] = _stringify_optional(item.get(field, ''))
         item['arousal'] = _safe_float(item.get('arousal', 0.0), default=0.0)
         item['valence'] = _safe_float(item.get('valence', 0.0), default=0.0)
         return item
 
     @classmethod
-    def process_item(cls, item, binarization_args):
+    def process_item(cls, item, binarization_args, ctx=None):
         item_name = item['item_name']
         wav_fn = item['wav_fn']
         wav, mel = cls.process_audio(wav_fn, item, binarization_args)
@@ -668,7 +697,7 @@ class VCBinarizer(ConanBaseBinarizer):
                 "Run offline content extraction before binarization."
             )
         content = _parse_hubert_units(item.get('hubert', None), item_name=item_name)
-        item['spk_id'] = cls._resolve_speaker_id(item_name)
+        item['spk_id'] = cls._resolve_speaker_id(item_name, ctx=ctx)
         frame_features = cls._load_frame_features(
             item,
             item_name=item_name,
@@ -682,6 +711,7 @@ class VCBinarizer(ConanBaseBinarizer):
             mel=mel,
             content=content,
             frame_features=frame_features,
+            ctx=ctx,
         )
 
 

@@ -50,6 +50,8 @@ STYLE_RUNTIME_KEYS = (
     "runtime_dynamic_timbre_style_budget_enabled",
     "runtime_dynamic_timbre_style_budget_ratio",
     "runtime_dynamic_timbre_style_budget_margin",
+    "runtime_dynamic_timbre_style_budget_slow_style_weight",
+    "runtime_dynamic_timbre_style_budget_epsilon",
 )
 
 REFERENCE_CONTRACT_MODES = (
@@ -468,6 +470,14 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
         "runtime_dynamic_timbre_style_budget_margin": first_present(
             source,
             "runtime_dynamic_timbre_style_budget_margin",
+        ),
+        "runtime_dynamic_timbre_style_budget_slow_style_weight": first_present(
+            source,
+            "runtime_dynamic_timbre_style_budget_slow_style_weight",
+        ),
+        "runtime_dynamic_timbre_style_budget_epsilon": first_present(
+            source,
+            "runtime_dynamic_timbre_style_budget_epsilon",
         ),
     }
 

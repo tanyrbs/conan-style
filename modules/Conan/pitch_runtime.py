@@ -115,9 +115,19 @@ class ConanStylePitchRuntimeMixin:
             )
         )
         slow_style_weight = float(
-            kwargs.get(
+            resolve_style_runtime_value(
                 "runtime_dynamic_timbre_style_budget_slow_style_weight",
-                self.hparams.get("runtime_dynamic_timbre_style_budget_slow_style_weight", 1.0),
+                overrides=kwargs,
+                hparams=self.hparams,
+                default=1.0,
+            )
+        )
+        budget_epsilon = float(
+            resolve_style_runtime_value(
+                "runtime_dynamic_timbre_style_budget_epsilon",
+                overrides=kwargs,
+                hparams=self.hparams,
+                default=1e-6,
             )
         )
         content_padding_mask = None
@@ -132,10 +142,13 @@ class ConanStylePitchRuntimeMixin:
             budget_ratio=ratio,
             budget_margin=margin,
             slow_style_weight=slow_style_weight,
+            budget_epsilon=budget_epsilon,
         )
         if ret is not None:
             ret["runtime_dynamic_timbre_style_budget_ratio"] = float(ratio)
             ret["runtime_dynamic_timbre_style_budget_margin"] = float(margin)
+            ret["runtime_dynamic_timbre_style_budget_slow_style_weight"] = float(slow_style_weight)
+            ret["runtime_dynamic_timbre_style_budget_epsilon"] = float(budget_epsilon)
             if isinstance(budget_meta, dict):
                 if isinstance(budget_meta.get("allowed_energy"), torch.Tensor):
                     ret["runtime_dynamic_timbre_style_budget_cap"] = budget_meta["allowed_energy"]

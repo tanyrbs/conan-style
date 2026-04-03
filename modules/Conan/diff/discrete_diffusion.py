@@ -12,7 +12,12 @@ import torch.nn.functional as F
 import numpy as np
 from einops import rearrange
 from inspect import isfunction
-from torch.cuda.amp import autocast
+try:
+    from torch.amp import autocast as torch_autocast
+    AMP_USES_DEVICE_TYPE = True
+except ImportError:  # pragma: no cover - older torch fallback
+    from torch.cuda.amp import autocast as torch_autocast
+    AMP_USES_DEVICE_TYPE = False
 from utils.commons.hparams import hparams
 eps = 1e-8
 
@@ -207,8 +212,12 @@ class DiffusionTransformer(nn.Module):
         x_t = log_onehot_to_index(log_x_t) # b, t
         content_seq_len = x_t.shape[1] 
         if self.amp == True:
-            with autocast():
-                out = self.transformer(x_t, cond_emb, t, x_mask)
+            if AMP_USES_DEVICE_TYPE:
+                with torch_autocast("cuda"):
+                    out = self.transformer(x_t, cond_emb, t, x_mask)
+            else:
+                with torch_autocast():
+                    out = self.transformer(x_t, cond_emb, t, x_mask)
         else:
             out = self.transformer(x_t, cond_emb, t, x_mask)
 

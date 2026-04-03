@@ -19,7 +19,12 @@ from utils.audio.io import save_wav
 from utils.audio.pitch_extractors import extract_pitch_simple
 from utils.commons.base_task import BaseTask
 from utils.commons.ckpt_utils import load_ckpt
-from utils.commons.dataset_utils import data_loader, BaseConcatDataset
+from utils.commons.dataset_utils import (
+    BaseConcatDataset,
+    data_loader,
+    partition_batches_for_ddp,
+    resolve_dataloader_kwargs,
+)
 from utils.commons.hparams import hparams
 from utils.commons.multiprocess_utils import MultiprocessManager
 from utils.commons.tensor_utils import tensors_to_scalars
@@ -118,8 +123,9 @@ class SpeechBaseTask(BaseTask):
             )
         else:
             batch_sampler = []
-            for i in range(0, len(indices), max_sentences):
-                batch_sampler.append(indices[i:i + max_sentences])
+            step = max_sentences if max_sentences is not None else 1
+            for i in range(0, len(indices), step):
+                batch_sampler.append(indices[i:i + step])
 
         if shuffle:
             batches = shuffle_batches(list(batch_sampler))
@@ -132,14 +138,13 @@ class SpeechBaseTask(BaseTask):
         num_workers = dataset.num_workers
         trainer = getattr(self, "trainer", None)
         if bool(getattr(trainer, "use_ddp", False)):
-            num_replicas = dist.get_world_size()
-            rank = dist.get_rank()
-            batches = [x[rank::num_replicas] for x in batches if len(x) % num_replicas == 0]
+            batches = partition_batches_for_ddp(batches)
+        dataloader_kwargs = resolve_dataloader_kwargs(num_workers)
         return torch.utils.data.DataLoader(dataset,
                                            collate_fn=dataset.collater,
                                            batch_sampler=batches,
                                            num_workers=num_workers,
-                                           pin_memory=False)
+                                           **dataloader_kwargs)
 
     ##########################
     # scheduler and optimizer

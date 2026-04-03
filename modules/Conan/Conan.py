@@ -5,10 +5,8 @@ import torch
 from modules.Conan.diff.net import DiffNet, F0DiffNet, OriDiffNet, CausalConv1d
 
 from utils.commons.hparams import hparams
-from modules.Conan.flow.flow_f0 import ReflowF0
 from modules.commons.nar_tts_modules import PitchPredictor
 from modules.commons.layers import Embedding
-from modules.Conan.flow.flow import FlowMel
 from modules.commons.conv import ConvBlocks
 from modules.commons.conv import CausalConvBlocks, CausalFM
 from modules.Conan.prosody_util import (
@@ -59,6 +57,28 @@ Flow_DECODERS = {
 
 DEFAULT_MAX_SOURCE_POSITIONS = 2000
 DEFAULT_MAX_TARGET_POSITIONS = 2000
+
+
+def _lazy_import_reflow_f0():
+    try:
+        from modules.Conan.flow.flow_f0 import ReflowF0
+        return ReflowF0
+    except ImportError as exc:
+        raise ImportError(
+            "Flow-based F0 generation requires optional flow dependencies "
+            "(for example torchdyn). Install them or set `f0_gen: orig`."
+        ) from exc
+
+
+def _lazy_import_flow_mel():
+    try:
+        from modules.Conan.flow.flow import FlowMel
+        return FlowMel
+    except ImportError as exc:
+        raise ImportError(
+            "ConanPostnet requires optional flow/post-flow dependencies. "
+            "Install them before enabling the post-flow stack."
+        ) from exc
 
 
 class Conan(
@@ -315,7 +335,8 @@ class Conan(
                 kernel_size=hparams["predictor_kernel"],
             )
             self.pitch_flownet = F0DiffNet(in_dims=1)
-            self.f0_gen = ReflowF0(
+            reflow_f0_cls = _lazy_import_reflow_f0()
+            self.f0_gen = reflow_f0_cls(
                 out_dims=1,
                 denoise_fn=self.pitch_flownet,
                 timesteps=hparams["f0_timesteps"],
@@ -786,7 +807,8 @@ class ConanPostnet(nn.Module):
         cond_hs = 80 + hparams["hidden_size"]
 
         self.ln_proj = nn.Linear(cond_hs, hparams["hidden_size"])
-        self.postflow = FlowMel(
+        flow_mel_cls = _lazy_import_flow_mel()
+        self.postflow = flow_mel_cls(
             out_dims=80,
             denoise_fn=Flow_DECODERS[hparams["flow_decoder_type"]](hparams),
             timesteps=hparams["timesteps"],

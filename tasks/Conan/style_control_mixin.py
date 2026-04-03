@@ -10,6 +10,7 @@ from tasks.Conan.control_schedule import (
     resolve_control_loss_profile,
     resolve_control_regularization_config,
 )
+from tasks.Conan.reference_curriculum import resolve_reference_curriculum
 from tasks.Conan.control_losses import (
     add_classification_losses,
     add_energy_loss,
@@ -224,19 +225,14 @@ class ConanStyleControlMixin:
         if hparams.get("style", False):
             gloss_scale = output.get("reference_curriculum_gloss_scale", None)
             if gloss_scale is None:
-                if self.global_step > hparams["forcing"] and self.global_step < hparams["random_speaker_steps"]:
-                    add_optional_passthrough_losses(
-                        losses,
-                        output,
-                        specs=(("gloss", "gloss", True),),
-                    )
-            else:
-                try:
-                    gloss_scale = float(gloss_scale)
-                except (TypeError, ValueError):
-                    gloss_scale = 0.0
-                if gloss_scale > 0.0 and output.get("gloss") is not None:
-                    losses["gloss"] = output["gloss"] * gloss_scale
+                curriculum_state = resolve_reference_curriculum(self.global_step, hparams)
+                gloss_scale = curriculum_state.get("self_prob", 0.0)
+            try:
+                gloss_scale = float(gloss_scale)
+            except (TypeError, ValueError):
+                gloss_scale = 0.0
+            if gloss_scale > 0.0 and output.get("gloss") is not None:
+                losses["gloss"] = output["gloss"] * gloss_scale
             if self.global_step > hparams["vq_start"]:
                 add_optional_passthrough_losses(
                     losses,

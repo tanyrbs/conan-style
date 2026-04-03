@@ -4,6 +4,9 @@ Updated: 2026-04-03
 
 This repository snapshot keeps only the Conan single-reference strong-style mainline.
 
+Review-archive note: this lightweight code snapshot does **not** bundle large binary artifacts.
+Before running prep / training / inference, stage the actual processed data, binary data, and Conan / Emformer / vocoder checkpoints at the configured paths.
+
 ## Canonical configs
 
 - training: `egs/conan_emformer.yaml`
@@ -51,6 +54,12 @@ The current LibriTTS single-speaker metadata does not use old VCTK-style split p
 
 That removes a real reproduction risk where `ref_indices` could drift across Python processes.
 
+Current binarizer structure is also intentionally simplified:
+
+- `data_gen.conan_binarizer.VCBinarizer` owns the shared VC item-processing path
+- `ConanBinarizer` only adds cached offline `f0`
+- `EmformerBinarizer` stays a thin subclass and no longer duplicates Conan item logic
+
 ## Verified current state
 
 As of 2026-04-03, this repo snapshot has been checked with:
@@ -72,6 +81,7 @@ Key validated properties:
 - dynamic timbre now follows a consistent residual semantic on both TVT and non-TVT paths
 - dynamic timbre boundary suppression no longer collapses to a global mask on dense HuBERT-style unit sequences
 - style-to-pitch residual smoothing is post-canvas and mask-aware
+- binary indexed datasets produced under NumPy 2.x remain readable in the shipped NumPy 1.x conda environment
 - internal runtime glue is now split by responsibility:
   - `modules/Conan/common_utils.py` owns shared lightweight helpers
   - `modules/Conan/pitch_canvas_utils.py` owns pitch-canvas projection / mask / smoothing semantics
@@ -85,23 +95,31 @@ Key validated properties:
 
 ## Commands
 
-### 1) Rebuild binary data
+### 1) Pre-extract F0
+
+`egs/conan_emformer.yaml` uses `data_gen.conan_binarizer.ConanBinarizer`, so offline F0 extraction is required before binarization.
+
+```bash
+python utils/extract_f0_rmvpe.py --config egs/conan_emformer.yaml --pe-ckpt <path-to-rmvpe.pt> --batch-size 8 --max-tokens 40000
+```
+
+### 2) Rebuild binary data
 
 ```bash
 $env:N_PROC='1'; python data_gen/tts/runs/binarize.py --config egs/conan_emformer.yaml
 ```
 
-### 2) Mainline prep gate
+### 3) Mainline prep gate
 
 ```bash
 python tasks/Conan/mainline_train_prep.py --config egs/conan_emformer.yaml
 ```
 
-Expected result:
+Expected result after the processed/binary datasets are staged correctly:
 
 - `MAINLINE_TRAIN_PREP_OK`
 
-### 3) Real training
+### 4) Real training
 
 ```bash
 python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTrain
@@ -113,9 +131,15 @@ Exact-step real-data smoke:
 python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineSmoke --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=100000,num_sanity_val_steps=0,max_updates=1,save_codes=[]"
 ```
 
+Latest short audit smoke in the shipped `conda` env:
+
+```bash
+conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmokeCpu --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1,num_sanity_val_steps=0,max_updates=2,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[]"
+```
+
 `max_updates` now stops exactly at the requested batch budget instead of overshooting by one step.
 
-### 4) Mainline inference
+### 5) Mainline inference
 
 ```bash
 python inference/run_voice_conversion.py --pair_config inference/conan_single_reference_demo.example.json

@@ -5,20 +5,34 @@ import traceback
 from functools import partial
 
 import numpy as np
-from resemblyzer import VoiceEncoder
 from tqdm import tqdm
 
 from utils.audio import librosa_wav2spec
-from utils.audio.align import get_mel2ph, mel2token_to_dur
-from utils.audio.cwt import get_lf0_cwt, get_cont_lf0
 from utils.audio.pitch.utils import f0_to_coarse
-from utils.audio.pitch_extractors import extract_pitch_simple
 from utils.commons.hparams import hparams
 from utils.commons.indexed_datasets import IndexedDatasetBuilder
 from utils.commons.multiprocess_utils import multiprocess_run_tqdm
 from utils.os_utils import remove_file, copy_file
 
 np.seterr(divide='ignore', invalid='ignore')
+
+
+def _build_voice_encoder():
+    try:
+        from resemblyzer import VoiceEncoder
+    except ImportError as exc:
+        raise ImportError(
+            'Speaker embedding extraction requires Resemblyzer. '
+            'Install it or disable binarization_args.with_spk_embed.'
+        ) from exc
+    encoder = VoiceEncoder()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            encoder = encoder.cuda()
+    except Exception:
+        pass
+    return encoder
 
 
 class BinarizationError(Exception):
@@ -102,9 +116,9 @@ class BaseBinarizer:
             args = [{'wav': item['wav']} for item in items]
             for item_id, spk_embed in multiprocess_run_tqdm(
                     self.get_spk_embed, args,
-                    init_ctx_func=lambda wid: {'voice_encoder': VoiceEncoder().cuda()}, num_workers=4,
+                    init_ctx_func=lambda wid: {'voice_encoder': _build_voice_encoder()}, num_workers=4,
                     desc='Extracting spk embed'):
-                items[item_id]['spk_embed'] = spk_embed
+                items[item_id]['spk_embed'] = np.asarray(spk_embed, dtype=np.float32)
 
         for item in items:
             if not self.binarization_args['with_wav'] and 'wav' in item:
@@ -180,6 +194,8 @@ class BaseBinarizer:
         ph = item['ph']
         mel = item['mel']
         ph_token = item['ph_token']
+        from utils.audio.align import get_mel2ph, mel2token_to_dur
+
         if tg_fn is not None and os.path.exists(tg_fn):
             mel2ph, dur = get_mel2ph(tg_fn, ph, mel, hparams['hop_size'], hparams['audio_sample_rate'],
                                      hparams['binarization_args']['min_sil_duration'])
@@ -200,6 +216,8 @@ class BaseBinarizer:
     @staticmethod
     def process_pitch(item, n_bos_frames, n_eos_frames):
         wav, mel = item['wav'], item['mel']
+        from utils.audio.pitch_extractors import extract_pitch_simple
+
         f0 = extract_pitch_simple(item['wav'])
         if sum(f0) == 0:
             raise BinarizationError("Empty f0")
@@ -208,6 +226,8 @@ class BaseBinarizer:
         item['f0'] = f0
         item['pitch'] = pitch_coarse
         if hparams['binarization_args']['with_f0cwt']:
+            from utils.audio.cwt import get_lf0_cwt, get_cont_lf0
+
             uv, cont_lf0_lpf = get_cont_lf0(f0)
             logf0s_mean_org, logf0s_std_org = np.mean(cont_lf0_lpf), np.std(cont_lf0_lpf)
             cont_lf0_lpf_norm = (cont_lf0_lpf - logf0s_mean_org) / logf0s_std_org

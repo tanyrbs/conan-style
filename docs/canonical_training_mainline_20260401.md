@@ -66,8 +66,24 @@ Current checked-in LibriTTS-single behavior:
 - `valid_prefixes` / `test_prefixes` are intentionally empty
 - binarization falls back to deterministic per-speaker utterance holdout
 - binary `*_ref_indices.npy` use a stable hash, so reference pairing stays reproducible across Python processes
+- `VCBinarizer` owns the shared VC item path, while `ConanBinarizer` only adds cached offline `f0`
+- `EmformerBinarizer` is intentionally a thin subclass and no longer duplicates Conan item logic
 
-## 5. Training-prep gate
+## 5. Offline F0 extraction
+
+`egs/conan_emformer.yaml` uses `data_gen.conan_binarizer.ConanBinarizer`, so per-utterance offline F0 is required before binarization.
+
+```bash
+python utils/extract_f0_rmvpe.py --config egs/conan_emformer.yaml --pe-ckpt <path-to-rmvpe.pt> --batch-size 8 --max-tokens 40000
+```
+
+After F0 extraction, rebuild the binary dataset:
+
+```bash
+$env:N_PROC='1'; python data_gen/tts/runs/binarize.py --config egs/conan_emformer.yaml
+```
+
+## 6. Training-prep gate
 
 Before real training, run:
 
@@ -87,7 +103,9 @@ It also samples real training data to make sure dynamic-timbre boundary suppress
 
 It also checks that binary train / valid / test splits exist and are non-empty.
 
-## 6. Real training command
+Existing binary indexed datasets created under NumPy 2.x are also kept readable in the shipped NumPy 1.x conda env, so prep does not fail spuriously on `numpy._core` pickle references.
+
+## 7. Real training command
 
 ```bash
 python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTrain
@@ -97,6 +115,12 @@ Exact-step real-data smoke command:
 
 ```bash
 python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineSmoke --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=100000,num_sanity_val_steps=0,max_updates=1,save_codes=[]"
+```
+
+Short review-env smoke that was used during the latest audit:
+
+```bash
+conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmokeCpu --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1,num_sanity_val_steps=0,max_updates=2,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[]"
 ```
 
 Notes:
@@ -133,6 +157,8 @@ python inference/run_style_profile_report.py   --sweep_dir infer_out_profiles/co
 - dynamic timbre now uses a unified residual semantic on both TVT and non-TVT paths (`local_delta` relative to the global timbre anchor)
 - dynamic-timbre boundary suppression now detects dense HuBERT-like unit streams and avoids turning token-transition boundaries into a global mask
 - `style_to_pitch_residual` smoothing is applied after projection onto the final pitch canvas and is mask-aware
+- `VCBinarizer.process_item(...)` is now the single shared VC item-processing path; Conan only overrides frame-feature loading for cached `f0`
+- binary indexed dataset loading is robust across the current NumPy 1.x/2.x artifact boundary
 - runtime maintainability is now explicitly layered:
   - `modules/Conan/common_utils.py` for shared helper resolution / sequence expansion
   - `modules/Conan/pitch_canvas_utils.py` for pitch-canvas runtime semantics
@@ -162,4 +188,4 @@ Retained on purpose:
 - Conan mainline training path
 - Conan mainline inference path
 - canonical prep gate
-- latest Conan checkpoint plus required Emformer / vocoder checkpoints
+- configured Conan / Emformer / vocoder checkpoint paths (actual large checkpoint binaries may be omitted from lightweight review archives)

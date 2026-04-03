@@ -36,7 +36,12 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="")
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--end_idx", type=int, default=-1)
-    parser.add_argument("--batch_size", type=int, default=50)
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=50,
+        help="Progress checkpoint interval only; this runner still executes model inference pair-by-pair on the canonical streaming path.",
+    )
     parser.add_argument(
         "--allow_advanced_controls",
         action="store_true",
@@ -192,6 +197,12 @@ class VoiceConversionRunner:
     def run_all_conversions(self, start_idx=0, end_idx=None, batch_size=50):
         if int(batch_size) <= 0:
             raise ValueError("batch_size must be a positive integer.")
+        progress_flush_interval = int(batch_size)
+        if progress_flush_interval > 1:
+            print(
+                "Note: run_voice_conversion.py uses --batch_size only for periodic progress writes; "
+                "the canonical streaming inference loop remains sequential per pair."
+            )
         pairs = self.config["conversion_pairs"]
         total_pairs = len(pairs)
         if end_idx is None or int(end_idx) < 0:
@@ -240,7 +251,7 @@ class VoiceConversionRunner:
                 print(f"  Failed: {error_message}")
 
             processed = i - start_idx + 1
-            if processed % batch_size == 0:
+            if processed % progress_flush_interval == 0:
                 elapsed = time.time() - start_time
                 avg_time = elapsed / processed
                 remaining = (end_idx - i - 1) * avg_time

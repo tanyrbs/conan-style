@@ -4,7 +4,6 @@ torchaudio==2.5.1
 chardet==5.2.0
 einops==0.8.0
 g2p_en==2.1.0
-gradio>=4.0.0,<6
 h5py==3.11.0
 librosa==0.10.1
 matplotlib==3.8.2
@@ -21,9 +20,18 @@ Resemblyzer==0.1.4
 scikit_learn==1.5.2
 scipy
 six==1.16.0
-tensorflow
 tensorboard
 textgrid==1.6.1
 tqdm==4.66.5
 webrtcvad==2.0.10
 scikit-image==0.25.1
+
+# runtime deps imported by the current codebase
+mir_eval
+pretty_midi
+pyworld
+soundfile
+parallel_wavegan
+
+# optional CUDA-specific research path dependency
+# flash-attn

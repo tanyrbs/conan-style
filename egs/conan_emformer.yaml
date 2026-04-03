@@ -13,6 +13,12 @@ fallback_test_items_per_speaker: 2
 test_ids: []
 # training
 ds_workers: 4
+dataloader_pin_memory: true
+dataloader_persistent_workers: true
+dataloader_prefetch_factor: 2
+ddp_find_unused_parameters: true  # switch to false only after verifying every step uses the full graph
+ddp_backend: nccl
+ddp_master_port: 23456
 max_tokens: 36000
 max_sentences: 32
 max_input_tokens: 1550

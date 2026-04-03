@@ -348,6 +348,13 @@ class StreamingVoiceConversion:
         allow_research_overrides = inp.get("allow_mainline_profile_research_overrides", None)
         if allow_research_overrides is not None:
             runtime_source["allow_mainline_profile_research_overrides"] = allow_research_overrides
+        for key in (
+            "runtime_dynamic_timbre_style_budget_slow_style_weight",
+            "runtime_dynamic_timbre_style_budget_epsilon",
+        ):
+            value = inp.get(key, None)
+            if value is not None:
+                runtime_source[key] = value
         return {
             key: value
             for key, value in build_reference_style_runtime_kwargs(runtime_source).items()
@@ -611,6 +618,8 @@ class StreamingVoiceConversion:
             "expressive_upper_bound_progress",
             "runtime_dynamic_timbre_style_budget_ratio",
             "runtime_dynamic_timbre_style_budget_margin",
+            "runtime_dynamic_timbre_style_budget_slow_style_weight",
+            "runtime_dynamic_timbre_style_budget_epsilon",
         )
         bool_fields = (
             "style_to_pitch_residual_include_timbre",

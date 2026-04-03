@@ -1,6 +1,6 @@
 # Canonical Conan single-reference strong-style inference config.
 # This is the only repo-shipped mainline inference config that is expected to
-# run against the checked-in Conan / Emformer / HiFi-GAN checkpoints.
+# run against externally staged Conan / Emformer / HiFi-GAN checkpoints.
 base_config:
 - egs/conan_emformer.yaml
 work_dir: checkpoints/Conan

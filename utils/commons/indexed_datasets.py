@@ -1,7 +1,37 @@
 import pickle
+import sys
 from copy import deepcopy
 
 import numpy as np
+
+
+def _install_numpy_pickle_compat_aliases():
+    """Support loading dataset artifacts pickled under NumPy 2.x in NumPy 1.x envs.
+
+    Some existing binary dataset artifacts were produced in environments where
+    NumPy pickled module references under ``numpy._core``. Older NumPy releases
+    (for example 1.24.x) only expose ``numpy.core``. Registering a few aliases
+    keeps ``np.load(..., allow_pickle=True)`` and ``pickle.loads(...)`` working
+    without forcing an immediate dataset rebuild.
+    """
+
+    try:
+        import numpy.core as numpy_core
+    except Exception:
+        return
+
+    aliases = {
+        "numpy._core": numpy_core,
+    }
+    for submodule in ("multiarray", "numeric", "_multiarray_umath", "umath"):
+        target = getattr(numpy_core, submodule, None)
+        if target is not None:
+            aliases[f"numpy._core.{submodule}"] = target
+    for name, module in aliases.items():
+        sys.modules.setdefault(name, module)
+
+
+_install_numpy_pickle_compat_aliases()
 
 
 class IndexedDataset:

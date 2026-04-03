@@ -623,13 +623,11 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
 
     def validation_step(self, sample, batch_idx):
         outputs = {}
-        outputs['losses'] = {"flow": 0}
+        valid_losses, offline_out = self.run_model(sample, infer=True)
+        outputs['losses'] = dict(valid_losses)
         outputs['total_loss'] = sum(outputs['losses'].values())
         outputs['nsamples'] = sample['nsamples']
-        outputs = tensors_to_scalars(outputs)
         if batch_idx < hparams['num_valid_plots']:
-            outputs['losses'], offline_out = self.run_model(sample, infer=True)
-            valid_loss_terms = dict(outputs['losses'])
             plot_out = offline_out
             if bool(hparams.get("valid_use_streaming_prefix_path", True)):
                 streaming_out = self._run_prefix_online_inference(
@@ -644,7 +642,6 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
                     )
                 )
                 plot_out = streaming_out
-            outputs['total_loss'] = sum(valid_loss_terms.values())
             sr = hparams["audio_sample_rate"]
             gt_f0 = denorm_f0(sample['f0'], sample["uv"])
             wav_gt = self.vocoder.spec2wav(sample["mels"][0].cpu().numpy(), f0=gt_f0[0].cpu().numpy())

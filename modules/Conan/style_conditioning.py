@@ -69,6 +69,7 @@ class ConanStyleConditioningMixin:
         budget_ratio=0.50,
         budget_margin=0.0,
         slow_style_weight=1.0,
+        budget_epsilon=1e-6,
     ):
         return apply_runtime_budget_to_dynamic_timbre(
             aligned,
@@ -78,6 +79,7 @@ class ConanStyleConditioningMixin:
             budget_ratio=budget_ratio,
             budget_margin=budget_margin,
             slow_style_weight=slow_style_weight,
+            budget_epsilon=budget_epsilon,
         )
 
     def _prepare_dynamic_timbre_style_context(

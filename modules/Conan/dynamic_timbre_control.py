@@ -184,6 +184,7 @@ def apply_runtime_budget_to_dynamic_timbre(
     budget_ratio: float = 0.50,
     budget_margin: float = 0.0,
     slow_style_weight: float = 1.0,
+    budget_epsilon: float = 1e-6,
 ):
     if not isinstance(aligned, torch.Tensor):
         return aligned, {"applied": False, "skip_reason": "missing_aligned"}
@@ -199,7 +200,8 @@ def apply_runtime_budget_to_dynamic_timbre(
 
     timbre_energy = aligned.abs().mean(dim=-1)
     allowed_energy = float(budget_ratio) * style_energy + float(budget_margin)
-    denom = timbre_energy.clamp_min(1e-6)
+    budget_epsilon = max(float(budget_epsilon), 1e-8)
+    denom = timbre_energy.clamp_min(budget_epsilon)
     budget_scale = torch.minimum(torch.ones_like(timbre_energy), allowed_energy / denom)
     over_budget = timbre_energy > allowed_energy
 
@@ -227,6 +229,7 @@ def apply_runtime_budget_to_dynamic_timbre(
         "allowed_energy": allowed_energy,
         "over_budget_mask": over_budget,
         "active_fraction": over_budget.float().mean(),
+        "budget_epsilon": budget_epsilon,
     }
     return controlled, metadata
 

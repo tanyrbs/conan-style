@@ -8,6 +8,13 @@ import torch
 _CHECKPOINT_STEP_RE = re.compile(r".*steps_(\d+)\.ckpt$")
 
 
+def _torch_load_checkpoint(path, *, map_location="cpu"):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
 def _checkpoint_step_from_path(path: str) -> int:
     match = _CHECKPOINT_STEP_RE.match(str(path))
     if match is None:
@@ -28,7 +35,7 @@ def get_last_checkpoint(work_dir, steps=None):
     ckpt_paths = get_all_ckpts(work_dir, steps)
     if len(ckpt_paths) > 0:
         last_ckpt_path = ckpt_paths[0]
-        checkpoint = torch.load(last_ckpt_path, map_location="cpu")
+        checkpoint = _torch_load_checkpoint(last_ckpt_path, map_location="cpu")
     return checkpoint, last_ckpt_path
 
 
@@ -48,7 +55,7 @@ def load_ckpt(cur_model, ckpt_base_dir, model_name="model", force=True, strict=T
     if os.path.isfile(ckpt_base_dir):
         base_dir = os.path.dirname(ckpt_base_dir)
         ckpt_path = ckpt_base_dir
-        checkpoint = torch.load(ckpt_base_dir, map_location="cpu")
+        checkpoint = _torch_load_checkpoint(ckpt_base_dir, map_location="cpu")
     else:
         base_dir = ckpt_base_dir
         checkpoint, ckpt_path = get_last_checkpoint(ckpt_base_dir)
@@ -92,7 +99,7 @@ def load_ckpt_emformer(cur_model, ckpt_base_dir, model_name="model", force=True,
     if os.path.isfile(ckpt_base_dir):
         base_dir = os.path.dirname(ckpt_base_dir)
         ckpt_path = ckpt_base_dir
-        checkpoint = torch.load(ckpt_base_dir, map_location="cpu")
+        checkpoint = _torch_load_checkpoint(ckpt_base_dir, map_location="cpu")
     else:
         base_dir = ckpt_base_dir
         checkpoint, ckpt_path = get_last_checkpoint(ckpt_base_dir)

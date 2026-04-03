@@ -2,7 +2,12 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-from utils.commons.dataset_utils import BaseConcatDataset, batch_by_size
+from utils.commons.dataset_utils import (
+    BaseConcatDataset,
+    batch_by_size,
+    partition_batches_for_ddp,
+    resolve_dataloader_kwargs,
+)
 
 
 def _get_condition_ids(dataset, field):
@@ -155,14 +160,13 @@ def build_condition_balanced_dataloader(
 
     num_workers = dataset.num_workers
     if use_ddp:
-        num_replicas = dist.get_world_size()
-        rank = dist.get_rank()
-        batches = [x[rank::num_replicas] for x in batches if len(x) % num_replicas == 0]
+        batches = partition_batches_for_ddp(batches)
 
+    dataloader_kwargs = resolve_dataloader_kwargs(num_workers)
     return torch.utils.data.DataLoader(
         dataset,
         collate_fn=dataset.collater,
         batch_sampler=batches,
         num_workers=num_workers,
-        pin_memory=False,
+        **dataloader_kwargs,
     )

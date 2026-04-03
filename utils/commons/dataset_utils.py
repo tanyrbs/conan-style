@@ -5,6 +5,7 @@ import types
 from functools import wraps
 from itertools import chain
 import numpy as np
+import torch
 import torch.utils.data
 from torch.utils.data import ConcatDataset
 from utils.commons.hparams import hparams
@@ -89,6 +90,69 @@ def _is_batch_full(batch, num_tokens, max_tokens, max_sentences):
     if num_tokens > max_tokens:
         return 1
     return 0
+
+
+def _resolve_bool_flag(value, *, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'1', 'true', 'yes', 'y', 'on'}:
+            return True
+        if normalized in {'0', 'false', 'no', 'n', 'off'}:
+            return False
+    return bool(value)
+
+
+def resolve_dataloader_kwargs(num_workers, pin_memory=None):
+    num_workers = max(0, int(num_workers))
+    default_pin_memory = torch.cuda.is_available() if pin_memory is None else bool(pin_memory)
+    kwargs = {
+        'pin_memory': _resolve_bool_flag(
+            hparams.get('dataloader_pin_memory', default_pin_memory),
+            default=default_pin_memory,
+        ),
+    }
+    if num_workers > 0:
+        kwargs['persistent_workers'] = _resolve_bool_flag(
+            hparams.get('dataloader_persistent_workers', True),
+            default=True,
+        )
+        prefetch_value = hparams.get('dataloader_prefetch_factor', 2)
+        try:
+            prefetch_factor = int(prefetch_value)
+        except (TypeError, ValueError):
+            prefetch_factor = 2
+        if prefetch_factor > 0:
+            kwargs['prefetch_factor'] = prefetch_factor
+    return kwargs
+
+
+def partition_batches_for_ddp(batches, num_replicas=None, rank=None):
+    import torch.distributed as dist
+
+    if num_replicas is None or rank is None:
+        if not dist.is_available() or not dist.is_initialized():
+            return [list(batch) for batch in batches]
+        if num_replicas is None:
+            num_replicas = int(dist.get_world_size())
+        if rank is None:
+            rank = int(dist.get_rank())
+    if num_replicas <= 1:
+        return [list(batch) for batch in batches]
+
+    partitioned_batches = []
+    for batch in batches:
+        batch = list(batch)
+        if len(batch) <= 0:
+            continue
+        remainder = len(batch) % num_replicas
+        if remainder != 0:
+            batch.extend([batch[-1]] * (num_replicas - remainder))
+        rank_batch = batch[rank::num_replicas]
+        if len(rank_batch) > 0:
+            partitioned_batches.append(rank_batch)
+    return partitioned_batches
 
 
 def batch_by_size(
@@ -276,7 +340,7 @@ class BaseConcatDataset(ConcatDataset):
         return self.datasets[0].num_workers
 
 def build_dataloader(dataset, shuffle, max_tokens=None, max_sentences=None,
-                     required_batch_size_multiple=-1, endless=False, apply_batch_by_size=True, pin_memory=False, use_ddp=False):
+                     required_batch_size_multiple=-1, endless=False, apply_batch_by_size=True, pin_memory=None, use_ddp=False):
     import torch.distributed as dist
     devices_cnt = torch.cuda.device_count()
     if devices_cnt == 0:
@@ -302,8 +366,9 @@ def build_dataloader(dataset, shuffle, max_tokens=None, max_sentences=None,
         )
     else:
         batch_sampler = []
-        for i in range(0, len(indices), max_sentences):
-            batch_sampler.append(indices[i:i + max_sentences])
+        step = max_sentences if max_sentences is not None else 1
+        for i in range(0, len(indices), step):
+            batch_sampler.append(indices[i:i + step])
 
     if shuffle:
         batches = shuffle_batches(list(batch_sampler))
@@ -315,20 +380,10 @@ def build_dataloader(dataset, shuffle, max_tokens=None, max_sentences=None,
             batches = [b for _ in range(1000) for b in batches]
     num_workers = dataset.num_workers
     if use_ddp:
-        num_replicas = dist.get_world_size()
-        rank = dist.get_rank()
-        # batches = [x[rank::num_replicas] for x in batches if len(x) % num_replicas == 0]
-        # ensure that every sample in the dataset is covered
-        batches_ = []
-        for x in batches:
-            if len(x) % num_replicas == 0:
-                batches_.append(x[rank::num_replicas])
-            else:
-                x_ = x + [x[-1]] * (len(x) - len(x) // num_replicas * num_replicas)
-                batches_.append(x_[rank::num_replicas])
-        batches = batches_
+        batches = partition_batches_for_ddp(batches)
+    dataloader_kwargs = resolve_dataloader_kwargs(num_workers, pin_memory=pin_memory)
     return torch.utils.data.DataLoader(dataset,
                                        collate_fn=dataset.collater,
                                        batch_sampler=batches,
                                        num_workers=num_workers,
-                                       pin_memory=pin_memory)
+                                       **dataloader_kwargs)

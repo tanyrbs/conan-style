@@ -48,6 +48,39 @@ class Tee(object):
         self.file.flush()
 
 
+def _parse_visible_cuda_devices(env_value):
+    if env_value is None:
+        return []
+    gpu_ids = []
+    for token in str(env_value).split(','):
+        token = token.strip()
+        if token == '':
+            continue
+        try:
+            gpu_ids.append(int(token))
+        except ValueError:
+            continue
+    return gpu_ids
+
+
+def _resolve_visible_gpu_ids():
+    env_value = os.environ.get('CUDA_VISIBLE_DEVICES', None)
+    env_gpu_ids = _parse_visible_cuda_devices(env_value)
+    cuda_available = bool(torch.cuda.is_available())
+    if len(env_gpu_ids) > 0 and cuda_available:
+        return list(range(len(env_gpu_ids))), 'CUDA_VISIBLE_DEVICES'
+    if cuda_available:
+        try:
+            device_count = int(torch.cuda.device_count())
+        except Exception:
+            device_count = 0
+        if device_count > 0:
+            return list(range(device_count)), 'torch.cuda.device_count'
+    if len(env_gpu_ids) > 0:
+        return [], 'cuda_env_without_runtime'
+    return [], 'cpu_only'
+
+
 class Trainer:
     def __init__(
             self,
@@ -96,16 +129,24 @@ class Trainer:
         self.num_ckpt_keep = num_ckpt_keep
         self.save_best = save_best
         self.monitor_op = np.less if monitor_mode == 'min' else np.greater
-        self.best_val_results = np.Inf if monitor_mode == 'min' else -np.Inf
-        self.mode = 'min'
+        self.best_val_results = np.inf if monitor_mode == 'min' else -np.inf
+        self.mode = monitor_mode
 
         # allow int, string and gpu list
-        self.all_gpu_ids = [
-            int(x) for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x != '']
+        visible_cuda_devices = [
+            token.strip() for token in os.environ.get('CUDA_VISIBLE_DEVICES', '').split(',')
+            if token.strip() != ''
+        ]
+        self.all_gpu_ids, self.gpu_discovery_source = _resolve_visible_gpu_ids()
         self.num_gpus = len(self.all_gpu_ids)
         self.on_gpu = self.num_gpus > 0
         self.root_gpu = 0
-        logging.info(f'GPU available: {torch.cuda.is_available()}, GPU used: {self.all_gpu_ids}')
+        logging.info(
+            f'GPU available: {torch.cuda.is_available()}, '
+            f'CUDA_VISIBLE_DEVICES={visible_cuda_devices or None}, '
+            f'GPU discovery source: {self.gpu_discovery_source}, '
+            f'logical GPUs used: {self.all_gpu_ids}'
+        )
         self.use_ddp = self.num_gpus > 1
         self.proc_rank = 0
         # Tensorboard logging
@@ -456,7 +497,7 @@ class Trainer:
         return did_restore
 
     def save_checkpoint(self, epoch, logs=None):
-        monitor_op = np.less
+        monitor_op = self.monitor_op
         ckpt_path = f'{self.work_dir}/model_ckpt_steps_{self.global_step}.ckpt'
         logging.info(f'Epoch {epoch:05d}@{self.global_step}: saving model to {ckpt_path}')
         self._atomic_save(ckpt_path)
@@ -500,7 +541,11 @@ class Trainer:
     # DDP
     ####################
     def configure_ddp(self, task):
-        task = DDP(task, device_ids=[self.root_gpu], find_unused_parameters=True)
+        task = DDP(
+            task,
+            device_ids=[self.root_gpu],
+            find_unused_parameters=bool(hparams.get('ddp_find_unused_parameters', True)),
+        )
         random.seed(self.seed)
         np.random.seed(self.seed)
         return task
@@ -509,7 +554,8 @@ class Trainer:
         root_node = '127.0.0.1'
         root_node = self.resolve_root_node_address(root_node)
         os.environ['MASTER_ADDR'] = root_node
-        dist.init_process_group('nccl', rank=proc_rank, world_size=world_size)
+        os.environ.setdefault('MASTER_PORT', str(hparams.get('ddp_master_port', 23456)))
+        dist.init_process_group(hparams.get('ddp_backend', 'nccl'), rank=proc_rank, world_size=world_size)
 
     def resolve_root_node_address(self, root_node):
         if '[' in root_node:

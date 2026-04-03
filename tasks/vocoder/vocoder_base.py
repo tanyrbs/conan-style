@@ -6,7 +6,7 @@ from torch.utils.data import DistributedSampler
 from tasks.vocoder.dataset_utils import VocoderDataset, EndlessDistributedSampler
 from utils.audio.io import save_wav
 from utils.commons.base_task import BaseTask
-from utils.commons.dataset_utils import data_loader
+from utils.commons.dataset_utils import data_loader, resolve_dataloader_kwargs
 from utils.commons.hparams import hparams
 from utils.commons.tensor_utils import tensors_to_scalars
 
@@ -55,7 +55,7 @@ class VocoderBaseTask(BaseTask):
             batch_size=max_sentences,
             num_workers=dataset.num_workers,
             sampler=train_sampler,
-            pin_memory=True,
+            **resolve_dataloader_kwargs(dataset.num_workers),
         )
 
     def build_optimizer(self, model):

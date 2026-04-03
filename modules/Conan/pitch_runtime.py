@@ -459,9 +459,15 @@ class ConanStylePitchRuntimeMixin:
                 ret["style_to_pitch_residual_target"] = target
 
         apply_during_teacher_forcing = bool(
-            kwargs.get(
+            resolve_style_runtime_value(
                 "style_to_pitch_residual_apply_during_teacher_forcing",
-                self.hparams.get("style_to_pitch_residual_apply_during_teacher_forcing", False),
+                overrides=kwargs,
+                hparams=self.hparams,
+                profile_defaults=style_profile_defaults,
+                default=self.hparams.get(
+                    "style_to_pitch_residual_apply_during_teacher_forcing",
+                    False,
+                ),
             )
         )
         should_apply = f0_target is None or apply_during_teacher_forcing

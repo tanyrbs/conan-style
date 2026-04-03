@@ -242,10 +242,11 @@ def _compose_style_budget_energy(
     slow_style_energy: Optional[torch.Tensor],
     *,
     slow_style_weight: float = 1.0,
+    require_owner_reference: bool = True,
 ):
     slow_style_weight = float(slow_style_weight)
     if not isinstance(style_owner_energy, torch.Tensor):
-        if not isinstance(slow_style_energy, torch.Tensor):
+        if require_owner_reference or not isinstance(slow_style_energy, torch.Tensor):
             return None, None
         return slow_style_weight * slow_style_energy, slow_style_energy
     if not isinstance(slow_style_energy, torch.Tensor):
@@ -329,6 +330,7 @@ def resolve_dynamic_timbre_budget_terms(
         style_owner_energy,
         slow_energy,
         slow_style_weight=slow_style_weight,
+        require_owner_reference=True,
     )
     if style_energy is None or not isinstance(timbre_energy, torch.Tensor):
         return {

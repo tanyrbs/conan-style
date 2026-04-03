@@ -35,10 +35,22 @@ def _merge_runtime_masks(*masks, reference=None):
     return merged
 
 
-def _sequence_has_signal(value, *, eps: float = 1.0e-6) -> bool:
+def _sequence_has_signal(
+    value,
+    *,
+    reference=None,
+    abs_eps: float = 1.0e-4,
+    relative_eps: float = 0.02,
+) -> bool:
     if not isinstance(value, torch.Tensor) or value.numel() <= 0:
         return False
-    return bool(value.detach().abs().amax().item() > float(eps))
+    signal = float(value.detach().abs().mean().item())
+    threshold = float(abs_eps)
+    if isinstance(reference, torch.Tensor) and reference.numel() > 0:
+        reference_signal = float(reference.detach().abs().mean().item())
+        if reference_signal > float(abs_eps):
+            threshold = max(threshold, float(relative_eps) * reference_signal)
+    return bool(signal > threshold)
 
 
 def _resolve_style_owner_residual(style_payload, ret):
@@ -359,7 +371,10 @@ def realize_style_timbre_decoder_runtime(
 
     timbre_style_context_residual = style_owner_innovation_residual
     timbre_style_context_source = "style_owner_innovation"
-    if not _sequence_has_signal(timbre_style_context_residual):
+    if not _sequence_has_signal(
+        timbre_style_context_residual,
+        reference=style_decoder_residual,
+    ):
         timbre_style_context_residual = style_decoder_residual
         timbre_style_context_source = "style_owner"
     ret["dynamic_timbre_style_context_source"] = timbre_style_context_source

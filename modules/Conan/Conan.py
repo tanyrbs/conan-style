@@ -501,7 +501,6 @@ class Conan(
             style_trace_source=style_timbre_runtime["style_trace_source"],
             dynamic_timbre_source=style_timbre_runtime["dynamic_timbre_source"],
         )
-        ret["pitch_embed"] = pitch_inp
 
         if infer:
             f0, uv = None, None
@@ -511,6 +510,7 @@ class Conan(
             reference_cache=reference_cache,
         )
         pitch_embed_out = self.forward_pitch(pitch_inp, f0, uv, ret, **kwargs)
+        ret["pitch_embed"] = pitch_embed_out
         energy_embed = self.forward_energy(pitch_inp, kwargs.get("energy", None), ret) \
             if self.use_energy_embed else 0.0
         ret["decoder_style_adapter_enabled"] = bool(self.decoder_style_adapter is not None)

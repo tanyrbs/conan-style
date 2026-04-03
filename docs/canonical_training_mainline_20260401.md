@@ -57,7 +57,8 @@ This gates:
 
 Inference always uses the fully opened ceiling.
 
-Canonical control regularization stays on the 5-loss pack:
+Canonical control regularization keeps five nonzero-configured losses on the shipped path.
+Their effective strengths still follow the schedule, so this is the configured loss surface once the schedule opens, not a claim that all five are fully active from step 0:
 
 - `lambda_output_identity_cosine`
 - `lambda_dynamic_timbre_budget`
@@ -67,7 +68,7 @@ Canonical control regularization stays on the 5-loss pack:
 
 This is intentionally a **bounded weak internal factorization** contract, not a proof of perfect disentanglement. The mainline explicitly reports `factorization_guaranteed: false`; the active losses constrain lower-level failure modes, but they do not prove that each latent/control branch has become uniquely interpretable.
 
-The new `lambda_style_success_rank` is a training-only lower-bound signal rather than a new inference knob: it combines paired self/reference style alignment with weak-label batch ranking whenever metadata negatives are available, while leaving the shipped runtime surface closed.
+The new `lambda_style_success_rank` is a training-only lower-bound signal rather than a new inference knob: it combines paired self/reference style alignment with weak-label batch ranking whenever metadata negatives are available, while leaving the shipped runtime surface closed. If staged condition artifacts expose no usable label buckets (`num_labels == 0`), the weak-label branch naturally collapses toward paired alignment instead of informative cross-label ranking.
 
 Separately, the codebase now exposes an optional runtime-separation regularizer, `lambda_style_timbre_runtime_overlap`, but keeps it at `0.0` in the shipped canonical config. Its purpose is diagnostic/ablation-oriented: measure and optionally penalize excessive frame-wise overlap between `style_decoder_residual` and `dynamic_timbre_decoder_residual_prebudget`, not to assert that true disentanglement has been proved. Explicit ablation runs can now enable it without leaving `control_loss_profile: mainline_minimal`; the schedule layer no longer silently zeros that opt-in regularizer.
 
@@ -123,6 +124,7 @@ $env:N_PROC='1'; python data_gen/tts/runs/binarize.py --config egs/conan_binariz
 
 The prep gate is the authoritative train-readiness check for your local environment. A lightweight review archive may still be missing staged data,
 checkpoints, or compatible runtime libraries, so do not treat this document as a universal claim that training has already been verified everywhere.
+It validates the shipped canonical config; optional ablation knobs such as `lambda_style_timbre_runtime_overlap` are deliberately outside the default prep contract unless you opt into them yourself.
 
 Before real training, run:
 
@@ -169,10 +171,10 @@ Recommended short review-env smoke after staging data and a compatible runtime:
 conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmokeCpu --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1,num_sanity_val_steps=0,max_updates=2,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[]"
 ```
 
-Real-data 500-step warm-start run used in this workspace:
+Short warm-start audit smoke from the shipped Conan checkpoint (`<= 50` updates):
 
 ```bash
-python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainline500Cpu --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=500,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=200"
+conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmoke8 --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=8,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=1,lambda_style_timbre_runtime_overlap=0.005"
 ```
 
 Notes:
@@ -183,7 +185,7 @@ Notes:
 - task-side `load_ckpt` warm starts now default to non-strict loading, so older compatible Conan checkpoints can still seed current mainline smoke/fine-tune runs
 - because `slow_style_trace` now really participates in decoder runtime fusion, old checkpoints should be A/B checked if you care about exact pre/post-closure forward parity
 
-## 7. Mainline inference / evaluation after training
+## 8. Mainline inference / evaluation after training
 
 Single-reference demo:
 
@@ -207,7 +209,7 @@ Streaming latency instrumentation:
 python inference/run_streaming_latency_report.py
 ```
 
-## 8. Audited implementation notes / intended invariants
+## 9. Audited implementation notes / intended invariants
 
 - canonical mainline uses `lambda_pitch_residual_safe`; `lambda_dynamic_timbre_boundary` remains `0.0`
 - requested vs effective `style_strength` is surfaced explicitly, so clamp events are observable

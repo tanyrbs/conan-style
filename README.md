@@ -32,9 +32,11 @@ Training now opens the mainline upper-bound modules by curriculum:
 
 Canonical training ramps them from `20000 -> 80000`; inference always uses the full ceiling.
 
-## Canonical 5-loss pack
+## Canonical scheduled control-loss surface
 
-The canonical training mainline keeps exactly these active control losses:
+The canonical training mainline keeps these five nonzero-configured control losses on the shipped path.
+Their effective weights are still schedule-controlled during early training, so do not read this as
+"all five fire from step 0 with full strength":
 
 - `lambda_output_identity_cosine`
 - `lambda_dynamic_timbre_budget`
@@ -54,7 +56,7 @@ Implementation note for this 2026-04-03 closure pass:
 
 Important: this mainline is a **bounded single-reference factorization contract**, not a proof of perfect disentanglement. The code explicitly surfaces `factorization_guaranteed: false`; the shipped losses constrain identity drift, timbre budget, pitch residual safety, and late-owner dominance, but they do not mathematically guarantee that every internal branch learns a unique semantic role.
 
-`lambda_style_success_rank` is intentionally training-side only. It does not open a new inference control surface; instead it adds a lower-bound style-success signal that combines paired self/reference alignment with weak-label batch ranking when metadata negatives are available.
+`lambda_style_success_rank` is intentionally training-side only. It does not open a new inference control surface; instead it adds a lower-bound style-success signal that combines paired self/reference alignment with weak-label batch ranking when metadata negatives are available. If the staged condition artifacts expose no usable label buckets (`num_labels == 0`), the weak-label branch naturally degenerates toward paired alignment rather than meaningful cross-label ranking.
 
 An additional optional research regularizer is now wired but still shipped as `0.0` by default: `lambda_style_timbre_runtime_overlap`. It does not claim disentanglement; it simply measures and, when enabled, penalizes excessive frame-wise overlap between `style_decoder_residual` and `dynamic_timbre_decoder_residual_prebudget`. Importantly, explicit ablation runs can now enable it while staying on `control_loss_profile: mainline_minimal`; the schedule layer no longer silently zeroes that opt-in regularizer.
 
@@ -100,6 +102,7 @@ So:
 This repo encodes the intended canonical mainline contract, but universal verification still depends on staged real data,
 compatible `torchaudio` / CUDA runtime libraries, and running the prep gate plus smoke commands in your own environment.
 Treat `tasks/Conan/mainline_train_prep.py` and a short real-data smoke run as the source of truth for train-readiness.
+That prep gate validates the shipped canonical config; optional research regularizers such as `lambda_style_timbre_runtime_overlap` remain opt-in ablations, not part of the default prep pass.
 
 Key audited properties in the checked-in code:
 
@@ -157,13 +160,11 @@ New control diagnostics from this closure pass include:
 - `diag_identity_encoder_frozen_for_loss`
 - `diag_output_identity_target_cos`
 
-Latest real-data regeneration / training run completed in this workspace:
+Local-audit guidance:
 
-- source wavs: `G:\streamVC\LibriTTS_local\LibriTTS`
-- cached F0: regenerated with `utils/extract_f0_rmvpe.py`
-- binary dataset: regenerated with `egs/conan_binarize.yaml`
-- prep gate: `MAINLINE_TRAIN_PREP_OK`
-- training: `500` real-data CPU steps finished successfully with `exp_name=ConanMainline500Cpu`
+- this repo does **not** claim universal trainability from the checked-in code alone
+- the expected minimum local verification is: `compileall` -> prep gate -> short real-data smoke -> short inference smoke
+- keep the smoke budget small during audit work; this closure pass uses `<= 50` update examples rather than long warm-start claims
 
 ## Commands
 
@@ -211,10 +212,10 @@ conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_na
 
 `max_updates` now stops exactly at the requested batch budget instead of overshooting by one step.
 
-500-step warm-start smoke from the shipped Conan checkpoint:
+Short warm-start audit smoke from the shipped Conan checkpoint (`<= 50` updates):
 
 ```bash
-python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainline500Cpu --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=500,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=200"
+conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmoke8 --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=8,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=1,lambda_style_timbre_runtime_overlap=0.005"
 ```
 
 Because `slow_style_trace` now really enters the decoder runtime bundle, old checkpoints should be A/B checked if you are comparing exact forward behavior before vs. after this closure patch. For new training or resumed fine-tuning on the canonical path, this is the intended corrected behavior.

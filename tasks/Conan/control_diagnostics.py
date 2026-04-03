@@ -3,14 +3,17 @@ import torch.nn.functional as F
 
 from modules.Conan.control.common import summary_vector
 from modules.Conan.control.separation_metrics import (
+    build_sequence_weight,
     masked_sequence_cosine,
     resolve_sample_voiced_weight,
     sequence_energy_mean,
+    weighted_mean,
 )
 from modules.Conan.control.style_success import (
     mean_optional_vectors,
     normalized_summary_batch,
     style_success_negative_mask,
+    style_success_supervision_scale,
     style_success_target_global_summary,
 )
 from modules.Conan.style_trace_utils import resolve_combined_style_trace
@@ -75,6 +78,22 @@ def _safe_mean_std(value):
         return None, None
     value = value.float()
     return value.mean(), value.std(unbiased=False)
+
+
+def _weighted_mean_std(value, weight=None):
+    if not isinstance(value, torch.Tensor):
+        return None, None
+    value = value.float()
+    mean = weighted_mean(value, weight)
+    if mean is None:
+        return None, None
+    if not isinstance(weight, torch.Tensor) or tuple(weight.shape) != tuple(value.shape):
+        return mean, value.std(unbiased=False)
+    centered = (value - mean) ** 2
+    var = weighted_mean(centered, weight)
+    if var is None:
+        return mean, None
+    return mean, var.clamp_min(0.0).sqrt()
 
 
 def _categorical_indicator(value, expected, *, device=None):
@@ -586,6 +605,9 @@ def collect_control_diagnostics(output, sample, config):
         )
         anchor_bank = normalized_summary_batch(style_success_anchor)
         target_bank = normalized_summary_batch(style_success_target)
+        diagnostics["diag_style_success_supervision_scale"] = torch.tensor(
+            float(style_success_supervision_scale(output, config))
+        )
         if (
             isinstance(anchor_bank, torch.Tensor)
             and isinstance(target_bank, torch.Tensor)
@@ -624,9 +646,27 @@ def collect_control_diagnostics(output, sample, config):
         timbre_anchor_cos = _cosine_mean(timbre_repr, global_timbre_anchor)
         if timbre_anchor_cos is not None:
             diagnostics["diag_timbre_anchor_cos"] = timbre_anchor_cos
-        output_identity_target_embed = summary_vector(
-            output.get("output_identity_target_embed")
-        )
+        output_identity_target_embed = summary_vector(output.get("output_identity_target_used_for_loss"))
+        if output_identity_target_embed is None:
+            output_identity_target_embed = summary_vector(output.get("output_identity_target_embed"))
+        if output_identity_target_embed is None:
+            output_identity_target_embed = summary_vector(output.get("output_identity_reference_target"))
+        if output_identity_target_embed is None:
+            output_identity_target_embed = summary_vector(
+                output.get("output_identity_anchor_target", output.get("global_timbre_anchor"))
+            )
+        target_source = output.get("output_identity_target_source_resolved_for_loss")
+        if target_source is None:
+            target_source = output.get("output_identity_target_source")
+        if target_source is not None:
+            diagnostics["diag_output_identity_target_source_is_reference"] = _categorical_indicator(
+                target_source,
+                "reference_identity_embed",
+            )
+            diagnostics["diag_output_identity_target_source_is_anchor"] = _categorical_indicator(
+                target_source,
+                "output_identity_anchor_target",
+            )
         output_identity_cos = _cosine_mean(output_identity_embed, global_timbre_anchor)
         if output_identity_cos is not None:
             diagnostics["diag_output_identity_anchor_cos"] = output_identity_cos
@@ -662,7 +702,10 @@ def collect_control_diagnostics(output, sample, config):
         runtime_budget_applied = output.get("runtime_dynamic_timbre_style_budget_applied")
         if runtime_budget_applied is not None:
             diagnostics["diag_runtime_dynamic_timbre_budget_applied"] = torch.tensor(float(bool(runtime_budget_applied)))
-        prebudget_dynamic_timbre = output.get("dynamic_timbre_decoder_residual_prebudget")
+        prebudget_dynamic_timbre = output.get(
+            "dynamic_timbre_decoder_residual_prebudget",
+            output.get("dynamic_timbre_decoder_residual"),
+        )
         postbudget_dynamic_timbre = output.get("dynamic_timbre_decoder_residual")
         prebudget_norm = _delta_norm(prebudget_dynamic_timbre)
         postbudget_norm = _delta_norm(postbudget_dynamic_timbre)
@@ -877,28 +920,26 @@ def collect_control_diagnostics(output, sample, config):
             stage_overflow = F.relu(
                 stage_timbre_budget - budget_ratio * stage_style_budget.detach() - budget_margin
             )
-            diagnostics.update(
-                _simple_sequence_statistics(
-                    stage_style_budget,
-                    output.get("dynamic_timbre_mask"),
-                    prefix="diag_decoder_stage_style_budget_energy",
-                )
+            stage_weight = build_sequence_weight(
+                output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                reference=stage_timbre_budget,
+                boundary_mask=output.get("dynamic_timbre_boundary_mask"),
+                voiced_weight=resolve_sample_voiced_weight(sample.get("uv"), stage_timbre_budget),
             )
-            diagnostics.update(
-                _simple_sequence_statistics(
-                    stage_timbre_budget,
-                    output.get("dynamic_timbre_mask"),
-                    prefix="diag_decoder_stage_dynamic_timbre_energy",
-                )
-            )
-            diagnostics.update(
-                _simple_sequence_statistics(
-                    stage_overflow,
-                    output.get("dynamic_timbre_mask"),
-                    prefix="diag_decoder_stage_dynamic_timbre_budget_overflow",
-                )
-            )
-        dynamic_timbre_prebudget = output.get("dynamic_timbre_decoder_residual_prebudget")
+            for value, prefix in (
+                (stage_style_budget, "diag_decoder_stage_style_budget_energy"),
+                (stage_timbre_budget, "diag_decoder_stage_dynamic_timbre_energy"),
+                (stage_overflow, "diag_decoder_stage_dynamic_timbre_budget_overflow"),
+            ):
+                mean, std = _weighted_mean_std(value, stage_weight)
+                if mean is not None:
+                    diagnostics[f"{prefix}_mean"] = mean
+                if std is not None:
+                    diagnostics[f"{prefix}_std"] = std
+        dynamic_timbre_prebudget = output.get(
+            "dynamic_timbre_decoder_residual_prebudget",
+            output.get("dynamic_timbre_decoder_residual"),
+        )
         if isinstance(dynamic_timbre_prebudget, torch.Tensor) and dynamic_timbre_prebudget.dim() == 3:
             prebudget_mask = _normalize_mask(
                 output.get("dynamic_timbre_mask"),
@@ -912,6 +953,19 @@ def collect_control_diagnostics(output, sample, config):
             if valid_prebudget.numel() > 0:
                 diagnostics["diag_dynamic_timbre_prebudget_mean"] = valid_prebudget.mean()
                 diagnostics["diag_dynamic_timbre_prebudget_std"] = valid_prebudget.std(unbiased=False)
+        if "pitch_residual_safe_target_available" in output:
+            diagnostics["diag_pitch_residual_target_available"] = torch.tensor(
+                float(bool(output.get("pitch_residual_safe_target_available")))
+            )
+        for output_key, diag_key in (
+            ("pitch_residual_safe_align_term", "diag_pitch_residual_align_term"),
+            ("pitch_residual_safe_budget_overflow_term", "diag_pitch_residual_budget_overflow"),
+            ("pitch_residual_safe_slope_term", "diag_pitch_residual_slope_term"),
+            ("pitch_residual_safe_zero_fallback_term", "diag_pitch_residual_zero_fallback_term"),
+        ):
+            value = output.get(output_key)
+            if isinstance(value, torch.Tensor):
+                diagnostics[diag_key] = value.detach().float().mean()
         for output_key, diag_key in (
             ("reference_curriculum_progress", "diag_reference_curriculum_progress"),
             ("reference_curriculum_external_prob", "diag_reference_curriculum_external_prob"),

@@ -152,7 +152,11 @@ class SpeechBaseTask(BaseTask):
     def build_model(self):
         self.build_tts_model()
         if hparams['load_ckpt'] != '':
-            load_ckpt(self.model, hparams['load_ckpt'])
+            load_ckpt(
+                self.model,
+                hparams['load_ckpt'],
+                strict=bool(hparams.get('load_ckpt_strict', False)),
+            )
         print_arch(self.model)
         return self.model
 

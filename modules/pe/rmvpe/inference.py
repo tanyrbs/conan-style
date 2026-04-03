@@ -22,7 +22,11 @@ class RMVPE:
             self.device = device
         self.model = E2E0(4, 1, (2, 2)).eval().to(self.device)
         ckpt = torch.load(model_path, map_location=self.device)
-        self.model.load_state_dict(ckpt['model'], strict=False)
+        if isinstance(ckpt, dict):
+            state_dict = ckpt.get('model', ckpt.get('state_dict', ckpt))
+        else:
+            state_dict = ckpt
+        self.model.load_state_dict(state_dict, strict=False)
         self.mel_extractor = MelSpectrogram(
             N_MELS, SAMPLE_RATE, WINDOW_LENGTH, hop_length, None, MEL_FMIN, MEL_FMAX
         ).to(self.device)

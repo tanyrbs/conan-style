@@ -19,6 +19,17 @@ def get_vocoder_cls(vocoder_name):
 
 
 class BaseVocoder:
+    def supports_native_streaming(self):
+        return False
+
+    def reset_stream(self):
+        return None
+
+    def spec2wav_stream(self, mel, **kwargs):
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not provide native streaming vocoder inference."
+        )
+
     def spec2wav(self, mel):
         """
 

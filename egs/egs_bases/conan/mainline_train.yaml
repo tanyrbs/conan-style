@@ -1,0 +1,110 @@
+task_cls: tasks.Conan.Conan.ConanTask
+ds_workers: 4
+dataloader_pin_memory: true
+dataloader_persistent_workers: true
+dataloader_prefetch_factor: 2
+ddp_find_unused_parameters: true
+ddp_backend: nccl
+ddp_master_port: 23456
+max_tokens: 36000
+max_sentences: 32
+max_input_tokens: 1550
+num_sanity_val_steps: 0
+val_check_interval: 5000
+valid_infer_interval: 5000
+max_updates: 200000
+lambda_ph_dur: 1.0
+lambda_sent_dur: 0.0
+lambda_word_dur: 0.0
+lambda_mel_adv: 0.05
+disc_win_num: 3
+mel_disc_hidden_size: 128
+disc_norm: in
+disc_reduction: stack
+disc_interval: 1
+disc_lr: 0.0001
+disc_start_steps: 40000
+discriminator_scheduler_params:
+  gamma: 0.5
+  step_size: 40000
+discriminator_optimizer_params:
+  eps: 1.0e-06
+  weight_decay: 0.0
+random_speaker_steps: 100000
+reference_curriculum_mode: bernoulli_cosine
+reference_curriculum_start_steps: 20000
+reference_curriculum_end_steps: 100000
+reference_curriculum_external_prob_init: 0.0
+reference_curriculum_external_prob_final: 1.0
+reference_curriculum_self_ref_floor: 0.0
+reference_curriculum_sample_mode: batch
+num_valid_plots: 10
+valid_plot_prob: 0.1
+forcing: 20000
+forcing_schedule_mode: bernoulli_cosine
+forcing_decay_start_steps: 12000
+forcing_decay_end_steps: 60000
+forcing_prob_init: 1.0
+forcing_prob_final: 0.0
+use_energy_embed: false
+lambda_energy: 0.0
+control_loss_profile: mainline_minimal
+num_styles: 0
+lambda_style_trace_smooth: 0.0
+lambda_style_trace_consistency: 0.0
+lambda_style_timbre_disentangle: 0.0
+lambda_style_query_var: 0.0
+lambda_global_style_summary_align: 0.0
+lambda_slow_style_summary_align: 0.0
+lambda_tv_timbre_smooth: 0.0
+lambda_tv_timbre_anchor: 0.0
+lambda_timbre_anchor_cosine: 0.0
+lambda_output_identity_cosine: 0.03
+lambda_style_dynamic_timbre_disentangle: 0.0
+lambda_dynamic_timbre_gate: 0.0
+lambda_dynamic_timbre_budget: 0.03
+lambda_dynamic_timbre_boundary: 0.0
+lambda_dynamic_timbre_anchor: 0.0
+lambda_pitch_residual_safe: 0.01
+lambda_gate_rank: 0.0
+lambda_decoder_late_owner: 0.015
+lambda_decoder_late_anchor_budget: 0.0
+dynamic_timbre_gate_target: 0.35
+dynamic_timbre_budget_ratio: 0.4
+dynamic_timbre_budget_margin: 0.0
+pitch_residual_smooth_weight: 0.1
+decoder_late_timbre_owner_ratio: 0.5
+decoder_late_anchor_budget_ratio: 0.35
+decoder_late_anchor_budget_floor: 0.0
+timbre_reg_start_steps: 15000
+timbre_reg_warmup_steps: 20000
+timbre_reg_init_scale: 0.0
+timbre_reg_final_scale: 1.0
+control_regularization_schedule:
+  type: linear
+  lambda_output_identity_cosine:
+    start: 2000
+    warmup: 8000
+    initial: 0.0
+    target: 0.03
+  lambda_dynamic_timbre_budget:
+    start: 0
+    warmup: 6000
+    initial: 0.0
+    target: 0.03
+  lambda_pitch_residual_safe:
+    start: 4000
+    warmup: 8000
+    initial: 0.0
+    target: 0.01
+  lambda_decoder_late_owner:
+    start: 2000
+    warmup: 8000
+    initial: 0.0
+    target: 0.015
+log_control_diagnostics: true
+control_diagnostics_track_lambdas: true
+valid_use_streaming_prefix_path: true
+streaming_eval_tokens_per_chunk: 4
+streaming_parity_tail_frames: 32
+streaming_parity_boundary_window: 8

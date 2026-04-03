@@ -8,6 +8,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from inference.streaming_runtime import (
+    PrefixCodeBuffer,
+    RollingMelContextBuffer,
+    build_streaming_latency_report,
+    cumulative_prefix_recompute_multiplier,
+    resolve_streaming_layout,
+    resolve_vocoder_left_context_frames,
+)
 from utils.commons.hparams import hparams, set_hparams
 from utils.commons.ckpt_utils import load_ckpt
 from utils.audio import librosa_wav2spec
@@ -47,22 +55,6 @@ class StreamingVoiceConversion:
     tokens_per_chunk: int = 4  # 4 HuBERT tokens ? 80 ms
 
     @staticmethod
-    def _resolve_vocoder_left_context_frames(source: Dict):
-        for key in (
-            "vocoder_left_context_frames",
-            "streaming_vocoder_left_context_frames",
-            "vocoder_stream_context",
-        ):
-            value = source.get(key, None)
-            if value is None:
-                continue
-            try:
-                return max(0, int(value)), key
-            except (TypeError, ValueError):
-                continue
-        return 48, "default"
-
-    @staticmethod
     def _resolve_checkpoint_artifacts(path_value) -> List[str]:
         if path_value is None:
             return []
@@ -87,7 +79,7 @@ class StreamingVoiceConversion:
         if hp is None:
             raise ValueError("StreamingVoiceConversion requires a resolved hparams dictionary.")
         resolved_hp = dict(hp)
-        vocoder_left_context_frames, vocoder_left_context_source = self._resolve_vocoder_left_context_frames(
+        vocoder_left_context_frames, vocoder_left_context_source = resolve_vocoder_left_context_frames(
             resolved_hp
         )
         resolved_hp["vocoder_left_context_frames"] = int(vocoder_left_context_frames)
@@ -100,6 +92,16 @@ class StreamingVoiceConversion:
         self.streaming_impl = "emformer_stateful_prefix_recompute"
         self.vocoder_left_context_frames = int(vocoder_left_context_frames)
         self.vocoder_left_context_source = str(vocoder_left_context_source)
+        self.streaming_layout = resolve_streaming_layout(resolved_hp)
+        self.tokens_per_chunk = int(self.streaming_layout["chunk_frames"])
+        self.streaming_capabilities = {
+            "frontend_stateful_streaming": True,
+            "acoustic_native_streaming": False,
+            "acoustic_prefix_recompute": True,
+            "vocoder_native_streaming": False,
+            "vocoder_stream_api_available": False,
+        }
+        self.streaming_latency_report = build_streaming_latency_report(resolved_hp)
         self.last_infer_metadata = {}
         print(
             f"| Conan vocoder_left_context_frames={self.vocoder_left_context_frames} "
@@ -109,6 +111,12 @@ class StreamingVoiceConversion:
         self.condition_maps = self._load_condition_maps()
         self.model = self._build_model()
         self.vocoder = self._build_vocoder()
+        self.streaming_capabilities["vocoder_native_streaming"] = bool(
+            self.vocoder.supports_native_streaming()
+        )
+        self.streaming_capabilities["vocoder_stream_api_available"] = hasattr(
+            self.vocoder, "spec2wav_stream"
+        )
         self.emformer = self._build_emformer()
         self._vocoder_warm_zero()
 
@@ -181,18 +189,26 @@ class StreamingVoiceConversion:
             self.hparams.get("processed_data_dir"),
         ]
         for field in CONDITION_FIELDS:
-            vocab = None
+            field_map = None
             for data_dir in candidate_dirs:
                 if not data_dir:
                     continue
+                map_path = os.path.join(data_dir, f"{field}_map.json")
+                if os.path.exists(map_path):
+                    with open(map_path, "r", encoding="utf-8") as f:
+                        field_map = {str(label): int(idx) for label, idx in json.load(f).items()}
+                    break
                 vocab_path = os.path.join(data_dir, f"{field}_set.json")
                 if os.path.exists(vocab_path):
                     with open(vocab_path, "r", encoding="utf-8") as f:
                         vocab = json.load(f)
+                    field_map = {
+                        str(label): idx
+                        for idx, label in enumerate(vocab)
+                        if label not in (None, "")
+                    }
                     break
-            if vocab is None:
-                vocab = []
-            condition_maps[field] = {str(label): idx for idx, label in enumerate(vocab)}
+            condition_maps[field] = field_map or {}
         return condition_maps
 
     @staticmethod
@@ -217,7 +233,7 @@ class StreamingVoiceConversion:
             try:
                 return int(stripped)
             except ValueError:
-                return self.condition_maps.get(field, {}).get(stripped, None)
+                return int(self.condition_maps.get(field, {}).get(stripped, -1))
         return None
 
     def _resolve_style_profile(self, inp: Dict):
@@ -387,8 +403,11 @@ class StreamingVoiceConversion:
         except (TypeError, ValueError):
             requested_style_strength = float(resolved_profile.get("style_strength", 1.0))
         spk_embed = self._normalize_spk_embed(spk_emb)
+        latency_report = dict(self.streaming_latency_report)
         metadata = {
             "streaming_impl": self.streaming_impl,
+            "streaming_capabilities": dict(self.streaming_capabilities),
+            "streaming_latency_report": latency_report,
             "reference_contract_mode": ref_mels.get(
                 "reference_contract_mode",
                 self.hparams.get("reference_contract_mode", "collapsed_reference"),
@@ -419,6 +438,21 @@ class StreamingVoiceConversion:
             ),
             "style_to_pitch_residual_include_timbre": bool(
                 resolved_profile.get("style_to_pitch_residual_include_timbre", False)
+            ),
+            "streaming_frontend_stateful": True,
+            "acoustic_native_streaming": False,
+            "acoustic_prefix_recompute": True,
+            "vocoder_native_streaming": bool(
+                self.streaming_capabilities.get("vocoder_native_streaming", False)
+            ),
+            "theoretical_first_packet_latency_ms": float(
+                latency_report.get("first_packet_algorithmic_latency_ms", 0.0)
+            ),
+            "steady_state_vocoder_window_ms": float(
+                latency_report.get("steady_state_vocoder_window_ms", 0.0)
+            ),
+            "steady_state_vocoder_recompute_multiplier": float(
+                latency_report.get("steady_state_vocoder_recompute_multiplier", 0.0)
             ),
             "vocoder_left_context_frames": int(self.vocoder_left_context_frames),
             "vocoder_left_context_frames_effective": int(self.vocoder_left_context_frames),
@@ -483,13 +517,11 @@ class StreamingVoiceConversion:
 
     def _infer_prefix_online_from_mel(self, src_mel: torch.Tensor, runtime: Dict):
         total_frames = src_mel.shape[1]
-        chunk_size = max(1, int(self.hparams.get("chunk_size", 20)) // 20)
-        right_context = max(0, int(self.hparams.get("right_context", 0)))
-        seg = chunk_size
-        rc = right_context
+        seg = int(self.streaming_layout["chunk_frames"])
+        rc = int(self.streaming_layout["right_context_frames"])
 
-        content_code_buffer = []
-        mel_chunks = []
+        content_code_buffer = PrefixCodeBuffer(max_length=max(1, int(total_frames)))
+        mel_chunks = RollingMelContextBuffer(self.vocoder_left_context_frames)
         wav_chunks = []
         vocoder_left_context = int(self.vocoder_left_context_frames)
         prev_len = 0
@@ -497,6 +529,7 @@ class StreamingVoiceConversion:
         state = None
         final_out = None
         chunk_count = 0
+        self.vocoder.reset_stream()
 
         while pos < total_frames:
             chunk_count += 1
@@ -525,22 +558,17 @@ class StreamingVoiceConversion:
                 pos += emit
                 continue
             new_codes = chunk_out[:, :effective_emit]
-            content_code_buffer.append(new_codes.squeeze(0))
-            all_codes = torch.cat(content_code_buffer, dim=0).unsqueeze(0)
+            all_codes = content_code_buffer.append(new_codes.squeeze(0)).unsqueeze(0)
             final_out = self._run_model_from_content_codes(all_codes, runtime)
             mel_out = final_out["mel_out"][0]
             mel_new = mel_out[prev_len:]
-            if mel_new.size(0) > 0:
-                mel_chunks.append(mel_new)
             prev_len = mel_out.shape[0]
             pos += emit
 
-            mel_prefix = torch.cat(mel_chunks, dim=0)
-            mel_total_frames = int(mel_prefix.size(0))
+            if mel_new.size(0) <= 0:
+                continue
             mel_new_frames = int(mel_new.size(0))
-            vocoder_context_frames = min(vocoder_left_context, max(0, mel_total_frames - mel_new_frames))
-            vocoder_start = max(0, mel_total_frames - mel_new_frames - vocoder_context_frames)
-            mel_window = mel_prefix[vocoder_start:]
+            mel_window, vocoder_context_frames = mel_chunks.append(mel_new)
             wav_chunk_vocoder = self.vocoder.spec2wav(mel_window.cpu().numpy())
             hop = self.hparams["hop_size"]
             start_sample = vocoder_context_frames * hop
@@ -550,12 +578,15 @@ class StreamingVoiceConversion:
 
         if final_out is None:
             raise RuntimeError("Streaming inference produced no decoder output.")
-        mel_pred = torch.cat(mel_chunks, dim=0)
+        mel_pred = mel_chunks.full_sequence()
+        if mel_pred is None:
+            mel_pred = final_out["mel_out"][0]
         wav_pred = (
             np.concatenate(wav_chunks, axis=0)
             if len(wav_chunks) > 0
             else self.vocoder.spec2wav(mel_pred.cpu().numpy())
         )
+        estimated_runtime = build_streaming_latency_report(self.hparams, total_frames=int(total_frames))
         stream_meta = {
             "num_chunks": int(chunk_count),
             "tokens_per_chunk": int(seg),
@@ -563,6 +594,10 @@ class StreamingVoiceConversion:
             "wav_num_samples": int(len(wav_pred)),
             "vocoder_left_context_frames_effective": int(vocoder_left_context),
             "vocoder_left_context_source": str(self.vocoder_left_context_source),
+            "acoustic_prefix_recompute_multiplier": float(
+                cumulative_prefix_recompute_multiplier(chunk_count)
+            ),
+            "streaming_latency_report": estimated_runtime,
         }
         return wav_pred, mel_pred, final_out, stream_meta
 
@@ -570,6 +605,7 @@ class StreamingVoiceConversion:
         content_codes = self._extract_offline_content_codes(src_mel)
         out = self._run_model_from_content_codes(content_codes, runtime)
         mel_pred = out["mel_out"][0]
+        self.vocoder.reset_stream()
         wav_pred = self.vocoder.spec2wav(mel_pred.cpu().numpy())
         offline_meta = {
             "num_chunks": 1,

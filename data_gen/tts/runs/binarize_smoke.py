@@ -2,6 +2,12 @@ import argparse
 import os
 import numpy as np
 import importlib
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[3]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from utils.commons.hparams import set_hparams, hparams
 from utils.commons.indexed_datasets import IndexedDatasetBuilder
@@ -12,7 +18,7 @@ def _copy_aux_files(src_dir, dst_dir):
         return
     os.makedirs(dst_dir, exist_ok=True)
     for name in os.listdir(src_dir):
-        if name.endswith('_set.json') or name in {
+        if name.endswith('_set.json') or name.endswith('_map.json') or name in {
             'spker_set.json', 'phone_set.json', 'word_set.json', 'meta.json'
         }:
             src = os.path.join(src_dir, name)
@@ -50,7 +56,9 @@ def main():
     os.makedirs(hparams['binary_data_dir'], exist_ok=True)
     _copy_aux_files(hparams['processed_data_dir'], hparams['binary_data_dir'])
 
-    item_names = binarizer.item_names[:args.num_items]
+    item_names = list(getattr(binarizer, 'train_item_names', []))[:args.num_items]
+    if len(item_names) <= 0:
+        item_names = binarizer.item_names[:args.num_items]
     builder = IndexedDatasetBuilder(f"{hparams['binary_data_dir']}/train")
     lengths, spk_ids = [], []
 

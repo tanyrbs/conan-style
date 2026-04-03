@@ -20,6 +20,17 @@ class HifiGAN(BaseVocoder):
         self.model.to(self.device)
         self.model.eval()
 
+    def supports_native_streaming(self):
+        return False
+
+    def reset_stream(self):
+        return None
+
+    def spec2wav_stream(self, mel, **kwargs):
+        raise NotImplementedError(
+            "The shipped HifiGAN wrapper is stateless and does not expose native streaming inference."
+        )
+
     def spec2wav(self, mel, **kwargs):
         device = self.device
         with torch.no_grad():

@@ -79,10 +79,19 @@ class HifiGAN(BaseVocoder):
         self.stream_context = _resolve_vocoder_left_context_frames(hparams)
         self.reset_stream()
 
+    def supports_native_streaming(self):
+        return False
+
     def reset_stream(self):
         """Call before starting a new utterance to clear buffer"""
         # The number of mel bins is usually 80
         self.mel_buffer = np.zeros((self.stream_context, hparams['audio_num_mel_bins']), dtype=np.float32)
+
+    def spec2wav_stream(self, mel, **kwargs):
+        raise NotImplementedError(
+            "The shipped HifiGAN_NSF wrapper is still exposed as a stateless vocoder path and "
+            "does not provide a native streaming contract."
+        )
 
     def spec2wav(self, mel, **kwargs):
         device = self.device

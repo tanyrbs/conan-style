@@ -32,6 +32,46 @@ Notes:
 - split-reference / factorized research paths are no longer kept in this repo snapshot
 - online/offline streaming parity is expected to match in mel length and wav length
 
+## Streaming status on the shipped mainline
+
+The current Conan inference path is **streaming-oriented**, but it is **not** yet a fully native stateful
+end-to-end streaming stack:
+
+- Emformer front-end: stateful streaming
+- acoustic model: prefix recompute
+- vocoder: stateless window recompute
+
+That means the shipped path is suitable for streaming evaluation / instrumentation, while still preserving
+the original acoustic + vocoder behavior.
+
+### Theoretical latency report
+
+You can inspect the current theoretical latency and recompute budget without loading checkpoints:
+
+```bash
+python inference/run_streaming_latency_report.py
+python inference/run_streaming_latency_report.py --duration_seconds 5
+```
+
+The report surfaces:
+
+- mel-frame duration
+- chunk / right-context timing
+- first-packet algorithmic latency
+- steady-state vocoder window + recompute multiplier
+- cumulative acoustic prefix-recompute multiplier for an estimated duration
+
+### Runtime metadata
+
+`inference/Conan.py` now writes the following streaming metadata into each inference record:
+
+- `streaming_capabilities`
+- `streaming_latency_report`
+- `theoretical_first_packet_latency_ms`
+- `steady_state_vocoder_window_ms`
+- `steady_state_vocoder_recompute_multiplier`
+- `acoustic_prefix_recompute_multiplier`
+
 ## Verified inference fixes as of 2026-04-03
 
 - style-profile defaults now flow cleanly into runtime controls
@@ -43,6 +83,7 @@ Notes:
 - streaming prefix inference trims missing tail right-context correctly
 - online/offline parity checks now match on both mel length and wav sample length
 - `EmformerDistillModel` respects `emformer_mode` as the canonical config key
+- vocoder wrappers now expose an explicit streaming capability surface instead of silently implying native streaming support
 
 ## Runnable entrypoints
 

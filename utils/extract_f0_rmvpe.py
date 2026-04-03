@@ -2,11 +2,18 @@ import argparse
 import json
 import math
 import os
+import sys
+from pathlib import Path
 
 import librosa.core
 import numpy as np
 import torch
 from tqdm import tqdm
+import soundfile as sf
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 try:
     import pyworld as pw
@@ -67,6 +74,12 @@ def _estimate_total_duration(item):
         if isinstance(ph_durs, str):
             ph_durs = [float(x) for x in ph_durs.replace(',', ' ').split() if x != '']
         return float(np.sum(ph_durs))
+    wav_fn = item.get('wav_fn', None)
+    if wav_fn and os.path.exists(str(wav_fn)):
+        try:
+            return float(sf.info(str(wav_fn)).duration)
+        except Exception:
+            pass
     raise KeyError(
         f"Item '{item.get('item_name', '<unknown>')}' is missing duration/ph_durs metadata needed for batching."
     )

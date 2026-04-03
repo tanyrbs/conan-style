@@ -14,10 +14,17 @@ Mainline target:
 
 Only these two configs remain:
 
+- binarization: `egs/conan_binarize.yaml`
 - training: `egs/conan_emformer.yaml`
 - inference: `egs/conan_mainline_infer.yaml`
 
 Both are aligned to the same mainline semantics, including `style_profile: strong_style`.
+
+Config layering is now explicit:
+
+- `egs/egs_bases/conan/mainline_core.yaml`
+- `egs/egs_bases/conan/mainline_style_runtime.yaml`
+- `egs/egs_bases/conan/mainline_train.yaml`
 
 ## 3. Mainline contract
 
@@ -68,19 +75,21 @@ Current checked-in LibriTTS-single behavior:
 - binary `*_ref_indices.npy` use a stable hash, so reference pairing stays reproducible across Python processes
 - `VCBinarizer` owns the shared VC item path, while `ConanBinarizer` only adds cached offline `f0`
 - `EmformerBinarizer` is intentionally a thin subclass and no longer duplicates Conan item logic
+- condition artifact generation now comes from one path and emits aligned `*_map.json` + `*_set.json`
+- optional metadata shuffle no longer perturbs valid/test selection; it only shuffles the final train split order
 
 ## 5. Offline F0 extraction
 
-`egs/conan_emformer.yaml` uses `data_gen.conan_binarizer.ConanBinarizer`, so per-utterance offline F0 is required before binarization.
+`egs/conan_binarize.yaml` uses `data_gen.conan_binarizer.ConanBinarizer`, so per-utterance offline F0 is required before binarization.
 
 ```bash
-python utils/extract_f0_rmvpe.py --config egs/conan_emformer.yaml --pe-ckpt <path-to-rmvpe.pt> --batch-size 8 --max-tokens 40000
+python utils/extract_f0_rmvpe.py --config egs/conan_binarize.yaml --pe-ckpt <path-to-rmvpe.pt> --batch-size 8 --max-tokens 40000
 ```
 
 After F0 extraction, rebuild the binary dataset:
 
 ```bash
-$env:N_PROC='1'; python data_gen/tts/runs/binarize.py --config egs/conan_emformer.yaml
+$env:N_PROC='1'; python data_gen/tts/runs/binarize.py --config egs/conan_binarize.yaml
 ```
 
 ## 6. Training-prep gate
@@ -123,11 +132,18 @@ Short review-env smoke that was used during the latest audit:
 conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmokeCpu --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1,num_sanity_val_steps=0,max_updates=2,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[]"
 ```
 
+Real-data 500-step warm-start run used in this workspace:
+
+```bash
+python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainline500Cpu --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=500,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=200"
+```
+
 Notes:
 
 - keep shipped inference checkpoint entry `Conan` untouched
 - use a fresh experiment name for real training output
 - `max_updates` now stops exactly at the requested batch budget instead of overshooting by one step
+- task-side `load_ckpt` warm starts now default to non-strict loading, so older compatible Conan checkpoints can still seed current mainline smoke/fine-tune runs
 
 ## 7. Mainline inference / evaluation after training
 
@@ -145,6 +161,12 @@ python inference/run_style_profile_sweep.py   --sweep_config inference/conan_sty
 python inference/run_style_profile_evaluation.py   --sweep_dir infer_out_profiles/conan_mainline_demo
 
 python inference/run_style_profile_report.py   --sweep_dir infer_out_profiles/conan_mainline_demo
+```
+
+Streaming latency instrumentation:
+
+```bash
+python inference/run_streaming_latency_report.py
 ```
 
 ## 8. Verified implementation notes as of 2026-04-03
@@ -169,6 +191,9 @@ python inference/run_style_profile_report.py   --sweep_dir infer_out_profiles/co
   - `inference/conan_request.py` as the single source of truth for canonical inference request schema helpers
 - these internal modules do not add new public knobs; they only reduce duplicated glue code and contract drift
 - streaming inference tail trimming has been aligned with offline decoding, so online/offline mel and wav lengths now match on parity checks
+- streaming runtime math / latency reporting is now centralized in `inference/streaming_runtime.py`
+- shipped vocoder wrappers now expose an explicit non-native-streaming capability surface
+- `utils/extract_f0_rmvpe.py` now boots from the repo root, accepts raw RMVPE state-dict checkpoints, and can batch even when metadata lacks explicit duration fields
 - `EmformerDistillModel` now reads `emformer_mode` correctly instead of only the legacy `mode` key
 - Emformer distillation train / infer / validation paths now align targets to the actual streamed-logit length
 
@@ -189,3 +214,4 @@ Retained on purpose:
 - Conan mainline inference path
 - canonical prep gate
 - configured Conan / Emformer / vocoder checkpoint paths (actual large checkpoint binaries may be omitted from lightweight review archives)
+- streaming latency note: `docs/streaming_low_latency_mainline_note_20260403.md`

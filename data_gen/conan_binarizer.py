@@ -135,15 +135,6 @@ def _coerce_float(value, default=0.0):
         return float(default)
 
 
-def _coerce_int(value, default=0):
-    if value is None:
-        return int(default)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return int(default)
-
-
 def _coerce_1d_float_array(value):
     if value is None:
         return None
@@ -174,6 +165,62 @@ def _item_name_speaker_key(item_name):
 def _stable_bucket_seed(value):
     digest = hashlib.sha1(str(value).encode("utf-8")).hexdigest()
     return int(digest[:16], 16)
+
+
+def _normalize_prefixes(prefixes):
+    normalized = []
+    for prefix in prefixes or []:
+        prefix = str(prefix).strip()
+        if prefix != "":
+            normalized.append(prefix)
+    return normalized
+
+
+def _match_by_speaker_prefix(item_names, prefixes):
+    prefix_set = set(_normalize_prefixes(prefixes))
+    if len(prefix_set) <= 0:
+        return []
+    return [name for name in item_names if _item_name_speaker_key(name) in prefix_set]
+
+
+def _fallback_holdout_by_speaker(
+        item_names,
+        *,
+        valid_item_names=None,
+        test_item_names=None,
+        fallback_valid_items_per_speaker=2,
+        fallback_test_items_per_speaker=2):
+    from collections import defaultdict
+
+    per_speaker = defaultdict(list)
+    for name in item_names:
+        per_speaker[_item_name_speaker_key(name)].append(name)
+
+    reserved_valid = set(valid_item_names or [])
+    reserved_test = set(test_item_names or [])
+    used = reserved_valid | reserved_test
+
+    fallback_valid = max(1, int(fallback_valid_items_per_speaker))
+    fallback_test = max(1, int(fallback_test_items_per_speaker))
+
+    for _, speaker_items in sorted(per_speaker.items()):
+        speaker_items = sorted(speaker_items)
+        available = [name for name in speaker_items if name not in used]
+        if len(available) <= 2:
+            continue
+
+        test_take = min(fallback_test, max(0, len(available) - 2))
+        speaker_test = available[:test_take]
+        reserved_test.update(speaker_test)
+        used.update(speaker_test)
+        available = available[test_take:]
+
+        valid_take = min(fallback_valid, max(0, len(available) - 1))
+        speaker_valid = available[:valid_take]
+        reserved_valid.update(speaker_valid)
+        used.update(speaker_valid)
+
+    return sorted(reserved_valid - reserved_test), sorted(reserved_test)
 
 
 CONDITION_FIELDS = ("emotion", "style", "accent")
@@ -264,15 +311,27 @@ class VCBinarizer(ConanBaseBinarizer):
             return cls._condition_maps
         condition_maps = {}
         for field in CONDITION_FIELDS:
-            vocab = ["<UNK>"]
+            field_map = None
             for candidate_dir in [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")]:
                 if not candidate_dir:
                     continue
-                candidate = os.path.join(candidate_dir, f"{field}_set.json")
-                if os.path.exists(candidate):
-                    vocab = json.load(open(candidate))
+                map_candidate = os.path.join(candidate_dir, f"{field}_map.json")
+                if os.path.exists(map_candidate):
+                    field_map = {
+                        str(label): int(idx)
+                        for label, idx in json.load(open(map_candidate, encoding="utf-8")).items()
+                    }
                     break
-            condition_maps[field] = {str(v): idx for idx, v in enumerate(vocab)}
+                set_candidate = os.path.join(candidate_dir, f"{field}_set.json")
+                if os.path.exists(set_candidate):
+                    vocab = json.load(open(set_candidate, encoding="utf-8"))
+                    field_map = {
+                        str(label): idx
+                        for idx, label in enumerate(vocab)
+                        if label not in (None, "")
+                    }
+                    break
+            condition_maps[field] = field_map or {}
         cls._condition_maps = condition_maps
         cls._condition_maps_key = cache_key
         return condition_maps
@@ -289,7 +348,7 @@ class VCBinarizer(ConanBaseBinarizer):
         if isinstance(raw_value, (int, np.integer)):
             return int(raw_value)
         condition_maps = cls._load_condition_maps()
-        return int(condition_maps.get(field, {}).get(str(raw_value), 0))
+        return int(condition_maps.get(field, {}).get(str(raw_value), -1))
 
     @classmethod
     def _resolve_speaker_id(cls, item_name):
@@ -300,6 +359,30 @@ class VCBinarizer(ConanBaseBinarizer):
                 f"[{cls.__name__}] Speaker key '{speaker_key}' for {item_name} is missing from spker_set.json."
             )
         return int(spker_map[speaker_key])
+
+    @staticmethod
+    def _register_condition_label(field, label_to_id, id_to_label, label, idx):
+        label = str(label)
+        idx = int(idx)
+        prev_idx = label_to_id.get(label, None)
+        if prev_idx is not None and int(prev_idx) != idx:
+            raise BinarizationError(
+                f"Conflicting {field} ids for label '{label}': {prev_idx} vs {idx}"
+            )
+        prev_label = id_to_label.get(idx, None)
+        if prev_label is not None and str(prev_label) != label:
+            raise BinarizationError(
+                f"Conflicting {field} labels for id {idx}: '{prev_label}' vs '{label}'"
+            )
+        label_to_id[label] = idx
+        id_to_label[idx] = label
+
+    @staticmethod
+    def _next_available_condition_id(used_ids):
+        next_id = 0
+        while next_id in used_ids:
+            next_id += 1
+        return next_id
 
     @staticmethod
     def _resolve_optional_label(item, base_key):
@@ -339,102 +422,87 @@ class VCBinarizer(ConanBaseBinarizer):
             f'No metadata file found in {self.processed_data_dir}. Tried: {candidates}'
         )
 
-    def _normalize_control_metadata(self, items_list):
-        label_specs = ('emotion', 'style', 'accent')
-        string_values = {key: [] for key in label_specs}
-        for item in items_list:
-            for key in label_specs:
-                raw_value, raw_name = self._resolve_optional_label(item, key)
+    def _prepare_condition_metadata(self, items_list):
+        condition_maps = {}
+        condition_sets = {}
+        for field in CONDITION_FIELDS:
+            label_to_id = {}
+            id_to_label = {}
+            pending_labels = []
+
+            for item in items_list:
+                raw_value, raw_name = self._resolve_optional_label(item, field)
+                if raw_value is None:
+                    continue
+                resolved_label = str(raw_name) if raw_name is not None else None
                 if isinstance(raw_value, str):
-                    string_values[key].append(raw_name)
+                    pending_labels.append(resolved_label or str(raw_value))
+                    continue
+                explicit_id = int(raw_value)
+                self._register_condition_label(
+                    field,
+                    label_to_id,
+                    id_to_label,
+                    resolved_label or str(explicit_id),
+                    explicit_id,
+                )
 
-        label_maps = {}
-        for key in label_specs:
-            uniq_names = sorted(set(string_values[key]))
-            if len(uniq_names) > 0:
-                label_maps[key] = {name: idx for idx, name in enumerate(uniq_names)}
+            for label in sorted(set(pending_labels)):
+                if label in label_to_id:
+                    continue
+                assigned_id = self._next_available_condition_id(set(id_to_label.keys()))
+                self._register_condition_label(field, label_to_id, id_to_label, label, assigned_id)
 
-        for item in items_list:
-            for key in label_specs:
-                raw_value, raw_name = self._resolve_optional_label(item, key)
+            for item in items_list:
+                raw_value, raw_name = self._resolve_optional_label(item, field)
                 if raw_value is None:
                     continue
                 if isinstance(raw_value, str):
-                    item[f'{key}_id'] = label_maps[key][raw_name]
-                    item[f'{key}_name'] = raw_name
-                    item[key] = raw_name
+                    resolved_label = str(raw_name) if raw_name is not None else str(raw_value)
+                    assigned_id = label_to_id[resolved_label]
                 else:
-                    item[f'{key}_id'] = int(raw_value)
-                    item[f'{key}_name'] = raw_name if raw_name is not None else str(raw_value)
-                    item[key] = item[f'{key}_name']
-                strength_key = f'{key}_strength'
+                    assigned_id = int(raw_value)
+                    resolved_label = str(raw_name) if raw_name is not None else id_to_label[assigned_id]
+                item[f'{field}_id'] = int(assigned_id)
+                item[f'{field}_name'] = resolved_label
+                item[field] = resolved_label
+                strength_key = f'{field}_strength'
                 if strength_key in item and item[strength_key] not in (None, ''):
                     item[strength_key] = float(item[strength_key])
+
+            max_id = max(id_to_label.keys(), default=-1)
+            vocab = [None] * (max_id + 1)
+            for idx, label in id_to_label.items():
+                vocab[int(idx)] = str(label)
+            condition_maps[field] = {
+                str(label): int(idx)
+                for label, idx in sorted(label_to_id.items(), key=lambda kv: (int(kv[1]), str(kv[0])))
+            }
+            condition_sets[field] = vocab
+
+        for item in items_list:
             if 'energy' in item and isinstance(item['energy'], str):
                 item['energy'] = [float(x) for x in item['energy'].split()]
-        return label_maps
+        return condition_maps, condition_sets
 
     def split_train_test_set(self, item_names):
-        item_names = sorted(deepcopy(item_names))
+        deterministic_item_names = sorted(deepcopy(item_names))
+        valid_prefixes = _normalize_prefixes(hparams.get('valid_prefixes', []))
+        test_prefixes = _normalize_prefixes(hparams.get('test_prefixes', []))
 
-        def _speaker_token(name):
-            return _item_name_speaker_key(name)
-
-        def _normalize_prefixes(prefixes):
-            normalized = []
-            for prefix in prefixes or []:
-                prefix = str(prefix).strip()
-                if prefix != "":
-                    normalized.append(prefix)
-            return normalized
-
-        def _match_by_speaker_prefix(names, prefixes):
-            prefix_set = set(_normalize_prefixes(prefixes))
-            if len(prefix_set) <= 0:
-                return []
-            return [name for name in names if _speaker_token(name) in prefix_set]
-
-        test_item_names = _match_by_speaker_prefix(item_names, hparams.get('test_prefixes', []))
-        valid_item_names = _match_by_speaker_prefix(item_names, hparams.get('valid_prefixes', []))
+        test_item_names = _match_by_speaker_prefix(deterministic_item_names, test_prefixes)
+        valid_item_names = _match_by_speaker_prefix(deterministic_item_names, valid_prefixes)
 
         fallback_needed = len(valid_item_names) <= 0 or len(test_item_names) <= 0
         if fallback_needed:
-            from collections import defaultdict
-
-            per_speaker = defaultdict(list)
-            for name in item_names:
-                per_speaker[_speaker_token(name)].append(name)
-
-            fallback_valid = max(1, int(hparams.get('fallback_valid_items_per_speaker', 2)))
-            fallback_test = max(1, int(hparams.get('fallback_test_items_per_speaker', 2)))
-
-            reserved_valid = set(valid_item_names)
-            reserved_test = set(test_item_names)
-            used = reserved_valid | reserved_test
-
-            for _, speaker_items in sorted(per_speaker.items()):
-                speaker_items = sorted(speaker_items)
-                available = [name for name in speaker_items if name not in used]
-                if len(available) <= 2:
-                    continue
-
-                test_take = min(fallback_test, max(0, len(available) - 2))
-                speaker_test = available[:test_take]
-                reserved_test.update(speaker_test)
-                used.update(speaker_test)
-                available = available[test_take:]
-
-                valid_take = min(fallback_valid, max(0, len(available) - 1))
-                speaker_valid = available[:valid_take]
-                reserved_valid.update(speaker_valid)
-                used.update(speaker_valid)
-
-            test_item_names = sorted(reserved_test)
-            valid_item_names = sorted(reserved_valid - reserved_test)
-            has_configured_prefixes = bool(_normalize_prefixes(hparams.get('valid_prefixes', []))) or bool(
-                _normalize_prefixes(hparams.get('test_prefixes', []))
+            valid_item_names, test_item_names = _fallback_holdout_by_speaker(
+                deterministic_item_names,
+                valid_item_names=valid_item_names,
+                test_item_names=test_item_names,
+                fallback_valid_items_per_speaker=hparams.get('fallback_valid_items_per_speaker', 2),
+                fallback_test_items_per_speaker=hparams.get('fallback_test_items_per_speaker', 2),
             )
-            log_fn = logging.warning if has_configured_prefixes else logging.info
+            log_fn = logging.warning if valid_prefixes or test_prefixes else logging.info
             log_fn(
                 "Using deterministic per-speaker utterance holdout for valid/test splits. "
                 f"valid={len(valid_item_names)}, test={len(test_item_names)}"
@@ -442,7 +510,13 @@ class VCBinarizer(ConanBaseBinarizer):
 
         test_set = set(test_item_names)
         valid_set = set(valid_item_names)
-        train_item_names = [x for x in item_names if x not in test_set and x not in valid_set]
+        train_item_names = [
+            name for name in deterministic_item_names
+            if name not in test_set and name not in valid_set
+        ]
+        if self.binarization_args.get('shuffle', False):
+            random.seed(1234)
+            random.shuffle(train_item_names)
 
         logging.info(f"train {len(train_item_names)}")
         logging.info(f"valid {len(valid_item_names)}")
@@ -453,44 +527,31 @@ class VCBinarizer(ConanBaseBinarizer):
     def load_meta_data(self):
         metadata_path = self._metadata_path()
         items_list = json.load(open(metadata_path, encoding='utf-8'))
-        self.label_maps = self._normalize_control_metadata(items_list)
+        self.label_maps, self.condition_sets = self._prepare_condition_metadata(items_list)
         for r in tqdm(items_list, desc='Loading meta data.'):
             item_name = r['item_name']
             self.items[item_name] = r
             self.item_names.append(item_name)
-        if self.binarization_args['shuffle']:
-            random.seed(1234)
-            random.shuffle(self.item_names)
-        self._write_condition_maps(items_list)
-        self._train_item_names, self._test_item_names,self._valid_item_names = self.split_train_test_set(self.item_names)
+        self._write_condition_artifacts()
+        self._train_item_names, self._test_item_names, self._valid_item_names = self.split_train_test_set(self.item_names)
 
-    def _write_condition_maps(self, items_list):
-        os.makedirs(hparams['binary_data_dir'], exist_ok=True)
-        for field, mapping in self.label_maps.items():
-            map_path = os.path.join(hparams['binary_data_dir'], f"{field}_map.json")
-            json.dump(mapping, open(map_path, "w", encoding='utf-8'), ensure_ascii=False, indent=2)
-        for field in CONDITION_FIELDS:
-            raw_values = []
-            for item in items_list:
-                value = item.get(f"{field}_name", item.get(field, None))
-                if value is None:
-                    continue
-                if isinstance(value, str):
-                    value = value.strip()
-                    if value == "":
-                        continue
-                raw_values.append(value)
-            if not raw_values:
-                vocab = ["<UNK>"]
-            elif all(isinstance(v, (int, np.integer)) for v in raw_values):
-                max_id = int(max(raw_values))
-                vocab = [str(i) for i in range(max_id + 1)]
-            else:
-                normalized = sorted({str(v) for v in raw_values})
-                vocab = ["<UNK>"] + normalized
-            for target_dir in {self.processed_data_dir, hparams['binary_data_dir']}:
-                os.makedirs(target_dir, exist_ok=True)
-                json.dump(vocab, open(os.path.join(target_dir, f"{field}_set.json"), "w"), ensure_ascii=False, indent=2)
+    def _write_condition_artifacts(self):
+        target_dirs = {self.processed_data_dir, hparams['binary_data_dir']}
+        for target_dir in target_dirs:
+            os.makedirs(target_dir, exist_ok=True)
+            for field in CONDITION_FIELDS:
+                json.dump(
+                    self.label_maps.get(field, {}),
+                    open(os.path.join(target_dir, f"{field}_map.json"), "w", encoding='utf-8'),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                json.dump(
+                    self.condition_sets.get(field, []),
+                    open(os.path.join(target_dir, f"{field}_set.json"), "w", encoding='utf-8'),
+                    ensure_ascii=False,
+                    indent=2,
+                )
 
     @property
     def train_item_names(self):

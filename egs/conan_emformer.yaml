@@ -169,6 +169,9 @@ content_vocab_size: 102
 content_padding_idx: 101
 reference_contract_mode: collapsed_reference  # mainline training contract = single-reference weak internal factorization
 decoder_style_condition_mode: mainline_full
+upper_bound_curriculum_enabled: true
+upper_bound_curriculum_start_steps: 20000
+upper_bound_curriculum_end_steps: 80000
 style_trace_mode: dual
 style_reference_memory_mode: slow
 fast_style_strength_scale: 1.10

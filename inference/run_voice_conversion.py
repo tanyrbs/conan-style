@@ -16,37 +16,13 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from inference.Conan import StreamingVoiceConversion
+from inference.conan_request import build_mainline_request_input, has_distinct_split_reference_inputs
 from utils.audio.io import save_wav
 from utils.commons.hparams import hparams, set_hparams
 
 CANONICAL_CONFIG = "egs/conan_mainline_infer.yaml"
 CANONICAL_EXP_NAME = "Conan"
 DEFAULT_PAIR_CONFIG = "inference/conan_single_reference_demo.example.json"
-
-PUBLIC_CONTROL_KEYS = (
-    "style_profile",
-    "style_strength",
-)
-
-ADVANCED_CONTROL_KEYS = (
-    "emotion",
-    "emotion_id",
-    "emotion_strength",
-    "accent",
-    "accent_id",
-    "accent_strength",
-    "arousal",
-    "valence",
-    "energy",
-)
-
-SPLIT_REFERENCE_KEYS = (
-    "ref_timbre_wav",
-    "ref_style_wav",
-    "ref_dynamic_timbre_wav",
-    "ref_emotion_wav",
-    "ref_accent_wav",
-)
 
 
 def parse_args():
@@ -124,11 +100,6 @@ class VoiceConversionRunner:
         print(f"Output directory: {resolved_output_dir}")
         return resolved_output_dir
 
-    @staticmethod
-    def _has_distinct_split_refs(pair):
-        ref_wav = pair.get("ref_wav")
-        return any(pair.get(key) not in (None, "", ref_wav) for key in SPLIT_REFERENCE_KEYS)
-
     def _validate_conversion_pair(self, pair, pair_idx):
         if not isinstance(pair, dict):
             raise TypeError(f"Pair {pair_idx} must be a JSON object, got {type(pair).__name__}.")
@@ -164,35 +135,26 @@ class VoiceConversionRunner:
         return normalized, output_path
 
     def _build_infer_input(self, pair):
-        if pair.get("allow_split_reference_inputs") or self._has_distinct_split_refs(pair):
+        if pair.get("allow_split_reference_inputs") or has_distinct_split_reference_inputs(pair):
             raise ValueError(
                 "run_voice_conversion.py is the canonical single-reference Conan runner and "
                 "does not accept split reference inputs. Use only ref_wav on the mainline path."
             )
-        inp = {
-            "ref_wav": pair["ref_wav"],
-            "src_wav": pair["src_wav"],
-        }
-        for key in PUBLIC_CONTROL_KEYS:
-            if pair.get(key) is not None:
-                inp[key] = pair[key]
         allow_advanced_controls = bool(
             pair.get("allow_advanced_controls", self.allow_advanced_controls)
         )
-        if allow_advanced_controls:
-            for key in ADVANCED_CONTROL_KEYS:
-                if pair.get(key) is not None:
-                    inp[key] = pair[key]
-        else:
-            ignored_advanced_keys = [key for key in ADVANCED_CONTROL_KEYS if pair.get(key) is not None]
-            if ignored_advanced_keys and not self._advanced_control_warning_emitted:
-                warnings.warn(
-                    "Ignoring advanced non-mainline control keys in run_voice_conversion.py: "
-                    f"{ignored_advanced_keys}. Set allow_advanced_controls=true in the manifest "
-                    "only for explicit research/ablation runs.",
-                    stacklevel=2,
-                )
-                self._advanced_control_warning_emitted = True
+        inp, ignored_advanced_keys = build_mainline_request_input(
+            pair,
+            allow_advanced_controls=allow_advanced_controls,
+        )
+        if ignored_advanced_keys and not self._advanced_control_warning_emitted:
+            warnings.warn(
+                "Ignoring advanced non-mainline control keys in run_voice_conversion.py: "
+                f"{ignored_advanced_keys}. Set allow_advanced_controls=true in the manifest "
+                "only for explicit research/ablation runs.",
+                stacklevel=2,
+            )
+            self._advanced_control_warning_emitted = True
         return inp
 
     def run_single_conversion(self, pair, pair_idx):

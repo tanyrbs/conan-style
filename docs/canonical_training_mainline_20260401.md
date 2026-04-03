@@ -33,6 +33,20 @@ Training / inference stay locked to:
 - `global_timbre_to_pitch: false`
 - `allow_split_reference_inputs: false`
 
+Canonical training also keeps the aggressive upper-bound modules behind one shared curriculum:
+
+- `upper_bound_curriculum_enabled: true`
+- `upper_bound_curriculum_start_steps: 20000`
+- `upper_bound_curriculum_end_steps: 80000`
+
+This gates:
+
+- the fast style branch inside dual trace
+- the TVT dynamic timbre path
+- the bounded style-to-pitch residual range
+
+Inference always uses the fully opened ceiling.
+
 Canonical control regularization stays on the 4-loss pack:
 
 - `lambda_output_identity_cosine`
@@ -67,6 +81,10 @@ Expected result:
 
 This prep gate now also checks that style-profile defaults really control mainline runtime strengths instead of silently falling back to neutral values.
 
+It also checks that the upper-bound curriculum is enabled, lands on the expected progress points, and stays aligned with forcing / reference curriculum timing.
+
+It also samples real training data to make sure dynamic-timbre boundary suppression is not degenerating into an all-ones global mask on dense unit sequences.
+
 It also checks that binary train / valid / test splits exist and are non-empty.
 
 ## 6. Real training command
@@ -75,10 +93,17 @@ It also checks that binary train / valid / test splits exist and are non-empty.
 python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTrain
 ```
 
+Exact-step real-data smoke command:
+
+```bash
+python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineSmoke --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=100000,num_sanity_val_steps=0,max_updates=1,save_codes=[]"
+```
+
 Notes:
 
 - keep shipped inference checkpoint entry `Conan` untouched
 - use a fresh experiment name for real training output
+- `max_updates` now stops exactly at the requested batch budget instead of overshooting by one step
 
 ## 7. Mainline inference / evaluation after training
 
@@ -102,8 +127,21 @@ python inference/run_style_profile_report.py   --sweep_dir infer_out_profiles/co
 
 - canonical mainline uses `lambda_pitch_residual_safe`; `lambda_dynamic_timbre_boundary` remains `0.0`
 - requested vs effective `style_strength` is now surfaced explicitly, so clamp events are observable
+- resolved mainline controls now remain authoritative for TVT prior/runtime flags and pitch-residual scale / semitone / smoothing
 - `style_to_pitch_residual` is style-led on the shipped path; dynamic timbre is not allowed to enter that residual unless a research override is enabled
+- fast style / TVT timbre / pitch residual no longer start fully open at step 0; they share one `20000 -> 80000` upper-bound curriculum during training
+- dynamic timbre now uses a unified residual semantic on both TVT and non-TVT paths (`local_delta` relative to the global timbre anchor)
+- dynamic-timbre boundary suppression now detects dense HuBERT-like unit streams and avoids turning token-transition boundaries into a global mask
 - `style_to_pitch_residual` smoothing is applied after projection onto the final pitch canvas and is mask-aware
+- runtime maintainability is now explicitly layered:
+  - `modules/Conan/common_utils.py` for shared helper resolution / sequence expansion
+  - `modules/Conan/pitch_canvas_utils.py` for pitch-canvas runtime semantics
+  - `modules/Conan/decoder_style_runtime.py` for decoder style bundle contract assembly
+- layer-2 maintainability refactor now also keeps:
+  - `modules/Conan/pitch_runtime.py` as the mixin layer for pitch generation + style-to-pitch runtime logic
+  - `modules/Conan/common.py` as the single source of truth for lightweight mapping lookup helpers
+  - `inference/conan_request.py` as the single source of truth for canonical inference request schema helpers
+- these internal modules do not add new public knobs; they only reduce duplicated glue code and contract drift
 - streaming inference tail trimming has been aligned with offline decoding, so online/offline mel and wav lengths now match on parity checks
 - `EmformerDistillModel` now reads `emformer_mode` correctly instead of only the legacy `mode` key
 - Emformer distillation train / infer / validation paths now align targets to the actual streamed-logit length

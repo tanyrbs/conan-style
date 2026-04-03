@@ -5,15 +5,20 @@ import json
 import os
 import numpy as np
 import sys
+import torch
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from modules.Conan.style_mainline import resolve_style_mainline_controls
+from modules.Conan.style_mainline import (
+    resolve_expressive_upper_bound_progress,
+    resolve_style_mainline_controls,
+)
 from modules.Conan.style_profiles import resolve_style_profile
 from modules.Conan.reference_bundle import build_control_kwargs, build_style_runtime_kwargs
+from modules.Conan.dynamic_timbre_control import build_dynamic_timbre_boundary_mask
 from tasks.Conan.dataset import ConanDataset
 from tasks.Conan.control_schedule import (
     MAINLINE_MINIMAL_CONTROL_LAMBDAS,
@@ -196,6 +201,7 @@ def run_prep(args):
             "style_profile": hparams.get("style_profile", "strong_style"),
             "style_trace_mode": hparams.get("style_trace_mode", None),
             "style_strength": hparams.get("style_strength", None),
+            "style_temperature": hparams.get("style_temperature", None),
             "style_to_pitch_residual_include_timbre": hparams.get(
                 "style_to_pitch_residual_include_timbre",
                 None,
@@ -203,12 +209,18 @@ def run_prep(args):
             "global_style_trace_blend": hparams.get("global_style_trace_blend", None),
             "style_query_global_summary_scale": hparams.get("style_query_global_summary_scale", None),
             "dynamic_timbre_style_condition_scale": hparams.get("dynamic_timbre_style_condition_scale", None),
+            "dynamic_timbre_temperature": hparams.get("dynamic_timbre_temperature", None),
             "dynamic_timbre_coarse_style_context_scale": hparams.get(
                 "dynamic_timbre_coarse_style_context_scale",
                 None,
             ),
             "dynamic_timbre_query_style_condition_scale": hparams.get(
                 "dynamic_timbre_query_style_condition_scale",
+                None,
+            ),
+            "dynamic_timbre_use_tvt": hparams.get("dynamic_timbre_use_tvt", None),
+            "dynamic_timbre_tvt_prior_scale": hparams.get(
+                "dynamic_timbre_tvt_prior_scale",
                 None,
             ),
             "runtime_dynamic_timbre_style_budget_enabled": hparams.get(
@@ -231,8 +243,13 @@ def run_prep(args):
         preset=hparams.get("style_profile", "strong_style"),
     )
     regularization = resolve_control_regularization_config(hparams, global_step=0)
+    upper_bound_preview_0 = resolve_expressive_upper_bound_progress(0, hparams=hparams)
+    upper_bound_preview_20000 = resolve_expressive_upper_bound_progress(20000, hparams=hparams)
+    upper_bound_preview_50000 = resolve_expressive_upper_bound_progress(50000, hparams=hparams)
+    upper_bound_preview_80000 = resolve_expressive_upper_bound_progress(80000, hparams=hparams)
     batch_controls = None
     batch_controls_error = None
+    boundary_preview = []
     try:
         train_dataset = ConanDataset(prefix="train", shuffle=False)
         if len(train_dataset) > 0:
@@ -242,6 +259,45 @@ def run_prep(args):
             batch_kwargs.update(build_control_kwargs(batch))
             batch_kwargs.update(build_style_runtime_kwargs(batch))
             batch_controls = resolve_style_mainline_controls(batch_kwargs, hparams=hparams)
+            preview_count = min(5, len(train_dataset))
+            content_padding_idx = int(hparams.get("content_padding_idx", 101))
+            silent_token = hparams.get("silent_token", None)
+            boundary_radius = int(hparams.get("dynamic_timbre_boundary_radius", 2))
+            for preview_idx in range(preview_count):
+                preview_sample = train_dataset[preview_idx]
+                content = preview_sample["content"].unsqueeze(0)
+                padding_mask = content.eq(content_padding_idx)
+                boundary_mask, boundary_meta = build_dynamic_timbre_boundary_mask(
+                    content,
+                    padding_mask=padding_mask,
+                    padding_idx=content_padding_idx,
+                    silent_token=silent_token,
+                    radius=boundary_radius,
+                    return_metadata=True,
+                )
+                valid = (~padding_mask).float()
+                valid_count = float(valid.sum().item())
+                if valid_count > 0 and isinstance(boundary_mask, torch.Tensor):
+                    boundary_coverage = float(
+                        ((boundary_mask.squeeze(-1) * valid).sum() / valid.sum().clamp_min(1.0)).item()
+                    )
+                else:
+                    boundary_coverage = None
+                transition_rate = boundary_meta.get("transition_rate") if isinstance(boundary_meta, dict) else None
+                dense_units = boundary_meta.get("dense_units_detected") if isinstance(boundary_meta, dict) else None
+                boundary_preview.append(
+                    {
+                        "idx": int(preview_idx),
+                        "length": int(valid_count),
+                        "boundary_coverage": boundary_coverage,
+                        "transition_rate": (
+                            float(transition_rate[0].item()) if transition_rate is not None else None
+                        ),
+                        "dense_units_detected": (
+                            bool(dense_units[0].item()) if dense_units is not None else None
+                        ),
+                    }
+                )
         else:
             batch_controls_error = "empty_train_dataset"
     except Exception as exc:  # pragma: no cover - surfaced through prep output
@@ -307,29 +363,98 @@ def run_prep(args):
         resolved_profile.get("style_profile_track", resolved_profile.get("track")),
         "mainline",
     )
+    _check_equal(
+        checks,
+        "style_profile",
+        hparams.get("style_profile", "strong_style"),
+        "strong_style",
+    )
     _check_close(
         checks,
         "style_profile_controls_style_strength",
         controls.style_strength,
-        resolved_profile.get("style_strength", controls.style_strength),
+        resolved_profile.get("style_strength", 1.35),
+        tol=1e-6,
     )
     _check_close(
         checks,
         "style_profile_controls_dynamic_timbre_strength",
         controls.dynamic_timbre_strength,
         resolved_profile.get("dynamic_timbre_strength", controls.dynamic_timbre_strength),
+        tol=1e-6,
     )
     _check_close(
         checks,
         "style_profile_controls_style_temperature",
         controls.style_temperature,
-        resolved_profile.get("style_temperature", controls.style_temperature),
+        resolved_profile.get("style_temperature", 1.2),
+        tol=1e-6,
     )
     _check_close(
         checks,
         "style_profile_controls_dynamic_timbre_temperature",
         controls.dynamic_timbre_temperature,
-        resolved_profile.get("dynamic_timbre_temperature", controls.dynamic_timbre_temperature),
+        resolved_profile.get("dynamic_timbre_temperature", 1.0),
+        tol=1e-6,
+    )
+    _check_equal(
+        checks,
+        "style_profile_controls_dynamic_timbre_use_tvt",
+        bool(controls.dynamic_timbre_use_tvt),
+        bool(resolved_profile.get("dynamic_timbre_use_tvt", True)),
+    )
+    _check_close(
+        checks,
+        "style_profile_controls_dynamic_timbre_tvt_prior_scale",
+        controls.dynamic_timbre_tvt_prior_scale,
+        resolved_profile.get("dynamic_timbre_tvt_prior_scale", 1.0),
+        tol=1e-6,
+    )
+    _check_equal(
+        checks,
+        "upper_bound_curriculum_enabled",
+        bool(hparams.get("upper_bound_curriculum_enabled", True)),
+        True,
+    )
+    _check_close(
+        checks,
+        "upper_bound_curriculum_start_steps",
+        hparams.get("upper_bound_curriculum_start_steps", 20000),
+        20000,
+    )
+    _check_close(
+        checks,
+        "upper_bound_curriculum_end_steps",
+        hparams.get("upper_bound_curriculum_end_steps", 80000),
+        80000,
+    )
+    _check_close(
+        checks,
+        "upper_bound_progress_step_0",
+        upper_bound_preview_0,
+        0.0,
+        tol=1e-6,
+    )
+    _check_close(
+        checks,
+        "upper_bound_progress_step_20000",
+        upper_bound_preview_20000,
+        0.0,
+        tol=1e-6,
+    )
+    _check_close(
+        checks,
+        "upper_bound_progress_step_50000",
+        upper_bound_preview_50000,
+        0.5,
+        tol=1e-6,
+    )
+    _check_close(
+        checks,
+        "upper_bound_progress_step_80000",
+        upper_bound_preview_80000,
+        1.0,
+        tol=1e-6,
     )
     _check_true(
         checks,
@@ -338,6 +463,29 @@ def run_prep(args):
         actual=batch_controls_error if batch_controls is None else "resolved",
         expected="resolved",
     )
+    preview_coverages = [
+        float(item["boundary_coverage"])
+        for item in boundary_preview
+        if item.get("boundary_coverage") is not None
+    ]
+    _check_true(
+        checks,
+        "dynamic_timbre_boundary_preview_available",
+        len(preview_coverages) > 0,
+        actual=len(preview_coverages),
+        expected="> 0",
+    )
+    if preview_coverages:
+        _check_true(
+            checks,
+            "dynamic_timbre_boundary_not_global_on_real_data",
+            float(max(preview_coverages)) < 0.50,
+            actual={
+                "max_boundary_coverage": float(max(preview_coverages)),
+                "mean_boundary_coverage": float(sum(preview_coverages) / len(preview_coverages)),
+            },
+            expected="max_boundary_coverage < 0.50 on sampled real-data batches",
+        )
     if batch_controls is not None:
         _check_close(
             checks,
@@ -364,6 +512,21 @@ def run_prep(args):
             "train_batch_dynamic_timbre_temperature_matches_profile",
             batch_controls.dynamic_timbre_temperature,
             resolved_profile.get("dynamic_timbre_temperature", batch_controls.dynamic_timbre_temperature),
+        )
+        _check_equal(
+            checks,
+            "train_batch_dynamic_timbre_use_tvt_matches_profile",
+            bool(batch_controls.dynamic_timbre_use_tvt),
+            bool(resolved_profile.get("dynamic_timbre_use_tvt", batch_controls.dynamic_timbre_use_tvt)),
+        )
+        _check_close(
+            checks,
+            "train_batch_dynamic_timbre_tvt_prior_scale_matches_profile",
+            batch_controls.dynamic_timbre_tvt_prior_scale,
+            resolved_profile.get(
+                "dynamic_timbre_tvt_prior_scale",
+                batch_controls.dynamic_timbre_tvt_prior_scale,
+            ),
         )
     _check_close(
         checks,
@@ -521,6 +684,28 @@ def run_prep(args):
         actual={"forcing_decay_end_steps": forcing_end, "reference_curriculum_end_steps": reference_end},
         expected="forcing_decay_end_steps <= reference_curriculum_end_steps",
     )
+    upper_bound_start = int(hparams.get("upper_bound_curriculum_start_steps", 20000))
+    upper_bound_end = int(hparams.get("upper_bound_curriculum_end_steps", 80000))
+    _check_true(
+        checks,
+        "upper_bound_curriculum_starts_no_earlier_than_forcing_decay",
+        upper_bound_start >= forcing_start,
+        actual={
+            "upper_bound_curriculum_start_steps": upper_bound_start,
+            "forcing_decay_start_steps": forcing_start,
+        },
+        expected="upper_bound_curriculum_start_steps >= forcing_decay_start_steps",
+    )
+    _check_true(
+        checks,
+        "upper_bound_curriculum_ends_no_later_than_reference_curriculum",
+        upper_bound_end <= reference_end,
+        actual={
+            "upper_bound_curriculum_end_steps": upper_bound_end,
+            "reference_curriculum_end_steps": reference_end,
+        },
+        expected="upper_bound_curriculum_end_steps <= reference_curriculum_end_steps",
+    )
     reference_preview_40000 = resolve_reference_curriculum(40000, hparams)
     reference_preview_70000 = resolve_reference_curriculum(70000, hparams)
     forcing_preview_20000 = resolve_forcing_schedule(20000, hparams)
@@ -631,6 +816,14 @@ def run_prep(args):
             _jsonable({"step": int(step), **resolve_forcing_schedule(step, hparams)})
             for step in forcing_preview_steps
         ],
+        "upper_bound_curriculum_preview": [
+            {
+                "step": int(step),
+                "progress": resolve_expressive_upper_bound_progress(step, hparams=hparams),
+            }
+            for step in (0, 20000, 50000, 80000, 100000)
+        ],
+        "dynamic_timbre_boundary_preview": _jsonable(boundary_preview),
         "checks": _jsonable(checks),
         "ready": bool(all(item["ok"] for item in checks)),
     }

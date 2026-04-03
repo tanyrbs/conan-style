@@ -1,6 +1,8 @@
 import warnings
 from typing import Any, Dict, Mapping, Optional
 
+from modules.Conan.common import first_present
+
 
 REFERENCE_BUNDLE_KEYS = (
     "ref",
@@ -12,6 +14,9 @@ REFERENCE_BUNDLE_KEYS = (
 )
 
 STYLE_RUNTIME_KEYS = (
+    "style_profile",
+    "allow_mainline_profile_research_overrides",
+    "allow_explicit_dynamic_timbre_strength",
     "decoder_style_condition_mode",
     "global_timbre_to_pitch",
     "style_to_pitch_residual",
@@ -28,18 +33,19 @@ STYLE_RUNTIME_KEYS = (
     "style_router_enabled",
     "style_temperature",
     "global_style_trace_blend",
-    "dynamic_timbre_strength",
     "dynamic_timbre_memory_mode",
     "dynamic_timbre_style_condition_scale",
     "dynamic_timbre_temperature",
     "dynamic_timbre_gate_scale",
     "dynamic_timbre_gate_bias",
-    "dynamic_timbre_material_router_bias",
     "dynamic_timbre_boundary_suppress_strength",
     "dynamic_timbre_boundary_radius",
     "dynamic_timbre_anchor_preserve_strength",
+    "dynamic_timbre_use_tvt",
+    "dynamic_timbre_tvt_prior_scale",
     "style_query_global_summary_scale",
     "dynamic_timbre_coarse_style_context_scale",
+    "dynamic_timbre_query_style_condition_scale",
     "dynamic_timbre_style_context_stopgrad",
     "runtime_dynamic_timbre_style_budget_enabled",
     "runtime_dynamic_timbre_style_budget_ratio",
@@ -49,16 +55,6 @@ STYLE_RUNTIME_KEYS = (
 REFERENCE_CONTRACT_MODES = (
     "collapsed_reference",
 )
-
-
-def first_present(mapping: Optional[Mapping[str, Any]], *keys: str, default=None):
-    if mapping is None:
-        return default
-    for key in keys:
-        if key in mapping and mapping[key] is not None:
-            return mapping[key]
-    return default
-
 
 def normalize_reference_contract_mode(mode, default: str = "collapsed_reference") -> str:
     normalized_default = str(default or "collapsed_reference").strip().lower() or "collapsed_reference"
@@ -343,6 +339,10 @@ def build_control_kwargs(
 
 
 def build_style_runtime_kwargs(source: Mapping[str, Any]):
+    # Keep this surface restricted to values that are actually consumed at
+    # forward/runtime. Model-build-only hparams (for example
+    # dynamic_timbre_material_router_bias, which only initializes module bias
+    # state in Conan.__init__) must stay out of per-request/runtime kwargs.
     return {
         "style_profile": first_present(
             source,
@@ -352,6 +352,10 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
         "allow_mainline_profile_research_overrides": first_present(
             source,
             "allow_mainline_profile_research_overrides",
+        ),
+        "allow_explicit_dynamic_timbre_strength": first_present(
+            source,
+            "allow_explicit_dynamic_timbre_strength",
         ),
         "decoder_style_condition_mode": first_present(
             source,
@@ -417,10 +421,6 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
         "dynamic_timbre_temperature": first_present(source, "dynamic_timbre_temperature"),
         "dynamic_timbre_gate_scale": first_present(source, "dynamic_timbre_gate_scale"),
         "dynamic_timbre_gate_bias": first_present(source, "dynamic_timbre_gate_bias"),
-        "dynamic_timbre_material_router_bias": first_present(
-            source,
-            "dynamic_timbre_material_router_bias",
-        ),
         "dynamic_timbre_boundary_suppress_strength": first_present(
             source,
             "dynamic_timbre_boundary_suppress_strength",

@@ -5,6 +5,12 @@ from typing import Any, Mapping, Optional
 
 import torch
 
+from modules.Conan.common import first_present
+from modules.Conan.pitch_canvas_utils import (
+    VALID_STYLE_TO_PITCH_RESIDUAL_MODES,
+    normalize_style_to_pitch_residual_mode,
+)
+
 
 STYLE_MAINLINE_OWNER = "M_style_owner_plus_bounded_M_timbre"
 STYLE_MAINLINE_SURFACE = "ConanStrongStyleMainlineSurface"
@@ -25,12 +31,6 @@ VALID_STYLE_TRACE_MODES = (
     "dual",
 )
 
-VALID_STYLE_TO_PITCH_RESIDUAL_MODES = (
-    "auto",
-    "source_aligned",
-    "post_rhythm",
-)
-
 VALID_STYLE_MEMORY_MODES = (
     "fast",
     "slow",
@@ -38,16 +38,6 @@ VALID_STYLE_MEMORY_MODES = (
 
 MAINLINE_STYLE_STRENGTH_MIN = 0.50
 MAINLINE_STYLE_STRENGTH_MAX = 1.80
-
-
-def _first_present(source: Optional[Mapping[str, Any]], *keys: str, default=None):
-    if not isinstance(source, Mapping):
-        return default
-    for key in keys:
-        if key in source and source[key] is not None:
-            return source[key]
-    return default
-
 
 def sanitize_scalar_range(
     value,
@@ -157,37 +147,16 @@ def normalize_style_trace_mode(mode, default: str = "slow") -> str:
         return normalized_default
     return normalized
 
-
-def normalize_style_to_pitch_residual_mode(mode, default: str = "auto") -> str:
-    normalized_default = str(default or "auto").strip().lower() or "auto"
-    normalized = str(mode or normalized_default).strip().lower() or normalized_default
-    alias_map = {
-        "default": normalized_default,
-        "source": "source_aligned",
-        "sourcealigned": "source_aligned",
-        "pre_rhythm": "source_aligned",
-        "content": "source_aligned",
-        "post": "post_rhythm",
-        "after_rhythm": "post_rhythm",
-        "post_projector": "post_rhythm",
-        "joint": "post_rhythm",
-    }
-    normalized = alias_map.get(normalized, normalized)
-    if normalized not in VALID_STYLE_TO_PITCH_RESIDUAL_MODES:
-        return normalized_default
-    return normalized
-
-
 def _resolve_style_profile_defaults(
     overrides: Optional[Mapping[str, Any]] = None,
     *,
     hparams: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
-    preset = _first_present(
+    preset = first_present(
         overrides,
         "style_profile",
         "style_runtime_preset",
-        default=_first_present(
+        default=first_present(
             hparams,
             "style_profile",
             "style_runtime_preset",
@@ -209,6 +178,91 @@ def _resolve_style_profile_defaults(
     except Exception:
         return {}
     return resolved if isinstance(resolved, Mapping) else {}
+
+
+def resolve_style_profile_defaults(
+    overrides: Optional[Mapping[str, Any]] = None,
+    *,
+    hparams: Optional[Mapping[str, Any]] = None,
+) -> Mapping[str, Any]:
+    return _resolve_style_profile_defaults(overrides, hparams=hparams)
+
+
+def resolve_style_runtime_value(
+    *keys: str,
+    overrides: Optional[Mapping[str, Any]] = None,
+    hparams: Optional[Mapping[str, Any]] = None,
+    profile_defaults: Optional[Mapping[str, Any]] = None,
+    default=None,
+):
+    if profile_defaults is None:
+        profile_defaults = _resolve_style_profile_defaults(overrides, hparams=hparams)
+    return first_present(
+        overrides,
+        *keys,
+        default=first_present(
+            hparams,
+            *keys,
+            default=first_present(profile_defaults, *keys, default=default),
+        ),
+    )
+
+
+def resolve_expressive_upper_bound_progress(
+    global_step: int,
+    *,
+    overrides: Optional[Mapping[str, Any]] = None,
+    hparams: Optional[Mapping[str, Any]] = None,
+    infer: bool = False,
+) -> float:
+    if bool(infer):
+        return 1.0
+    enabled = bool(
+        first_present(
+            overrides,
+            "upper_bound_curriculum_enabled",
+            "expressive_upper_bound_curriculum_enabled",
+            default=first_present(
+                hparams,
+                "upper_bound_curriculum_enabled",
+                "expressive_upper_bound_curriculum_enabled",
+                default=True,
+            ),
+        )
+    )
+    if not enabled:
+        return 1.0
+    start = int(
+        first_present(
+            overrides,
+            "upper_bound_curriculum_start_steps",
+            "expressive_upper_bound_curriculum_start_steps",
+            default=first_present(
+                hparams,
+                "upper_bound_curriculum_start_steps",
+                "expressive_upper_bound_curriculum_start_steps",
+                default=20000,
+            ),
+        )
+    )
+    end = int(
+        first_present(
+            overrides,
+            "upper_bound_curriculum_end_steps",
+            "expressive_upper_bound_curriculum_end_steps",
+            default=first_present(
+                hparams,
+                "upper_bound_curriculum_end_steps",
+                "expressive_upper_bound_curriculum_end_steps",
+                default=80000,
+            ),
+        )
+    )
+    step = max(int(global_step), 0)
+    if end <= start:
+        return 1.0 if step >= start else 0.0
+    progress = float(step - start) / float(max(end - start, 1))
+    return max(0.0, min(progress, 1.0))
 
 
 def normalize_style_memory_mode(mode, default: str = "slow") -> str:
@@ -274,17 +328,23 @@ def resolve_style_mainline_controls(
 ) -> StyleMainlineControls:
     profile_defaults = _resolve_style_profile_defaults(overrides, hparams=hparams)
     mode = normalize_decoder_style_condition_mode(
-        _first_present(
+        first_present(
             overrides,
             "decoder_style_condition_mode",
             "style_condition_mode",
             "style_mainline_mode",
-            default=_first_present(
+            default=first_present(
                 hparams,
                 "decoder_style_condition_mode",
                 "style_condition_mode",
                 "style_mainline_mode",
-                default=default_mode,
+                default=first_present(
+                    profile_defaults,
+                    "decoder_style_condition_mode",
+                    "style_condition_mode",
+                    "style_mainline_mode",
+                    default=default_mode,
+                ),
             ),
         ),
         default=default_mode,
@@ -314,13 +374,13 @@ def resolve_style_mainline_controls(
     }[mode]
 
     def _value(*keys: str, default=None):
-        return _first_present(
+        return first_present(
             overrides,
             *keys,
-            default=_first_present(
+            default=first_present(
                 hparams,
                 *keys,
-                default=_first_present(profile_defaults, *keys, default=default),
+                default=first_present(profile_defaults, *keys, default=default),
             ),
         )
 
@@ -570,7 +630,10 @@ __all__ = [
     "normalize_style_memory_mode",
     "normalize_style_to_pitch_residual_mode",
     "normalize_style_trace_mode",
+    "resolve_expressive_upper_bound_progress",
+    "resolve_style_profile_defaults",
     "resolve_style_mainline_controls",
+    "resolve_style_runtime_value",
     "sanitize_mainline_style_strength",
     "sanitize_scalar_range",
 ]

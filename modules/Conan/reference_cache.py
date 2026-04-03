@@ -3,6 +3,8 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
+from modules.Conan.common import first_present
+
 
 REFERENCE_CACHE_MASK_FIELDS = {
     "prosody_memory": ("prosody_memory_mask", "prosody_key_padding_mask"),
@@ -10,16 +12,6 @@ REFERENCE_CACHE_MASK_FIELDS = {
     "timbre_memory": ("timbre_memory_mask", "timbre_key_padding_mask"),
     "timbre_memory_slow": ("timbre_memory_slow_mask", "timbre_key_padding_mask_slow"),
 }
-
-
-def first_present(mapping: Optional[Mapping[str, Any]], *keys: str, default=None):
-    if mapping is None:
-        return default
-    for key in keys:
-        if key in mapping and mapping[key] is not None:
-            return mapping[key]
-    return default
-
 
 def is_sequence_tensor(value: Any) -> bool:
     return isinstance(value, torch.Tensor) and value.dim() == 3

@@ -28,12 +28,16 @@ Notes:
 - `style_profile: strong_style` is the canonical default surface
 - `style_strength` is clamped to the shipped mainline range `0.50 .. 1.80`
 - `style_to_pitch_residual_include_timbre: false` is part of the shipped contract
+- training ramps fast style / TVT timbre / pitch residual by the `upper_bound_curriculum`, but inference always runs with the full ceiling
 - split-reference / factorized research paths are no longer kept in this repo snapshot
 - online/offline streaming parity is expected to match in mel length and wav length
 
 ## Verified inference fixes as of 2026-04-03
 
 - style-profile defaults now flow cleanly into runtime controls
+- each inference request now resolves its style profile exactly once before building control/runtime kwargs
+- `inference/conan_request.py` is now the canonical source for public request keys, advanced-control filtering, and split-reference detection
+- resolved mainline controls stay authoritative for TVT prior/runtime flags and pitch-residual scale / semitone / smoothing
 - inference metadata now reports requested/effective/clamped `style_strength`
 - runtime layout validation now checks for actual checkpoint artifacts, not just directories
 - streaming prefix inference trims missing tail right-context correctly

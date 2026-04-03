@@ -2,15 +2,12 @@ from modules.Conan.Conan import Conan, ConanPostnet
 from tasks.Conan.base_gen_task import AuxDecoderMIDITask, f0_to_figure
 from utils.commons.hparams import hparams
 import torch
-from utils.commons.ckpt_utils import load_ckpt
 from tasks.Conan.dataset import ConanDataset
 import torch.nn.functional as F
 from utils.commons.tensor_utils import tensors_to_scalars
 from utils.audio.pitch.utils import denorm_f0
-import math
 from modules.tts.iclspeech.multi_window_disc import Discriminator
 import torch.nn as nn
-import random
 from tasks.Conan.control_diagnostics import collect_control_diagnostics
 from tasks.Conan.control_schedule import resolve_control_regularization_config
 from tasks.Conan.style_control_mixin import ConanStyleControlMixin
@@ -546,7 +543,6 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
     def add_pitch_loss(self, output, sample, losses):
         # mel2ph = sample['mel2ph']  # [B, T_s]
         content = sample['content']
-        f0 = sample['f0']
         uv = sample['uv']
         nonpadding = (content != hparams.get('content_padding_idx', 101)).float()
         if hparams["f0_gen"] == "diff":

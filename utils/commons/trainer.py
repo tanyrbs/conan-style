@@ -119,6 +119,9 @@ class Trainer:
         else:
             self.amp_scalar = TorchGradScaler(enabled=amp_enabled)
 
+    def _max_updates_reached(self):
+        return int(self.global_step) >= int(self.max_updates)
+
     def test(self, task_cls):
         self.testing = True
         self.fit(task_cls)
@@ -274,8 +277,12 @@ class Trainer:
             torch.cuda.empty_cache()
         dataloader = task_ref.train_dataloader()
         epoch = self.current_epoch
+        stop_training = False
         # run all epochs
         while True:
+            if self._max_updates_reached():
+                print("| Training end..")
+                break
             # set seed for distributed sampler (enables shuffling for each epoch)
             if self.use_ddp and hasattr(dataloader.sampler, 'set_epoch'):
                 dataloader.sampler.set_epoch(epoch)
@@ -291,6 +298,10 @@ class Trainer:
             train_pbar = tqdm.tqdm(dataloader, initial=self.global_step, total=float('inf'),
                                    dynamic_ncols=True, unit='step', disable=self.root_gpu > 0)
             for batch_idx, batch in enumerate(train_pbar):
+                if self._max_updates_reached():
+                    stop_training = True
+                    print("| Training end..")
+                    break
                 if self.global_step % self.val_check_interval == 0 and not self.fisrt_epoch:
                     self.run_evaluation()
                 pbar_metrics, tb_metrics = self.run_training_batch(batch_idx, batch)
@@ -303,13 +314,14 @@ class Trainer:
 
                 self.global_step += 1
                 task_ref.global_step = self.global_step
-                if self.global_step > self.max_updates:
+                if self._max_updates_reached():
+                    stop_training = True
                     print("| Training end..")
                     break
             # epoch end hook
             task_ref.on_epoch_end()
             epoch += 1
-            if self.global_step > self.max_updates:
+            if stop_training or self._max_updates_reached():
                 break
         task_ref.on_train_end()
 

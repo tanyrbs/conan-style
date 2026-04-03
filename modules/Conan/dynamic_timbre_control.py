@@ -6,14 +6,8 @@ from typing import Any, Mapping, Optional
 import torch
 import torch.nn.functional as F
 
-
-def _first_present(source: Optional[Mapping[str, Any]], *keys: str, default=None):
-    if not isinstance(source, Mapping):
-        return default
-    for key in keys:
-        if key in source and source[key] is not None:
-            return source[key]
-    return default
+from modules.Conan.common import first_present
+from modules.Conan.common_utils import expand_sequence_like
 
 
 def _masked_mean(sequence: torch.Tensor, padding_mask: Optional[torch.Tensor] = None):
@@ -23,20 +17,6 @@ def _masked_mean(sequence: torch.Tensor, padding_mask: Optional[torch.Tensor] = 
     denom = valid.sum(dim=1).clamp_min(1.0)
     pooled = (sequence * valid).sum(dim=1) / denom
     return torch.where(torch.isfinite(pooled), pooled, torch.zeros_like(pooled))
-
-
-def _expand_anchor(anchor: Optional[torch.Tensor], target_len: int):
-    if not isinstance(anchor, torch.Tensor):
-        return None
-    if anchor.dim() == 2:
-        anchor = anchor.unsqueeze(1)
-    if anchor.dim() != 3:
-        return None
-    if anchor.size(1) == target_len:
-        return anchor
-    if anchor.size(1) == 1:
-        return anchor.expand(-1, target_len, -1)
-    return None
 
 
 @dataclass(frozen=True)
@@ -55,10 +35,10 @@ def resolve_dynamic_timbre_control(
     hparams: Optional[Mapping[str, Any]] = None,
 ) -> DynamicTimbreControlConfig:
     def _value(*keys: str, default=None):
-        return _first_present(
+        return first_present(
             overrides,
             *keys,
-            default=_first_present(hparams, *keys, default=default),
+            default=first_present(hparams, *keys, default=default),
         )
 
     return DynamicTimbreControlConfig(
@@ -79,9 +59,15 @@ def build_dynamic_timbre_boundary_mask(
     padding_idx: Optional[int] = None,
     silent_token: Optional[int] = None,
     radius: int = 2,
+    return_metadata: bool = False,
 ):
+    metadata = {
+        "transition_rate": None,
+        "dense_units_detected": None,
+        "dense_transition_threshold": 0.75,
+    }
     if not isinstance(content_tokens, torch.Tensor) or content_tokens.dim() != 2:
-        return None
+        return (None, metadata) if return_metadata else None
 
     if padding_mask is None:
         if padding_idx is None:
@@ -94,15 +80,30 @@ def build_dynamic_timbre_boundary_mask(
     nonpadding = ~padding_mask
     boundary = torch.zeros_like(content_tokens, dtype=torch.float32)
     if content_tokens.size(1) <= 0:
-        return boundary.unsqueeze(-1)
+        empty = boundary.unsqueeze(-1)
+        return (empty, metadata) if return_metadata else empty
 
+    valid_adjacent = nonpadding[:, 1:] & nonpadding[:, :-1]
     transition = (
-        nonpadding[:, 1:]
-        & nonpadding[:, :-1]
+        valid_adjacent
         & content_tokens[:, 1:].ne(content_tokens[:, :-1])
     )
-    boundary[:, 1:] = torch.maximum(boundary[:, 1:], transition.float())
-    boundary[:, :-1] = torch.maximum(boundary[:, :-1], transition.float())
+    if valid_adjacent.numel() > 0:
+        transition_rate = transition.float().sum(dim=1) / valid_adjacent.float().sum(dim=1).clamp_min(1.0)
+    else:
+        transition_rate = boundary.new_zeros(content_tokens.size(0))
+    dense_transition_threshold = float(metadata["dense_transition_threshold"])
+    dense_units_detected = transition_rate >= dense_transition_threshold
+    metadata["transition_rate"] = transition_rate
+    metadata["dense_units_detected"] = dense_units_detected
+
+    # HuBERT/content-unit sequences often change almost every frame. Treating every token
+    # transition as a dynamic-timbre boundary would collapse the mask to all-ones and turn
+    # boundary suppression into a global attenuation. In that dense-unit regime, keep only
+    # silence/edge boundaries instead of every token change.
+    transition_boundary = transition.float() * (~dense_units_detected).unsqueeze(1).to(boundary.dtype)
+    boundary[:, 1:] = torch.maximum(boundary[:, 1:], transition_boundary)
+    boundary[:, :-1] = torch.maximum(boundary[:, :-1], transition_boundary)
 
     if silent_token is not None:
         silence = content_tokens.eq(int(silent_token)) & nonpadding
@@ -131,7 +132,8 @@ def build_dynamic_timbre_boundary_mask(
             padding=radius,
         )
         boundary = pooled.squeeze(1)
-    return boundary.unsqueeze(-1)
+    boundary = boundary.unsqueeze(-1)
+    return (boundary, metadata) if return_metadata else boundary
 
 
 def recenter_dynamic_timbre_to_anchor(
@@ -146,7 +148,7 @@ def recenter_dynamic_timbre_to_anchor(
     preserve_strength = float(preserve_strength)
     if preserve_strength <= 0.0:
         return aligned, None
-    anchor = _expand_anchor(global_anchor, aligned.size(1))
+    anchor = expand_sequence_like(global_anchor, aligned.size(1), mean_fallback=False)
     if anchor is None:
         return aligned, None
     pooled = _masked_mean(aligned, padding_mask)

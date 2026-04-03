@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from inference.conan_request import ADVANCED_CONTROL_KEYS, has_distinct_split_reference_inputs
 from modules.Conan.style_profiles import available_mainline_style_profiles, resolve_style_profile
 from utils.audio.io import save_wav
 
@@ -27,26 +28,6 @@ CASE_META_KEYS = {
     "profiles",
     "profile_overrides",
 }
-
-SPLIT_REFERENCE_KEYS = (
-    "ref_timbre_wav",
-    "ref_style_wav",
-    "ref_dynamic_timbre_wav",
-    "ref_emotion_wav",
-    "ref_accent_wav",
-)
-
-ADVANCED_CONTROL_KEYS = (
-    "emotion",
-    "emotion_id",
-    "emotion_strength",
-    "accent",
-    "accent_id",
-    "accent_strength",
-    "arousal",
-    "valence",
-    "energy",
-)
 
 def slugify_filename(text, default="case"):
     text = str(text or "").strip()
@@ -148,10 +129,7 @@ class StyleProfileSweepRunner:
                 self._advanced_control_warning_emitted = True
             for key in ignored_advanced_keys:
                 base_input.pop(key, None)
-        ref_wav = base_input.get("ref_wav")
-        has_distinct_split_refs = any(
-            base_input.get(key) not in (None, "", ref_wav) for key in SPLIT_REFERENCE_KEYS
-        )
+        has_distinct_split_refs = has_distinct_split_reference_inputs(base_input)
         if has_distinct_split_refs and not self.allow_split_reference_inputs:
             raise ValueError(
                 "StyleProfileSweepRunner is the canonical single-reference Conan sweep surface "

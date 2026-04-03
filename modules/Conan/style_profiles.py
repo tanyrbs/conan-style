@@ -3,7 +3,6 @@ import warnings
 from modules.Conan.style_mainline import (
     derive_dynamic_timbre_strength,
     normalize_decoder_style_condition_mode,
-    normalize_style_trace_mode,
     sanitize_mainline_style_strength,
     sanitize_scalar_range,
 )
@@ -236,10 +235,6 @@ def resolve_style_profile(
         resolved.get("decoder_style_condition_mode", "mainline_full"),
         default="mainline_full",
     )
-    normalized_trace_mode = normalize_style_trace_mode(
-        resolved.get("style_trace_mode", "slow"),
-        default="slow",
-    )
     if profile_track == "mainline":
         research_like_override = (
             ("decoder_style_condition_mode" in explicit_override_keys and normalized_mode != "mainline_full")
@@ -295,10 +290,6 @@ def resolve_style_profile(
             normalized_mode = normalize_decoder_style_condition_mode(
                 resolved.get("decoder_style_condition_mode", "mainline_full"),
                 default="mainline_full",
-            )
-            normalized_trace_mode = normalize_style_trace_mode(
-                resolved.get("style_trace_mode", "slow"),
-                default="slow",
             )
         elif research_like_override:
             warnings.warn(

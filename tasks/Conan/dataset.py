@@ -37,7 +37,6 @@ class ConanDataset(FastSpeechDataset):
         self.default_style_strength = _resolve_default_style_strength(self.hparams)
 
     def __getitem__(self, index):
-        hparams = self.hparams
         sample = super(ConanDataset, self).__getitem__(index)
         item = self._get_item(index)
 

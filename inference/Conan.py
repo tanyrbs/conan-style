@@ -1,9 +1,7 @@
 import os
 import json
-import time
 import glob
 import warnings
-from datetime import datetime
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -11,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from utils.commons.hparams import hparams, set_hparams
-from utils.commons.ckpt_utils import load_ckpt, load_ckpt_emformer
+from utils.commons.ckpt_utils import load_ckpt
 from utils.audio import librosa_wav2spec
 from utils.audio.io import save_wav
 from tasks.tts.vocoder_infer.base_vocoder import get_vocoder_cls
@@ -25,16 +23,14 @@ from modules.Conan.reference_bundle import (
 )
 from modules.Conan.reference_cache import reference_cache_to_model_kwargs
 from modules.Conan.style_profiles import (
+    STYLE_PROFILE_KEYS,
     available_mainline_style_profiles,
-    available_style_profiles,
     resolve_style_profile,
-    style_profile_to_runtime_kwargs,
 )
+from inference.conan_request import CONDITION_FIELDS, has_distinct_split_reference_inputs
 # Emformer feature extractor
 from modules.Emformer.emformer import EmformerDistillModel
 __all__ = ["StreamingVoiceConversion"]
-
-CONDITION_FIELDS = ("emotion", "accent")
 
 class StreamingVoiceConversion:
     """
@@ -223,6 +219,22 @@ class StreamingVoiceConversion:
             except ValueError:
                 return self.condition_maps.get(field, {}).get(stripped, None)
         return None
+
+    def _resolve_style_profile(self, inp: Dict):
+        return resolve_style_profile(
+            inp,
+            preset=self.hparams.get("style_profile", "strong_style"),
+        )
+
+    @staticmethod
+    def _resolved_style_profile_to_runtime_kwargs(resolved_profile: Dict):
+        runtime_kwargs = {
+            key: resolved_profile.get(key)
+            for key in STYLE_PROFILE_KEYS
+            if resolved_profile.get(key) is not None
+        }
+        runtime_kwargs["style_profile"] = resolved_profile["style_profile"]
+        return runtime_kwargs
          
     def _wav_to_mel(self, path: str) -> np.ndarray:
         mel = librosa_wav2spec(
@@ -238,18 +250,6 @@ class StreamingVoiceConversion:
         )["mel"]
         return np.clip(mel, self.hparams["mel_vmin"], self.hparams["mel_vmax"])
 
-    @staticmethod
-    def _has_distinct_split_reference_inputs(inp: Dict):
-        ref_wav = inp["ref_wav"]
-        split_reference_keys = (
-            "ref_timbre_wav",
-            "ref_style_wav",
-            "ref_dynamic_timbre_wav",
-            "ref_emotion_wav",
-            "ref_accent_wav",
-        )
-        return any(inp.get(key) not in (None, "", ref_wav) for key in split_reference_keys)
-
     def _load_reference_mels(self, inp: Dict):
         ref_wav = inp["ref_wav"]
         split_reference_surface_enabled = bool(
@@ -258,7 +258,7 @@ class StreamingVoiceConversion:
         split_reference_inputs = bool(
             inp.get("allow_split_reference_inputs", split_reference_surface_enabled)
         ) and split_reference_surface_enabled
-        has_distinct_split_refs = self._has_distinct_split_reference_inputs(inp)
+        has_distinct_split_refs = has_distinct_split_reference_inputs(inp)
         if has_distinct_split_refs and not split_reference_inputs:
             warnings.warn(
                 "Distinct split reference inputs were provided but the canonical mainline surface keeps "
@@ -320,11 +320,8 @@ class StreamingVoiceConversion:
             "collapsed_split_refs": bool(has_distinct_split_refs and not split_reference_inputs),
         }
 
-    def _build_model_control_kwargs(self, inp: Dict):
-        style_profile = resolve_style_profile(
-            inp,
-            preset=self.hparams.get("style_profile", "strong_style"),
-        )
+    def _build_model_control_kwargs(self, inp: Dict, *, resolved_style_profile: Optional[Dict] = None):
+        style_profile = resolved_style_profile or self._resolve_style_profile(inp)
         style_strength = style_profile["style_strength"]
         resolved_controls = {
             "emotion_id": self._resolve_condition_id(
@@ -339,16 +336,15 @@ class StreamingVoiceConversion:
             "style_strength": style_strength,
             "emotion_strength": inp.get("emotion_strength", 1.0),
             "accent_strength": inp.get("accent_strength", 1.0),
-            "dynamic_timbre_strength": style_profile.get("dynamic_timbre_strength", 1.0),
         }
+        explicit_dynamic_timbre_strength = inp.get("dynamic_timbre_strength", None)
+        if explicit_dynamic_timbre_strength is not None:
+            resolved_controls["dynamic_timbre_strength"] = explicit_dynamic_timbre_strength
         return build_control_kwargs(resolved_controls, style_strength_default=style_strength)
 
-    def _build_style_runtime_kwargs(self, inp: Dict):
-        style_profile = style_profile_to_runtime_kwargs(
-            inp,
-            preset=self.hparams.get("style_profile", "strong_style"),
-        )
-        runtime_source = dict(style_profile)
+    def _build_style_runtime_kwargs(self, inp: Dict, *, resolved_style_profile: Optional[Dict] = None):
+        resolved_style_profile = resolved_style_profile or self._resolve_style_profile(inp)
+        runtime_source = dict(self._resolved_style_profile_to_runtime_kwargs(resolved_style_profile))
         allow_research_overrides = inp.get("allow_mainline_profile_research_overrides", None)
         if allow_research_overrides is not None:
             runtime_source["allow_mainline_profile_research_overrides"] = allow_research_overrides
@@ -371,12 +367,9 @@ class StreamingVoiceConversion:
 
     def _prepare_inference_runtime(self, inp: Dict, *, spk_emb: Optional[torch.Tensor] = None):
         ref_mels, reference_meta = self._load_reference_mels(inp)
-        control_kwargs = self._build_model_control_kwargs(inp)
-        runtime_kwargs = self._build_style_runtime_kwargs(inp)
-        resolved_profile = resolve_style_profile(
-            inp,
-            preset=self.hparams.get("style_profile", "strong_style"),
-        )
+        resolved_profile = self._resolve_style_profile(inp)
+        control_kwargs = self._build_model_control_kwargs(inp, resolved_style_profile=resolved_profile)
+        runtime_kwargs = self._build_style_runtime_kwargs(inp, resolved_style_profile=resolved_profile)
         try:
             requested_style_strength = float(
                 resolved_profile.get(
@@ -599,11 +592,84 @@ class StreamingVoiceConversion:
             )
         return metrics
 
+    @staticmethod
+    def _effective_runtime_metadata(model_out: Dict):
+        if not isinstance(model_out, dict):
+            return {}
+        style_mainline = model_out.get("style_mainline")
+        if not isinstance(style_mainline, dict):
+            style_mainline = {}
+        metadata = {}
+        float_fields = (
+            "style_strength",
+            "dynamic_timbre_strength",
+            "style_temperature",
+            "dynamic_timbre_temperature",
+            "style_query_global_summary_scale",
+            "dynamic_timbre_coarse_style_context_scale",
+            "dynamic_timbre_query_style_condition_scale",
+            "expressive_upper_bound_progress",
+            "runtime_dynamic_timbre_style_budget_ratio",
+            "runtime_dynamic_timbre_style_budget_margin",
+        )
+        bool_fields = (
+            "style_to_pitch_residual_include_timbre",
+            "style_to_pitch_residual_uses_timbre_context",
+            "dynamic_timbre_coarse_style_context_applied",
+            "dynamic_timbre_tvt_enabled",
+            "dynamic_timbre_tvt_deferred_by_curriculum",
+            "runtime_dynamic_timbre_style_budget_enabled",
+            "runtime_dynamic_timbre_style_budget_applied",
+            "upper_bound_curriculum_enabled",
+            "dynamic_timbre_style_context_stopgrad",
+        )
+        string_fields = (
+            "style_to_pitch_residual_canvas",
+            "timbre_query_style_scale_source",
+        )
+        for key in float_fields:
+            value = model_out.get(key, style_mainline.get(key))
+            if value is None:
+                continue
+            try:
+                metadata[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+        for key in bool_fields:
+            value = model_out.get(key, style_mainline.get(key))
+            if value is None:
+                continue
+            metadata[key] = bool(value)
+        for key in string_fields:
+            value = model_out.get(key, style_mainline.get(key))
+            if value is None:
+                continue
+            metadata[key] = str(value)
+        mode = style_mainline.get("mode")
+        if mode is not None:
+            metadata["decoder_style_condition_mode"] = str(mode)
+        for key in ("style_trace_mode", "style_memory_mode", "dynamic_timbre_memory_mode"):
+            value = style_mainline.get(key, model_out.get(key))
+            if value is not None:
+                metadata[key] = str(value)
+        if "dynamic_timbre_strength" in style_mainline:
+            metadata["dynamic_timbre_strength_effective"] = float(
+                style_mainline["dynamic_timbre_strength"]
+            )
+        if "style_strength" in style_mainline:
+            metadata["style_strength_effective"] = float(style_mainline["style_strength"])
+        if style_mainline.get("dynamic_timbre_strength_source") is not None:
+            metadata["dynamic_timbre_strength_source"] = str(
+                style_mainline["dynamic_timbre_strength_source"]
+            )
+        return metadata
+
     def infer_once(self, inp: Dict, *, spk_emb: Optional[torch.Tensor] = None):
         runtime = self._prepare_inference_runtime(inp, spk_emb=spk_emb)
         src_mel, _ = self._load_source_mel_tensor(inp["src_wav"])
         wav_pred, mel_pred, final_out, stream_meta = self._infer_prefix_online_from_mel(src_mel, runtime)
         self.last_infer_metadata = dict(runtime["metadata"])
+        self.last_infer_metadata.update(self._effective_runtime_metadata(final_out))
         self.last_infer_metadata.update(
             {
                 **stream_meta,
@@ -650,6 +716,7 @@ class StreamingVoiceConversion:
             "metrics": metrics,
         }
         self.last_infer_metadata = dict(runtime["metadata"])
+        self.last_infer_metadata.update(self._effective_runtime_metadata(online_out))
         self.last_infer_metadata.update(
             {
                 "online_chunks": int(online_meta.get("num_chunks", 0)),

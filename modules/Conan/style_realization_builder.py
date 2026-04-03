@@ -221,8 +221,10 @@ def build_style_realization_payload(
     global_style_summary,
     style_strength,
     forcing_schedule_state=None,
+    upper_bound_progress: float = 1.0,
 ):
     style_trace_mode = _style_trace_mode_from_controls(controls)
+    upper_bound_progress = max(0.0, min(float(upper_bound_progress), 1.0))
     payload = {
         "style_trace_mode": style_trace_mode,
         "style_trace_available": False,
@@ -242,6 +244,8 @@ def build_style_realization_payload(
     ret["style_trace_runtime_mode"] = style_trace_mode
     ret["style_trace_memory_mode_used"] = "none"
     ret["global_style_trace_blend"] = float(getattr(controls, "global_style_trace_blend", 0.0))
+    ret["expressive_upper_bound_progress"] = float(upper_bound_progress)
+    ret["style_fast_upper_bound_progress"] = float(upper_bound_progress)
 
     has_cached_prosody = False
     if isinstance(reference_cache, Mapping):
@@ -262,16 +266,17 @@ def build_style_realization_payload(
         return payload
 
     style_temperature = float(getattr(controls, "style_temperature", 1.0))
+    fast_style_progress = float(upper_bound_progress)
     fast_style_strength = _branch_strength(
         style_strength,
-        getattr(controls, "fast_style_strength_scale", 1.0),
+        getattr(controls, "fast_style_strength_scale", 1.0) * fast_style_progress,
     )
     slow_style_strength = _branch_strength(
         style_strength,
         getattr(controls, "slow_style_strength_scale", 1.0),
     )
     ret["fast_style_strength_scale_runtime"] = float(
-        getattr(controls, "fast_style_strength_scale", 1.0)
+        getattr(controls, "fast_style_strength_scale", 1.0) * fast_style_progress
     )
     ret["slow_style_strength_scale_runtime"] = float(
         getattr(controls, "slow_style_strength_scale", 1.0)
@@ -279,7 +284,7 @@ def build_style_realization_payload(
     fast_trace_result = None
     slow_trace_result = None
 
-    if style_trace_mode in {"fast", "dual"}:
+    if style_trace_mode in {"fast", "dual"} and fast_style_progress > 0.0:
         fast_memory_mode = _preferred_fast_memory_mode(model, controls)
         fast_trace_result = _run_style_trace(
             model,
@@ -309,6 +314,11 @@ def build_style_realization_payload(
         )
         if style_trace_summary is not None:
             ret["style_trace_summary"] = style_trace_summary
+    elif style_trace_mode in {"fast", "dual"}:
+        ret["style_fast_branch_deferred_by_curriculum"] = True
+        if style_trace_mode == "fast":
+            payload["style_trace_skip_reason"] = "curriculum_deferred"
+            payload["style_trace_source"] = "curriculum_deferred"
 
     if style_trace_mode in {"slow", "dual"}:
         slow_trace_result = _run_style_trace(
@@ -346,8 +356,15 @@ def build_style_realization_payload(
         or isinstance(slow_trace_result, dict) and isinstance(slow_trace_result.get("trace"), torch.Tensor)
     )
     if style_trace_mode == "dual":
-        payload["style_trace_source"] = "reference_cache_dual" if has_cached_prosody else "reference_audio_dual"
-        ret["style_trace_memory_mode_used"] = "dual"
+        if fast_trace_result is None and isinstance(slow_trace_result, dict):
+            payload["style_trace_source"] = (
+                "reference_cache_slow_curriculum_floor"
+                if has_cached_prosody else "reference_audio_slow_curriculum_floor"
+            )
+            ret["style_trace_memory_mode_used"] = "slow"
+        else:
+            payload["style_trace_source"] = "reference_cache_dual" if has_cached_prosody else "reference_audio_dual"
+            ret["style_trace_memory_mode_used"] = "dual"
         ret["style_trace_source_runtime"] = payload["style_trace_source"]
     elif style_trace_mode == "slow":
         payload["style_trace_source"] = slow_trace_result.get("source", "missing") if isinstance(slow_trace_result, dict) else "missing"

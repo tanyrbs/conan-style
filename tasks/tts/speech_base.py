@@ -130,7 +130,8 @@ class SpeechBaseTask(BaseTask):
             if endless:
                 batches = [b for _ in range(1000) for b in batches]
         num_workers = dataset.num_workers
-        if self.trainer.use_ddp:
+        trainer = getattr(self, "trainer", None)
+        if bool(getattr(trainer, "use_ddp", False)):
             num_replicas = dist.get_world_size()
             rank = dist.get_rank()
             batches = [x[rank::num_replicas] for x in batches if len(x) % num_replicas == 0]

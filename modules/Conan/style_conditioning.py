@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 
+from modules.Conan.common import first_present
 from modules.Conan.control.common import (
     lookup_condition_embedding,
     project_scalar_condition,
@@ -9,7 +10,6 @@ from modules.Conan.control.common import (
 )
 from modules.Conan.reference_bundle import resolve_reference_bundle
 from modules.Conan.reference_cache import (
-    first_present,
     masked_sequence_mean,
     merge_reference_cache,
     pool_reference_memory,
@@ -272,10 +272,6 @@ class ConanStyleConditioningMixin:
             ),
         )
         cache = dict(reference_cache) if isinstance(reference_cache, dict) else dict(reference_cache or {})
-        contract_mode = str(
-            resolved_bundle.get("reference_contract_mode", self._get_hparam("reference_contract_mode", "collapsed_reference"))
-        )
-
         global_timbre_anchor = cache.get("global_timbre_anchor")
         global_timbre_anchor_source = str(cache.get("global_timbre_anchor_source", "reference_cache"))
         if global_timbre_anchor is None and spk_embed is not None:
@@ -668,6 +664,7 @@ class ConanStyleConditioningMixin:
         style_context_prepared=False,
         tvt_prior_scale=1.0,
         use_tvt=None,
+        upper_bound_progress=1.0,
     ):
         memory_mode = self._normalize_memory_mode(
             memory_mode,
@@ -731,6 +728,11 @@ class ConanStyleConditioningMixin:
             padding_mask=src_key_padding_mask,
             preserve_strength=control.anchor_preserve_strength,
         )
+        local_absolute = aligned
+        local_delta = local_absolute - global_timbre_anchor
+        local_delta = local_delta.masked_fill(src_key_padding_mask.unsqueeze(-1), 0.0)
+        upper_bound_progress = max(0.0, min(float(upper_bound_progress), 1.0))
+        ret["dynamic_timbre_upper_bound_progress"] = float(upper_bound_progress)
         style_context_available = (
             isinstance(style_context, torch.Tensor)
             and tuple(style_context.shape) == tuple(aligned.shape)
@@ -757,8 +759,15 @@ class ConanStyleConditioningMixin:
             use_tvt = bool(getattr(self, "dynamic_timbre_use_tvt", False))
         else:
             use_tvt = bool(use_tvt)
+        requested_use_tvt = bool(use_tvt)
         use_tvt = use_tvt and getattr(self, "global_timbre_memory", None) is not None
         use_tvt = use_tvt and getattr(self, "content_sync_timbre_fuser", None) is not None
+        if upper_bound_progress <= 0.0:
+            use_tvt = False
+        ret["dynamic_timbre_tvt_requested"] = bool(requested_use_tvt)
+        ret["dynamic_timbre_tvt_deferred_by_curriculum"] = bool(
+            requested_use_tvt and upper_bound_progress <= 0.0
+        )
         tvt_payload = None
         if use_tvt:
             global_memory = self.global_timbre_memory(first_present(ret, "global_timbre_anchor"))
@@ -766,7 +775,7 @@ class ConanStyleConditioningMixin:
                 query=encoder_gate_input,
                 global_anchor=global_timbre_anchor,
                 global_memory=global_memory,
-                local_absolute=aligned,
+                local_absolute=local_absolute,
                 style_context=style_context if style_context_available else None,
                 prior_scale=float(tvt_prior_scale),
                 gate_scale=float(gate_scale),
@@ -788,7 +797,9 @@ class ConanStyleConditioningMixin:
             ret["dynamic_timbre_tvt_prior_scale"] = float(tvt_prior_scale)
             ret["dynamic_timbre_tvt_enabled"] = True
         else:
-            gate_prob = self.timbre_gate(torch.cat([encoder_gate_input, aligned, global_timbre_anchor], dim=-1))
+            gate_prob = self.timbre_gate(
+                torch.cat([encoder_gate_input, local_absolute, global_timbre_anchor], dim=-1)
+            )
             ret["dynamic_timbre_gate_raw"] = gate_prob.squeeze(-1)
             gate_logit = torch.logit(gate_prob.clamp(1.0e-5, 1.0 - 1.0e-5))
             ret["dynamic_timbre_gate_logit_raw"] = gate_logit.squeeze(-1)
@@ -796,12 +807,13 @@ class ConanStyleConditioningMixin:
             gate = torch.sigmoid(gate_logit * float(gate_scale) + float(gate_bias))
             ret["dynamic_timbre_tvt_enabled"] = False
             ret["dynamic_timbre_tvt_prior_scale"] = float(tvt_prior_scale)
-        boundary_mask = build_dynamic_timbre_boundary_mask(
+        boundary_mask, boundary_meta = build_dynamic_timbre_boundary_mask(
             ret.get("content"),
             padding_mask=src_key_padding_mask,
             padding_idx=self.content_padding_idx,
             silent_token=self._get_hparam("silent_token", None),
             radius=control.boundary_radius,
+            return_metadata=True,
         )
         gate, boundary_scale = apply_boundary_suppression_to_gate(
             gate,
@@ -809,14 +821,23 @@ class ConanStyleConditioningMixin:
             suppress_strength=control.boundary_suppress_strength,
         )
         if use_tvt and tvt_payload is not None:
-            aligned = tvt_payload["candidate_delta"] * gate
-            anchor_target_sequence = tvt_payload["candidate_absolute"]
+            candidate_delta = tvt_payload["candidate_delta"]
+            if upper_bound_progress < 1.0:
+                candidate_delta = (
+                    (1.0 - upper_bound_progress) * local_delta
+                    + upper_bound_progress * candidate_delta
+                )
+            anchor_target_sequence = global_timbre_anchor + candidate_delta
+            aligned = candidate_delta * gate
         else:
-            aligned = aligned * gate
-            anchor_target_sequence = aligned
+            candidate_delta = local_delta
+            anchor_target_sequence = global_timbre_anchor + candidate_delta
+            aligned = candidate_delta * gate
         ret["tv_gloss"] = guided_loss
         ret["dynamic_timbre_attn"] = attn
         ret["dynamic_timbre"] = aligned
+        ret["dynamic_timbre_local_absolute"] = local_absolute
+        ret["dynamic_timbre_local_delta"] = local_delta
         ret["dynamic_timbre_gate"] = gate.squeeze(-1)
         ret["dynamic_timbre_mask"] = src_key_padding_mask
         ret["dynamic_timbre_memory"] = timbre_embedding
@@ -825,6 +846,9 @@ class ConanStyleConditioningMixin:
         ret["dynamic_timbre_boundary_scale"] = (
             boundary_scale.squeeze(-1) if isinstance(boundary_scale, torch.Tensor) else None
         )
+        if isinstance(boundary_meta, dict):
+            ret["dynamic_timbre_boundary_transition_rate"] = boundary_meta.get("transition_rate")
+            ret["dynamic_timbre_boundary_dense_units_detected"] = boundary_meta.get("dense_units_detected")
         ret["dynamic_timbre_anchor_shift"] = anchor_shift.squeeze(1) if isinstance(anchor_shift, torch.Tensor) else None
         ret["dynamic_timbre_style_context"] = style_context if style_context_available else None
         ret["dynamic_timbre_style_condition_scale"] = float(style_condition_scale)

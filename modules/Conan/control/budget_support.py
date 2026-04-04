@@ -4,7 +4,12 @@ from typing import Any, Mapping
 
 import torch
 
+from modules.Conan.common import first_present
 from modules.Conan.control.separation_metrics import resolve_dynamic_timbre_frame_weight
+
+
+def _present(mapping, *keys, default=None):
+    return first_present(mapping, *keys, default=default)
 
 
 def resolve_dynamic_timbre_budget_support_weight(
@@ -21,7 +26,7 @@ def resolve_dynamic_timbre_budget_support_weight(
         sample.get("uv"),
         sample.get("energy"),
         reference,
-        mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+        mask=_present(output, "dynamic_timbre_mask", "style_trace_mask"),
         uv_floor=float(config.get("dynamic_timbre_budget_uv_floor", 0.25)),
         energy_floor=float(config.get("dynamic_timbre_budget_energy_floor", 0.10)),
         energy_power=float(config.get("dynamic_timbre_budget_energy_power", 0.5)),

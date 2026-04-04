@@ -1,6 +1,5 @@
 import argparse
 import os
-import numpy as np
 import importlib
 import sys
 from pathlib import Path
@@ -8,6 +7,9 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+import utils.commons.single_thread_env  # NOQA
+import numpy as np
 
 from utils.commons.hparams import set_hparams, hparams
 from utils.commons.indexed_datasets import IndexedDatasetBuilder

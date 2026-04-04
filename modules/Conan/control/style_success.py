@@ -12,6 +12,7 @@ STYLE_SUCCESS_PAIR_WEIGHT = 0.50
 STYLE_SUCCESS_RANK_WEIGHT = 1.00
 STYLE_SUCCESS_RANK_TEMPERATURE = 0.20
 STYLE_SUCCESS_SELF_REF_SCALE = 0.35
+STYLE_SUCCESS_MEMORY_FALLBACK_SCALE = 0.60
 STYLE_SUCCESS_PROXY_BACKFILL_MIN_DISTANCE = 1.0e-4
 STYLE_SUCCESS_PROXY_MIN_BATCH = 4
 STYLE_SUCCESS_LABEL_RANK_SCALE = 1.00
@@ -72,6 +73,16 @@ def resolve_style_success_bool_flag(value: Any, *, default: bool = False):
     return bool(value)
 
 
+def _resolve_runtime_scalar_flag(value: Any, *, default: bool = False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            return bool(default)
+        return bool(float(value.detach().float().item()) > 0.5)
+    return resolve_style_success_bool_flag(value, default=default)
+
+
 def resolve_style_success_rank_scale_defaults(config: Mapping[str, Any] | None = None):
     config = config if isinstance(config, Mapping) else {}
 
@@ -100,6 +111,8 @@ def resolve_style_success_rank_source_scale(
 ):
     defaults = resolve_style_success_rank_scale_defaults(config)
     normalized_source = str(source or "none").strip().lower()
+    if normalized_source in {"", "none", "missing"}:
+        return 0.0
     return float(defaults.get(normalized_source, 1.0))
 
 
@@ -472,6 +485,24 @@ def resolve_style_success_negative_masks(
         device=device,
     )
     label_valid_rows = _valid_negative_rows(label_negative_mask, min_count=1)
+    effective_proxy_min_count = min(
+        max(int(proxy_min_count), 1),
+        max(int(batch_size) - 1, 1),
+    )
+    label_proxy_sufficient_rows = _valid_negative_rows(
+        label_negative_mask,
+        min_count=effective_proxy_min_count,
+    )
+    label_negative_counts = (
+        label_negative_mask.sum(dim=-1)
+        if isinstance(label_negative_mask, torch.Tensor)
+        else None
+    )
+    label_rows_below_proxy_min_count = (
+        (~label_proxy_sufficient_rows)
+        if isinstance(label_proxy_sufficient_rows, torch.Tensor)
+        else None
+    )
 
     proxy_min_batch = max(int(proxy_min_batch), 0)
     proxy_batch_gate_passed = batch_size >= max(proxy_min_batch, 1)
@@ -513,17 +544,26 @@ def resolve_style_success_negative_masks(
 
     resolved_negative_mask = None
     source = "none"
+    proxy_supplemented_rows = None
+    proxy_augmented_rows = None
+    resolved_proxy_backfill_rows = None
     if isinstance(label_negative_mask, torch.Tensor):
         resolved_negative_mask = label_negative_mask.clone()
         source = "label"
         if (
             isinstance(proxy_negative_mask, torch.Tensor)
-            and isinstance(label_valid_rows, torch.Tensor)
             and isinstance(proxy_valid_rows, torch.Tensor)
+            and isinstance(label_proxy_sufficient_rows, torch.Tensor)
         ):
-            backfill_rows = (~label_valid_rows) & proxy_valid_rows
+            backfill_rows = (~label_proxy_sufficient_rows) & proxy_valid_rows
             if backfill_rows.any():
-                resolved_negative_mask[backfill_rows] = proxy_negative_mask[backfill_rows]
+                resolved_negative_mask[backfill_rows] = (
+                    resolved_negative_mask[backfill_rows]
+                    | proxy_negative_mask[backfill_rows]
+                )
+                proxy_supplemented_rows = backfill_rows
+                proxy_augmented_rows = backfill_rows
+                resolved_proxy_backfill_rows = backfill_rows
                 source = "label_plus_proxy_backfill"
     elif isinstance(proxy_negative_mask, torch.Tensor):
         resolved_negative_mask = proxy_negative_mask
@@ -548,6 +588,11 @@ def resolve_style_success_negative_masks(
         if isinstance(proxy_backfill_rows, torch.Tensor)
         else 0.0
     )
+    proxy_augmented_row_frac = (
+        proxy_augmented_rows.float().mean()
+        if isinstance(proxy_augmented_rows, torch.Tensor)
+        else 0.0
+    )
 
     return {
         "negative_mask": resolved_negative_mask,
@@ -555,7 +600,14 @@ def resolve_style_success_negative_masks(
         "proxy_negative_mask": proxy_negative_mask,
         "valid_rows": valid_rows,
         "label_valid_rows": label_valid_rows,
+        "label_proxy_sufficient_rows": label_proxy_sufficient_rows,
+        "label_negative_counts": label_negative_counts,
+        "label_rows_below_proxy_min_count": label_rows_below_proxy_min_count,
         "proxy_valid_rows": proxy_valid_rows,
+        "proxy_supplemented_rows": proxy_supplemented_rows,
+        "proxy_augmented_rows": proxy_augmented_rows,
+        "proxy_augmented_row_frac": proxy_augmented_row_frac,
+        "resolved_proxy_backfill_rows": resolved_proxy_backfill_rows,
         "source": source,
         "negative_pair_density": negative_pair_density,
         "negative_row_density": negative_row_density,
@@ -860,12 +912,33 @@ def style_success_supervision_scale(
     *,
     default_self_ref_scale: float = STYLE_SUCCESS_SELF_REF_SCALE,
 ):
-    if bool(output.get("reference_curriculum_use_self_ref", False)):
-        return max(
+    scale = 1.0
+    if _resolve_runtime_scalar_flag(
+        output.get("reference_curriculum_use_self_ref", False),
+        default=False,
+    ):
+        scale *= max(
             float(config.get("style_success_self_ref_scale", default_self_ref_scale)),
             0.0,
         )
-    return 1.0
+    memory_fallback_used = _resolve_runtime_scalar_flag(
+        output.get("style_success_target_memory_fallback_used", False),
+        default=False,
+    )
+    target_source = _normalize_style_success_source(
+        output.get("style_success_target_source", "")
+    )
+    if memory_fallback_used or target_source == "style_memory_reference_fallback":
+        scale *= max(
+            float(
+                config.get(
+                    "style_success_memory_fallback_scale",
+                    STYLE_SUCCESS_MEMORY_FALLBACK_SCALE,
+                )
+            ),
+            0.0,
+        )
+    return min(scale, 1.0)
 
 
 __all__ = [
@@ -873,6 +946,7 @@ __all__ = [
     "STYLE_SUCCESS_RANK_WEIGHT",
     "STYLE_SUCCESS_RANK_TEMPERATURE",
     "STYLE_SUCCESS_SELF_REF_SCALE",
+    "STYLE_SUCCESS_MEMORY_FALLBACK_SCALE",
     "STYLE_SUCCESS_SELF_DERIVED_RUNTIME_SOURCES",
     "STYLE_SUCCESS_PROXY_MIN_BATCH",
     "STYLE_SUCCESS_LABEL_RANK_SCALE",

@@ -90,6 +90,7 @@ style_success_proxy_use_rate_proxy: false
 style_success_label_rank_scale: 1.0
 style_success_label_plus_proxy_backfill_scale: 0.75
 style_success_proxy_rank_scale: 0.5
+style_success_memory_fallback_scale: 0.6
 style_success_rank_min_negative_row_frac: 0.25
 style_success_rank_min_mean_negatives_per_row: 2.0
 style_success_rank_min_effective_support: 0.20

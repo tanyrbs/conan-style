@@ -12,8 +12,8 @@ A focused repository audit/update pass landed on 2026-04-04. Highlights:
 - binary indexed datasets now write plain `int64` offset sidecars while keeping legacy dict-style `.idx` files readable
 - training datasets now build speaker/condition sampling buckets deterministically from `seed` and avoid extra tensor copies on hot data paths
 - inference hot paths now run under `torch.inference_mode()` for lower autograd overhead
-
-See `docs/project_audit_20260404.md` for the concrete findings and shipped fixes.
+- main training/data entrypoints now share one early `single_thread_env` helper that uses `setdefault(...)` instead of hard-overwriting host thread caps
+- optional deps on the mainline path (`g2p_en`, `nltk`, `textgrid`, `tensorboard`, `resemblyzer`) are now gated much closer to their real call sites instead of failing at import time
 
 **Repository note:** this repo is our Conan-based modified implementation, not an official Conan upstream repository or the authoritative "official implementation". This README only describes the shipped contract in this codebase.
 
@@ -22,6 +22,23 @@ This repository snapshot keeps only our Conan-based single-reference strong-styl
 Review-archive note: do **not** infer train-readiness from repository text alone.
 Some checkouts may already have staged `data/*` and `checkpoints/*` artifacts at the canonical paths, while others may not.
 Treat the prep gate plus short smoke runs as the source of truth for whether the current local checkout is actually ready.
+
+## Verified local status (2026-04-04)
+
+Two different local environments were checked on 2026-04-04:
+
+- base shell env: Python `3.13`, `torch/torchaudio 2.7.0+cpu`, `nltk 3.9.1` -> `MAINLINE_TRAIN_PREP_NOT_READY`
+- conda env `conan`: Python `3.10.19`, `torch/torchaudio 2.5.1+cpu`, `nltk 3.8.1` -> `MAINLINE_TRAIN_PREP_OK`
+
+In the verified `conan` env, the following all passed:
+
+- `pytest -q tests/test_conan_mainline_targeted.py`
+- `python -m compileall -q modules tasks inference utils data_gen tests`
+- local `set_hparams(..., global_hparams=False)` + `Conan(0, hparams)` construction
+- `python data_gen/tts/runs/binarize_smoke.py --config egs/conan_binarize.yaml ...`
+- `python tasks/run.py --config egs/conan_emformer.yaml ... max_updates=1 ...`
+
+This machine is still CPU-only, so that result should be read as **train-readiness / chain integrity confirmed**, not as a throughput claim.
 
 ## Canonical configs
 
@@ -73,7 +90,7 @@ Implementation note for this 2026-04-03 closure pass:
 
 Important: this mainline is a **bounded single-reference factorization contract**, not a proof of perfect disentanglement. The code explicitly surfaces `factorization_guaranteed: false`; the shipped losses constrain identity drift, timbre budget, pitch residual safety, and late-owner dominance, but they do not mathematically guarantee that every internal branch learns a unique semantic role.
 
-`lambda_style_success_rank` is intentionally training-side only. It does not open a new inference control surface; instead it adds a lower-bound style-success signal that combines paired self/reference alignment with weak-label batch ranking when metadata negatives are available. The target side is kept reference-derived only: self-derived runtime summaries such as `style_trace_pooled` / `style_trace_blended_with_reference` are excluded from that lower-bound target, and runtime summaries that merely inherit the upstream global summary now preserve the **true** provenance of that upstream source instead of laundering `fallback_timbre_anchor` into a fake reference target. `style_trace_memory` is also no longer mixed into every target by default; it is only used as an explicit fallback bank when no approved reference-derived summary is available, surfacing as `style_memory_reference_fallback` with `style_success_target_memory_fallback_used=1` (the older `style_success_target_memory_used` flag is still emitted as a compatibility alias). `tasks/Conan/mainline_train_prep.py` now reports whether the staged artifacts imply `paired_plus_weak_label_ranking` or only `paired_only`; if the staged condition artifacts expose no usable label buckets (`num_labels <= 1`), the label-driven weak-ranking branch naturally degenerates toward paired alignment rather than meaningful cross-label ranking. In the currently staged LibriTTS-single artifacts in this checkout, those weak-label buckets are empty, so the prep summary resolves to `paired_only`. On top of that, the shipped rank loss now has a conservative **proxy-negative fallback** for label-sparse batches: label negatives remain first-class, the distance-threshold mask stays first-priority, and only rows that still fall short of the proxy minimum count receive row-wise farthest-example backfill. That backfill also keeps a tiny minimum-distance guard, so homogeneous batches do not invent fake negatives just to satisfy the bookkeeping. Canonical mainline now also disables proxy negatives entirely for very small batches (`style_success_proxy_min_batch: 4`) and keeps source-aware rank downscaling (`label: 1.0`, `label_plus_proxy_backfill: 0.75`, `proxy: 0.5`) so proxy-only supervision cannot silently pretend to be as trustworthy as label-backed negatives. Canonical mainline keeps `style_success_proxy_use_rate_proxy: false`, so that fallback defaults to acoustic/prosodic cues (`log_energy_mean/std`, voiced ratio, voiced-frame **log-domain** `f0` spread) instead of treating text/content-length rate proxy as a public default; the length/rate shortcut remains research opt-in only. The prep summary now also exposes a small-batch runtime preview of which negative path is actually available (`label`, `proxy`, or `label_plus_proxy_backfill`) instead of only the artifact-level label-map view.
+`lambda_style_success_rank` is intentionally training-side only. It does not open a new inference control surface; instead it adds a lower-bound style-success signal that combines paired self/reference alignment with weak-label batch ranking when metadata negatives are available. The target side is kept reference-derived only: self-derived runtime summaries such as `style_trace_pooled` / `style_trace_blended_with_reference` are excluded from that lower-bound target, and runtime summaries that merely inherit the upstream global summary now preserve the **true** provenance of that upstream source instead of laundering `fallback_timbre_anchor` into a fake reference target. `style_trace_memory` is also no longer mixed into every target by default; it is only used as an explicit fallback bank when no approved reference-derived summary is available, surfacing as `style_memory_reference_fallback` with `style_success_target_memory_fallback_used=1` (the older `style_success_target_memory_used` flag is still emitted as a compatibility alias). When that weaker fallback target is used, canonical mainline now also downscales style-success supervision with `style_success_memory_fallback_scale` (default `0.6`), and that factor multiplies with the existing self-reference downscale (`style_success_self_ref_scale`, default `0.35`) instead of pretending fallback memory targets deserve full-strength supervision. `tasks/Conan/mainline_train_prep.py` now reports whether the staged artifacts imply `paired_plus_weak_label_ranking` or only `paired_only`; if the staged condition artifacts expose no usable label buckets (`num_labels <= 1`), the label-driven weak-ranking branch naturally degenerates toward paired alignment rather than meaningful cross-label ranking. In the currently staged LibriTTS-single artifacts in this checkout, those weak-label buckets are empty, so the prep summary resolves to `paired_only`. On top of that, the shipped rank loss now has a conservative **proxy-negative fallback** for label-sparse batches: label negatives remain first-class, the distance-threshold mask stays first-priority, and only rows that still fall short of the proxy minimum count receive row-wise farthest-example backfill. That backfill also keeps a tiny minimum-distance guard, so homogeneous batches do not invent fake negatives just to satisfy the bookkeeping. Canonical mainline now also disables proxy negatives entirely for very small batches (`style_success_proxy_min_batch: 4`) and keeps source-aware rank downscaling (`label: 1.0`, `label_plus_proxy_backfill: 0.75`, `proxy: 0.5`) so proxy-only supervision cannot silently pretend to be as trustworthy as label-backed negatives. Canonical mainline keeps `style_success_proxy_use_rate_proxy: false`, so that fallback defaults to acoustic/prosodic cues (`log_energy_mean/std`, voiced ratio, voiced-frame **log-domain** `f0` spread) instead of treating text/content-length rate proxy as a public default; the length/rate shortcut remains research opt-in only. The prep summary now also exposes a small-batch runtime preview of which negative path is actually available (`label`, `proxy`, or `label_plus_proxy_backfill`) instead of only the artifact-level label-map view.
 This loss is also more honest now when batch support is weak: ranking activation no longer depends only on “mask exists”, but on support density (`negative_row_density`, `negative_pair_density`, `mean_negatives_per_row`) plus proxy feature informativeness. When proxy/negative support is too weak, the rank term is gated off and diagnostics expose the disable reason instead of pretending that the ranking branch is still trustworthy.
 
 An additional optional research regularizer is now wired but still shipped as `0.0` by default: `lambda_style_timbre_runtime_overlap`. It does not claim disentanglement; it simply measures and, when enabled, penalizes excessive frame-wise overlap between `style_decoder_residual` and `dynamic_timbre_decoder_residual_prebudget`. Importantly, explicit ablation runs can now enable it while staying on `control_loss_profile: mainline_minimal`; the schedule layer no longer silently zeroes that opt-in regularizer.
@@ -126,7 +143,7 @@ So:
 
 This repo encodes the intended canonical mainline contract, but universal verification still depends on the **current local environment** and on running the prep gate plus smoke commands in that environment.
 Treat `tasks/Conan/mainline_train_prep.py` and a short real-data smoke run as the source of truth for train-readiness.
-That prep gate validates the shipped canonical config; optional research regularizers such as `lambda_style_timbre_runtime_overlap` remain opt-in ablations, not part of the default prep pass. It also now checks exact `requirements.txt` pins for `torch` / `torchaudio` / `torchdyn` / `textgrid` / `g2p_en` / `nltk`, plus Python-vs-pinned-`torchaudio` compatibility. That compatibility gate is now updated to the currently published wheel boundary: `torchaudio 2.3.x .. 2.5.x` are treated as Python `3.8 .. 3.12`, while `2.6.x` extends to Python `3.13`; out-of-range runtimes are no longer silently waved through just because some local import happens to succeed. The runtime gate now explicitly covers `g2p_en` importability, the NLTK tagger + `cmudict` resources that `g2p_en` needs, `tasks.Conan.Conan` importability, and a **local** `Conan(0, hparams)` construction path using `set_hparams(..., global_hparams=False)` so hidden singleton-config dependencies are surfaced instead of being masked by global state. On the data side, prep now also verifies that `*_lengths.npy`, `*_ref_indices.npy`, and `*_spk_ids.npy` stay mutually aligned and that each reference index still points to a same-speaker sample, so stale binary sidecars are less likely to false-pass. So `code_contract_ready: true` no longer implies `train_ready_now: true`.
+That prep gate validates the shipped canonical config; optional research regularizers such as `lambda_style_timbre_runtime_overlap` remain opt-in ablations, not part of the default prep pass. It also now checks exact `requirements.txt` pins for `torch` / `torchaudio` / `torchdyn` / `textgrid` / `g2p_en` / `nltk`, plus Python-vs-pinned-`torchaudio` compatibility. That compatibility gate is now updated to the currently published wheel boundary: `torchaudio 2.3.x .. 2.5.x` are treated as Python `3.8 .. 3.11`, while `2.6.x` extends to Python `3.13`; out-of-range runtimes are no longer silently waved through just because some local import happens to succeed. The runtime gate now explicitly covers `g2p_en` importability, the NLTK tagger + `cmudict` resources that `g2p_en` needs, `tasks.Conan.Conan` importability, and a **local** `Conan(0, hparams)` construction path using `set_hparams(..., global_hparams=False)` so hidden singleton-config dependencies are surfaced instead of being masked by global state. On the data side, prep now also verifies that `*_lengths.npy`, `*_ref_indices.npy`, and `*_spk_ids.npy` stay mutually aligned and that each reference index still points to a same-speaker sample, so stale binary sidecars are less likely to false-pass. So `code_contract_ready: true` no longer implies `train_ready_now: true`.
 Prep readiness is now also split explicitly into `code_contract_ready`, `environment_ready`, `data_ready`, and `data_dependent_preview_ready`, with `failed_checks_by_category` exposing which category still blocks the current checkout.
 
 Key audited properties in the checked-in code:
@@ -243,6 +260,16 @@ $env:N_PROC='1'; python data_gen/tts/runs/binarize.py --config egs/conan_binariz
 
 ### 3) Mainline prep gate
 
+Recommended order in a real training shell:
+
+1. `conda activate conan`
+2. run the prep gate
+3. run the targeted regression tests
+4. run `compileall`
+5. optionally run `binarize_smoke.py`
+6. run a 1-step `tasks/run.py` smoke
+7. only then start real training
+
 ```bash
 python tasks/Conan/mainline_train_prep.py --config egs/conan_emformer.yaml
 ```
@@ -254,6 +281,9 @@ Expected result after the processed/binary datasets are staged correctly:
 If the current local environment still has dependency pin drift or missing staged artifacts, the honest result is `MAINLINE_TRAIN_PREP_NOT_READY`; in that case, treat the JSON summary fields `code_contract_ready` vs `ready` / `train_ready_now` as the source of truth rather than assuming the repo text implies train-readiness.
 
 ### 4) Real training
+
+The commands below assume you already activated the compatible env with `conda activate conan`.
+On the Windows audit host used on 2026-04-04, repeated `conda run -n conan ...` calls were less reliable than an activated shell, so the verified smoke path used plain `python` inside the activated env.
 
 ```bash
 python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineTrain
@@ -268,7 +298,7 @@ python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineSmo
 Recommended short audit smoke in a compatible `conda` env after staging real data:
 
 ```bash
-conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmokeCpu --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1,num_sanity_val_steps=0,max_updates=2,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[]"
+python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmokeCpu --hparams "ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1,num_sanity_val_steps=0,max_updates=2,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[]"
 ```
 
 `max_updates` now stops exactly at the requested batch budget instead of overshooting by one step.
@@ -276,7 +306,7 @@ conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_na
 Short warm-start audit smoke from the shipped Conan checkpoint (`<= 50` updates):
 
 ```bash
-conda run -n conan python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmoke8 --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=8,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=1,lambda_style_timbre_runtime_overlap=0.005"
+python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmoke8 --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=8,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=1,lambda_style_timbre_runtime_overlap=0.005"
 ```
 
 Because `slow_style_trace` now really enters the decoder runtime bundle, old checkpoints should be A/B checked if you are comparing exact forward behavior before vs. after this closure patch. For new training or resumed fine-tuning on the canonical path, this is the intended corrected behavior.
@@ -287,8 +317,7 @@ Because `slow_style_trace` now really enters the decoder runtime bundle, old che
 python inference/run_voice_conversion.py --pair_config inference/conan_single_reference_demo.example.json
 ```
 
-## Core docs
+## Primary docs
 
+- `README.md`
 - `docs/canonical_training_mainline_20260401.md`
-- `inference/README.md`
-- `docs/streaming_low_latency_mainline_note_20260403.md`

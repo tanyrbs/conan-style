@@ -4,16 +4,18 @@ import importlib
 from importlib import metadata as importlib_metadata
 import json
 import os
-import numpy as np
 import re
 import sys
-import torch
-import yaml
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+import utils.commons.single_thread_env  # NOQA
+import numpy as np
+import torch
+import yaml
 
 from modules.Conan.style_mainline import (
     resolve_expressive_upper_bound_progress,
@@ -22,6 +24,7 @@ from modules.Conan.style_mainline import (
 from modules.Conan.style_profiles import resolve_style_profile
 from modules.Conan.reference_bundle import build_control_kwargs, build_style_runtime_kwargs
 from modules.Conan.control.style_success import (
+    STYLE_SUCCESS_MEMORY_FALLBACK_SCALE,
     resolve_style_success_bool_flag,
     resolve_style_success_negative_masks,
     resolve_style_success_rank_source_scale,
@@ -211,9 +214,9 @@ def _resolve_torchaudio_python_range(version: str):
     major_minor = ".".join(version.split(".")[:2])
     compat = {
         "2.6": ((3, 9), (3, 13)),
-        "2.5": ((3, 8), (3, 12)),
-        "2.4": ((3, 8), (3, 12)),
-        "2.3": ((3, 8), (3, 12)),
+        "2.5": ((3, 8), (3, 11)),
+        "2.4": ((3, 8), (3, 11)),
+        "2.3": ((3, 8), (3, 11)),
         "2.2": ((3, 8), (3, 11)),
         "2.1": ((3, 8), (3, 11)),
         "2.0": ((3, 8), (3, 11)),
@@ -744,6 +747,14 @@ def _style_success_runtime_preview(batch, hparams):
 
 def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime_preview=None):
     style_success_lambda = float(hparams.get("lambda_style_success_rank", 0.0) or 0.0)
+    self_ref_scale = float(hparams.get("style_success_self_ref_scale", 0.35) or 0.35)
+    memory_fallback_scale = float(
+        hparams.get(
+            "style_success_memory_fallback_scale",
+            STYLE_SUCCESS_MEMORY_FALLBACK_SCALE,
+        )
+        or STYLE_SUCCESS_MEMORY_FALLBACK_SCALE
+    )
     proxy_negative_threshold = float(hparams.get("style_success_proxy_negative_threshold", 1.25) or 1.25)
     proxy_negative_min_count = int(hparams.get("style_success_proxy_negative_min_count", 2) or 0)
     proxy_min_batch = int(hparams.get("style_success_proxy_min_batch", 4) or 0)
@@ -791,6 +802,8 @@ def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime
         "usable_weak_label_fields": usable_weak_label_fields,
         "weak_label_label_counts": weak_label_counts,
         "proxy_negative_fallback_enabled": bool(pair_enabled),
+        "self_ref_scale": self_ref_scale,
+        "memory_fallback_scale": memory_fallback_scale,
         "proxy_negative_threshold": proxy_negative_threshold,
         "proxy_negative_min_count": proxy_negative_min_count,
         "proxy_min_batch": proxy_min_batch,
@@ -819,7 +832,7 @@ def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime
         "note": (
             "artifact-level label summary plus optional small-batch runtime preview; actual rank negatives still depend "
             "on per-item batch composition, and label negatives remain authoritative while proxy negatives only backfill "
-            "rows that lack label support. Canonical mainline also keeps a proxy min-batch gate and source-aware rank "
+            "rows that still fall below the proxy minimum count. Canonical mainline also keeps a proxy min-batch gate and source-aware rank "
             "downscaling so small batches and proxy-only negatives stay conservative. The text/content-length rate "
             "proxy remains disabled by default so the fallback negatives stay acoustic/prosodic unless research "
             "overrides explicitly opt in."
@@ -1837,6 +1850,17 @@ def run_prep(args):
             "expected": "[0.0, 1.0]",
         }
     )
+    style_success_self_ref_scale = float(
+        hparams.get("style_success_self_ref_scale", 0.35)
+    )
+    checks.append(
+        {
+            "name": "style_success_self_ref_scale_range",
+            "ok": 0.0 <= style_success_self_ref_scale <= 1.0,
+            "actual": style_success_self_ref_scale,
+            "expected": "[0.0, 1.0]",
+        }
+    )
     style_success_proxy_rank_scale = float(
         hparams.get(
             "style_success_proxy_rank_scale",
@@ -1848,6 +1872,20 @@ def run_prep(args):
             "name": "style_success_proxy_rank_scale_range",
             "ok": 0.0 <= style_success_proxy_rank_scale <= 1.0,
             "actual": style_success_proxy_rank_scale,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    style_success_memory_fallback_scale = float(
+        hparams.get(
+            "style_success_memory_fallback_scale",
+            STYLE_SUCCESS_MEMORY_FALLBACK_SCALE,
+        )
+    )
+    checks.append(
+        {
+            "name": "style_success_memory_fallback_scale_range",
+            "ok": 0.0 <= style_success_memory_fallback_scale <= 1.0,
+            "actual": style_success_memory_fallback_scale,
             "expected": "[0.0, 1.0]",
         }
     )

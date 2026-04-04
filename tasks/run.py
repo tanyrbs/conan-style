@@ -1,13 +1,11 @@
-import os
 import sys
 from pathlib import Path
-
-os.environ["OMP_NUM_THREADS"] = "1"
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+import utils.commons.single_thread_env  # NOQA
 from utils.commons.hparams import hparams, set_hparams
 import importlib
 

@@ -4,10 +4,16 @@ import random
 import subprocess
 import sys
 from datetime import datetime
+from typing import Any
 import numpy as np
 import torch.utils.data
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    _TENSORBOARD_IMPORT_ERROR = None
+except Exception as exc:  # optional dependency: logging only
+    SummaryWriter = None
+    _TENSORBOARD_IMPORT_ERROR = exc
 from utils.commons.dataset_utils import data_loader
 from utils.commons.hparams import hparams
 from utils.commons.meters import AvgrageMeter
@@ -21,6 +27,14 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format=log_format, datefmt='%m/%d %I:%M:%S %p')
 
 
+class _NullSummaryWriter:
+    def __getattr__(self, name):
+        def _noop(*args, **kwargs):
+            return None
+
+        return _noop
+
+
 class BaseTask(nn.Module):
     def __init__(self, *args, **kwargs):
         super(BaseTask, self).__init__()
@@ -28,11 +42,11 @@ class BaseTask(nn.Module):
         self.global_step = 0
         self.trainer = None
         self.use_ddp = False
-        self.gradient_clip_norm = hparams['clip_grad_norm']
+        self.gradient_clip_norm = hparams.get('clip_grad_norm', 0)
         self.gradient_clip_val = hparams.get('clip_grad_value', 0)
         self.model = None
         self.training_losses_meter = None
-        self.logger: SummaryWriter = None
+        self.logger: Any = None
 
     ######################
     # build model, dataloaders, optimizer, scheduler and tensorboard
@@ -68,6 +82,14 @@ class BaseTask(nn.Module):
     def build_tensorboard(self, save_dir, name, **kwargs):
         log_dir = os.path.join(save_dir, name)
         os.makedirs(log_dir, exist_ok=True)
+        if SummaryWriter is None:
+            logging.warning(
+                "TensorBoard is unavailable; falling back to a no-op SummaryWriter. "
+                "Original import error: %s",
+                _TENSORBOARD_IMPORT_ERROR,
+            )
+            self.logger = _NullSummaryWriter()
+            return
         self.logger = SummaryWriter(log_dir=log_dir, **kwargs)
 
     ######################

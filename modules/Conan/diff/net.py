@@ -114,9 +114,8 @@ def Conv1d(*args, **kwargs):
     return layer
 
 
-@torch.jit.script
 def silu(x):
-    return x * torch.sigmoid(x)
+    return F.silu(x)
 
 
 class ResidualBlock(nn.Module):

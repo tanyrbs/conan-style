@@ -2,12 +2,25 @@ import re
 
 import torch
 import numpy as np
-from textgrid import TextGrid
+try:
+    from textgrid import TextGrid
+    _TEXTGRID_IMPORT_ERROR = None
+except Exception as exc:  # optional dependency: only required for MFA/TextGrid alignment
+    TextGrid = None
+    _TEXTGRID_IMPORT_ERROR = exc
 
 from utils.text.text_encoder import is_sil_phoneme
 
 
+def _require_textgrid():
+    if TextGrid is None:
+        raise ImportError(
+            "utils.audio.align.get_mel2ph requires the optional 'textgrid' package."
+        ) from _TEXTGRID_IMPORT_ERROR
+
+
 def get_mel2ph(tg_fn, ph, mel, hop_size, audio_sample_rate, min_sil_duration=0):
+    _require_textgrid()
     ph_list = ph.split(" ")
     itvs = TextGrid.fromFile(tg_fn)[1]
     itvs_ = []

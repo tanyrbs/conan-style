@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 
+from modules.Conan.common import first_present
 from modules.Conan.control.budget_support import (
     resolve_dynamic_timbre_budget_support_weight as _resolve_dynamic_timbre_budget_support_weight,
 )
@@ -106,9 +107,13 @@ def _masked_sequence_mean(sequence, mask=None):
     return torch.where(torch.isfinite(pooled), pooled, torch.zeros_like(pooled))
 
 
+def _present(mapping, *keys, default=None):
+    return first_present(mapping, *keys, default=default)
+
+
 def _style_representation(output):
     style_owner = output.get("style_decoder_residual")
-    style_owner_mask = output.get("style_decoder_residual_mask")
+    style_owner_mask = _present(output, "style_decoder_residual_mask", "style_trace_mask")
     if isinstance(style_owner, torch.Tensor):
         return _masked_sequence_mean(style_owner, style_owner_mask)
     combined_style_trace, combined_style_trace_mask = resolve_combined_style_trace(output)
@@ -131,7 +136,7 @@ def _fast_style_representation(output):
 def _timbre_representation(output):
     return _masked_sequence_mean(
         output.get("dynamic_timbre"),
-        output.get("dynamic_timbre_mask"),
+        _present(output, "dynamic_timbre_mask", "style_trace_mask"),
     )
 
 
@@ -141,7 +146,7 @@ def _global_timbre_anchor(output):
 
 def _global_style_summary(output):
     return _summary_vector(
-        output.get("global_style_summary_runtime", output.get("global_style_summary"))
+        _present(output, "global_style_summary_runtime", "global_style_summary")
     )
 
 
@@ -538,7 +543,14 @@ def _compute_style_success_control_loss(
     )
     for state_key, output_key in (
         ("label_valid_rows", "style_success_label_negative_row_frac"),
+        ("label_negative_counts", "style_success_label_mean_negatives_per_row"),
+        (
+            "label_rows_below_proxy_min_count",
+            "style_success_label_rows_below_proxy_min_count_frac",
+        ),
         ("proxy_valid_rows", "style_success_proxy_negative_row_frac"),
+        ("proxy_supplemented_rows", "style_success_proxy_supplemented_row_frac"),
+        ("proxy_augmented_rows", "style_success_proxy_augmented_row_frac"),
         ("valid_rows", "style_success_negative_row_frac"),
         ("negative_pair_density", "style_success_negative_pair_density"),
         ("negative_row_density", "style_success_negative_row_density"),
@@ -655,19 +667,30 @@ def _compute_style_success_control_loss(
     proxy_rank_scale = float(scale_defaults.get("proxy", 0.5))
     label_valid_rows = negative_state.get("label_valid_rows")
     proxy_valid_rows = negative_state.get("proxy_valid_rows")
+    proxy_backfill_rows = negative_state.get("resolved_proxy_backfill_rows")
+    if not isinstance(proxy_backfill_rows, torch.Tensor):
+        proxy_backfill_rows = negative_state.get("proxy_augmented_rows")
+    if not isinstance(proxy_backfill_rows, torch.Tensor):
+        proxy_backfill_rows = negative_state.get("proxy_supplemented_rows")
     negative_source = str(negative_state.get("source", "none"))
     row_scale = row_scale * label_rank_scale
     proxy_only_rows = None
     if negative_source == "proxy":
         row_scale = row_scale.new_full(row_scale.shape, proxy_rank_scale)
         proxy_only_rows = valid_rows.clone()
-    elif negative_source == "label_plus_proxy_backfill" and isinstance(proxy_valid_rows, torch.Tensor):
-        proxy_only_rows = proxy_valid_rows.clone()
+    elif negative_source == "label_plus_proxy_backfill":
+        proxy_backfilled_rows = None
+        if isinstance(proxy_backfill_rows, torch.Tensor):
+            proxy_backfilled_rows = proxy_backfill_rows.clone()
+        proxy_only_rows = proxy_valid_rows.clone() if isinstance(proxy_valid_rows, torch.Tensor) else None
         if isinstance(label_valid_rows, torch.Tensor):
-            proxy_only_rows = proxy_only_rows & (~label_valid_rows)
-        if proxy_only_rows.any():
+            if isinstance(proxy_only_rows, torch.Tensor):
+                proxy_only_rows = proxy_only_rows & (~label_valid_rows)
+        if isinstance(proxy_backfilled_rows, torch.Tensor):
+            proxy_backfilled_rows = proxy_backfilled_rows & valid_rows
+        if isinstance(proxy_backfilled_rows, torch.Tensor) and proxy_backfilled_rows.any():
             row_scale = torch.where(
-                proxy_only_rows,
+                proxy_backfilled_rows,
                 row_scale.new_full(row_scale.shape, label_plus_proxy_backfill_scale),
                 row_scale,
             )
@@ -764,11 +787,17 @@ def _add_dynamic_timbre_budget_loss(losses, output, sample, config, *, lambda_va
     relative_budget_weight = float(config.get("dynamic_timbre_budget_relative_weight", 0.0))
     style_decoder_residual = output.get("style_decoder_residual")
     slow_style_decoder_residual = output.get("slow_style_decoder_residual")
-    style_owner_base_residual = output.get("style_owner_base_residual", slow_style_decoder_residual)
+    style_owner_base_residual = _present(
+        output,
+        "style_owner_base_residual",
+        "slow_style_decoder_residual",
+        default=slow_style_decoder_residual,
+    )
     style_owner_innovation_residual = output.get("style_owner_innovation_residual")
-    dynamic_timbre_decoder_residual = output.get(
+    dynamic_timbre_decoder_residual = _present(
+        output,
         "dynamic_timbre_decoder_residual_prebudget",
-        output.get("dynamic_timbre_decoder_residual"),
+        "dynamic_timbre_decoder_residual",
     )
     budget_terms = resolve_dynamic_timbre_budget_terms(
         dynamic_timbre_decoder_residual,
@@ -776,7 +805,7 @@ def _add_dynamic_timbre_budget_loss(losses, output, sample, config, *, lambda_va
         slow_style_residual=slow_style_decoder_residual,
         style_base_residual=style_owner_base_residual,
         style_innovation_residual=style_owner_innovation_residual,
-        padding_mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+        padding_mask=_present(output, "dynamic_timbre_mask", "style_trace_mask"),
         budget_ratio=budget_ratio,
         budget_margin=budget_margin,
         slow_style_weight=budget_slow_style_weight,
@@ -793,7 +822,7 @@ def _add_dynamic_timbre_budget_loss(losses, output, sample, config, *, lambda_va
     if isinstance(budget_support_weight, torch.Tensor):
         output["dynamic_timbre_budget_support_weight"] = budget_support_weight.detach()
     valid_weight = _sequence_weight(
-        output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+        _present(output, "dynamic_timbre_mask", "style_trace_mask"),
         reference=timbre_budget,
         boundary_mask=output.get("dynamic_timbre_boundary_mask"),
         frame_weight=budget_support_weight,
@@ -820,7 +849,7 @@ def _add_dynamic_timbre_budget_loss(losses, output, sample, config, *, lambda_va
             stage_meta = stage_outputs.get(stage_name)
             stage_terms = resolve_stage_dynamic_timbre_budget_terms(
                 stage_meta,
-                padding_mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                padding_mask=_present(output, "dynamic_timbre_mask", "style_trace_mask"),
                 budget_ratio=budget_ratio,
                 budget_margin=budget_margin,
                 slow_style_weight=budget_slow_style_weight,
@@ -831,7 +860,7 @@ def _add_dynamic_timbre_budget_loss(losses, output, sample, config, *, lambda_va
             if not isinstance(stage_style_budget, torch.Tensor) or not isinstance(stage_timbre_budget, torch.Tensor):
                 continue
             stage_valid_weight = _sequence_weight(
-                output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                _present(output, "dynamic_timbre_mask", "style_trace_mask"),
                 reference=stage_timbre_budget,
                 boundary_mask=output.get("dynamic_timbre_boundary_mask"),
                 frame_weight=budget_support_weight,
@@ -857,9 +886,10 @@ def _add_style_timbre_runtime_overlap_loss(losses, output, sample, config, *, la
     if lambda_value <= 0.0:
         return
     style_decoder_residual = output.get("style_decoder_residual")
-    dynamic_timbre_prebudget = output.get(
+    dynamic_timbre_prebudget = _present(
+        output,
         "dynamic_timbre_decoder_residual_prebudget",
-        output.get("dynamic_timbre_decoder_residual"),
+        "dynamic_timbre_decoder_residual",
     )
     if not isinstance(style_decoder_residual, torch.Tensor) or not isinstance(dynamic_timbre_prebudget, torch.Tensor):
         return
@@ -872,7 +902,7 @@ def _add_style_timbre_runtime_overlap_loss(losses, output, sample, config, *, la
     overlap_terms = masked_sequence_cosine(
         style_decoder_residual,
         dynamic_timbre_prebudget,
-        mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+        mask=_present(output, "dynamic_timbre_mask", "style_trace_mask"),
         boundary_mask=output.get("dynamic_timbre_boundary_mask"),
         frame_weight=support_weight,
         absolute=resolve_style_success_bool_flag(
@@ -909,7 +939,12 @@ def _add_pitch_residual_safe_loss(losses, output, sample, config, *, lambda_valu
         ):
             voiced_weight = (1.0 - sample_uv.float()).clamp(0.0, 1.0).to(pitch_residual.device)
     residual_weight = _sequence_weight(
-        output.get("style_to_pitch_residual_mask", output.get("dynamic_timbre_mask", output.get("style_trace_mask"))),
+        _present(
+            output,
+            "style_to_pitch_residual_mask",
+            "dynamic_timbre_mask",
+            "style_trace_mask",
+        ),
         reference=pitch_residual,
         voiced_weight=voiced_weight,
     )
@@ -1018,9 +1053,11 @@ def _add_decoder_late_owner_losses(losses, output, config, *, late_owner_lambda,
         else late_style_map
     )
     late_valid_weight = _sequence_weight(
-        output.get(
+        _present(
+            output,
             "dynamic_timbre_mask",
-            output.get("style_decoder_residual_mask", output.get("style_trace_mask")),
+            "style_decoder_residual_mask",
+            "style_trace_mask",
         ),
         reference=late_reference_map,
     )
@@ -1052,9 +1089,11 @@ def _add_decoder_late_owner_losses(losses, output, config, *, late_owner_lambda,
         full_owner_energy = None
         if isinstance(full_owner_style_map, torch.Tensor):
             full_owner_valid_weight = _sequence_weight(
-                output.get(
+                _present(
+                    output,
                     "style_decoder_residual_mask",
-                    output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                    "dynamic_timbre_mask",
+                    "style_trace_mask",
                 ),
                 reference=full_owner_style_map,
             )
@@ -1141,7 +1180,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
     )
     timbre_query_repr = _masked_sequence_mean(
         output.get("timbre_query_inp"),
-        output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+        _present(output, "dynamic_timbre_mask", "style_trace_mask"),
     )
 
     style_trace_consistency_lambda = _lambda("lambda_style_trace_consistency")
@@ -1167,7 +1206,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
                 output_identity_target_source = "output_identity_reference_target"
         if output_identity_target is None:
             output_identity_target = _summary_vector(
-                output.get("output_identity_anchor_target", output.get("global_timbre_anchor"))
+                _present(output, "output_identity_anchor_target", "global_timbre_anchor")
             )
             if output_identity_target is not None:
                 output_identity_target_source = "output_identity_anchor_target"
@@ -1248,7 +1287,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
     if dynamic_timbre_gate_lambda > 0:
         gate_mean = _gate_mean(
             output.get("dynamic_timbre_gate"),
-            output.get("dynamic_timbre_mask"),
+            _present(output, "dynamic_timbre_mask", "style_trace_mask"),
         )
         if gate_mean is not None:
             gate_target = float(config.get("dynamic_timbre_gate_target", 0.6))
@@ -1289,7 +1328,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
             boundary_penalty = _sequence_abs_mean(dynamic_timbre_decoder_residual)
             if isinstance(boundary_penalty, torch.Tensor):
                 valid_weight = _sequence_weight(
-                    output.get("dynamic_timbre_mask", output.get("style_trace_mask")),
+                    _present(output, "dynamic_timbre_mask", "style_trace_mask"),
                     reference=boundary_penalty,
                 )
                 if isinstance(boundary_mask, torch.Tensor):
@@ -1333,7 +1372,7 @@ def add_style_timbre_regularization_losses(losses, output, sample, config):
         if timbre_gate is None:
             timbre_gate = _gate_mean(
                 output.get("dynamic_timbre_gate"),
-                output.get("dynamic_timbre_mask"),
+                _present(output, "dynamic_timbre_mask", "style_trace_mask"),
             )
         if isinstance(style_gate, torch.Tensor) and isinstance(timbre_gate, torch.Tensor):
             gate_rank_ratio = float(config.get("gate_rank_ratio", 0.60))

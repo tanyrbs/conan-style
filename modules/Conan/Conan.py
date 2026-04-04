@@ -6,7 +6,6 @@ from modules.tts.fs import FastSpeech
 import torch
 from modules.Conan.diff.net import DiffNet, F0DiffNet, OriDiffNet, CausalConv1d
 
-from utils.commons.hparams import hparams
 from modules.commons.nar_tts_modules import PitchPredictor
 from modules.commons.layers import Embedding
 from modules.commons.conv import ConvBlocks
@@ -628,20 +627,12 @@ class Conan(
 class ConanPostnet(nn.Module):
     def __init__(self, hparams_override=None):
         super().__init__()
-        if hparams_override is None:
-            if not isinstance(hparams, Mapping) or len(hparams) <= 0:
-                raise ValueError(
-                    "ConanPostnet requires explicit `hparams_override` when the global "
-                    "singleton hparams store is empty. Use ConanPostnet(hparams_override=hp) "
-                    "for local/library construction."
-                )
-            resolved_hparams = hparams
-        else:
-            if not isinstance(hparams_override, Mapping):
-                raise TypeError(
-                    "ConanPostnet `hparams_override` must be a mapping-like config object."
-                )
-            resolved_hparams = hparams_override
+        if not isinstance(hparams_override, Mapping):
+            raise TypeError(
+                "ConanPostnet now requires explicit `hparams_override`; "
+                "pass the resolved config mapping for local/library construction."
+            )
+        resolved_hparams = hparams_override
         self.hparams = deepcopy(resolved_hparams)
         cond_hs = 80 + self.hparams["hidden_size"]
 

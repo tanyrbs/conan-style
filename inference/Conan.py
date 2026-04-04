@@ -265,6 +265,16 @@ class StreamingVoiceConversion:
 
     def _load_reference_mels(self, inp: Dict):
         ref_wav = inp["ref_wav"]
+        mel_cache = {}
+
+        def load_mel_tensor(path: str) -> torch.Tensor:
+            cache_key = os.path.abspath(str(path))
+            cached = mel_cache.get(cache_key)
+            if cached is None:
+                cached = torch.from_numpy(self._wav_to_mel(path)).float().unsqueeze(0).to(self.device)
+                mel_cache[cache_key] = cached
+            return cached
+
         split_reference_surface_enabled = bool(
             self.hparams.get("allow_split_reference_inputs", False)
         )
@@ -278,7 +288,7 @@ class StreamingVoiceConversion:
                 "allow_split_reference_inputs disabled; the inference path will collapse them back to ref_wav.",
                 stacklevel=2,
             )
-        ref_mel = torch.from_numpy(self._wav_to_mel(ref_wav)).float().unsqueeze(0).to(self.device)
+        ref_mel = load_mel_tensor(ref_wav)
         if split_reference_inputs:
             ref_timbre_wav = inp.get("ref_timbre_wav", ref_wav)
             ref_style_wav = inp.get("ref_style_wav", ref_wav)
@@ -287,21 +297,11 @@ class StreamingVoiceConversion:
             ref_accent_wav = inp.get("ref_accent_wav", ref_style_wav)
             bundle = build_reference_bundle_from_inputs(
                 ref=ref_mel,
-                ref_timbre=torch.from_numpy(
-                    self._wav_to_mel(ref_timbre_wav)
-                ).float().unsqueeze(0).to(self.device),
-                ref_style=torch.from_numpy(
-                    self._wav_to_mel(ref_style_wav)
-                ).float().unsqueeze(0).to(self.device),
-                ref_dynamic_timbre=torch.from_numpy(
-                    self._wav_to_mel(ref_dynamic_timbre_wav)
-                ).float().unsqueeze(0).to(self.device),
-                ref_emotion=torch.from_numpy(
-                    self._wav_to_mel(ref_emotion_wav)
-                ).float().unsqueeze(0).to(self.device),
-                ref_accent=torch.from_numpy(
-                    self._wav_to_mel(ref_accent_wav)
-                ).float().unsqueeze(0).to(self.device),
+                ref_timbre=load_mel_tensor(ref_timbre_wav),
+                ref_style=load_mel_tensor(ref_style_wav),
+                ref_dynamic_timbre=load_mel_tensor(ref_dynamic_timbre_wav),
+                ref_emotion=load_mel_tensor(ref_emotion_wav),
+                ref_accent=load_mel_tensor(ref_accent_wav),
                 prompt_fallback_to_style=bool(
                     inp.get(
                         "prompt_ref_fallback_to_style",
@@ -452,7 +452,7 @@ class StreamingVoiceConversion:
             "vocoder_left_context_source": str(self.vocoder_left_context_source),
             "spk_embed_override": bool(spk_embed is not None),
         }
-        with torch.no_grad():
+        with torch.inference_mode():
             reference_cache = self.model.prepare_reference_cache(
                 reference_bundle=ref_mels,
                 spk_embed=spk_embed,
@@ -482,7 +482,7 @@ class StreamingVoiceConversion:
 
     def _extract_offline_content_codes(self, src_mel: torch.Tensor):
         lengths = torch.full((src_mel.size(0),), src_mel.size(1), dtype=torch.long, device=self.device)
-        with torch.no_grad():
+        with torch.inference_mode():
             if self.emformer.mode == "both":
                 emformer_out, _, _ = self.emformer(src_mel, lengths)
             else:
@@ -492,7 +492,7 @@ class StreamingVoiceConversion:
     def _run_model_from_content_codes(self, content_codes: torch.Tensor, runtime: Dict):
         reference_bundle = runtime["reference_bundle"]
         reference_cache = runtime["reference_cache"]
-        with torch.no_grad():
+        with torch.inference_mode():
             return self.model(
                 content=content_codes,
                 spk_embed=runtime["spk_embed"],
@@ -536,7 +536,7 @@ class StreamingVoiceConversion:
                 chunk = torch.cat([chunk, pad], dim=1)
 
             lengths = torch.full((1,), chunk.size(1), dtype=torch.long, device=self.device)
-            with torch.no_grad():
+            with torch.inference_mode():
                 chunk_out, _, state = self.emformer.emformer.infer(chunk, lengths, state)
                 if self.emformer.mode == "both":
                     chunk_out = self.emformer.proj1(chunk_out)

@@ -530,7 +530,7 @@ class ConanPitchGenerationMixin:
             f0_pred = uv_pred[:, :, 1]
             ret["fdiff"] = (
                 (F.mse_loss(f0_pred, f0, reduction="none") * nonpadding).sum()
-                / nonpadding.sum()
+                / nonpadding.sum().clamp_min(1.0)
                 * self.hparams["lambda_f0"]
             )
         return f0, uv

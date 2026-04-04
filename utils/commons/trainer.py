@@ -376,6 +376,9 @@ class Trainer:
         all_progress_bar_metrics = []
         all_log_metrics = []
         task_ref = self.get_task_ref()
+        prepared_batch = batch
+        if self.on_gpu:
+            prepared_batch = move_to_cuda(copy.copy(batch), self.root_gpu)
         for opt_idx, optimizer in enumerate(self.optimizers):
             if optimizer is None:
                 continue
@@ -395,9 +398,7 @@ class Trainer:
             else:
                 amp_context = torch_autocast(enabled=amp_enabled)
             with amp_context:
-                if self.on_gpu:
-                    batch = move_to_cuda(copy.copy(batch), self.root_gpu)
-                args = [batch, batch_idx, opt_idx]
+                args = [copy.copy(prepared_batch), batch_idx, opt_idx]
                 if self.use_ddp:
                     output = self.task(*args)
                 else:
@@ -442,7 +443,7 @@ class Trainer:
                     self.amp_scalar.update()
                 else:
                     optimizer.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 task_ref.on_after_optimization(self.current_epoch, batch_idx, optimizer, opt_idx)
 
         # collapse all metrics into one dict

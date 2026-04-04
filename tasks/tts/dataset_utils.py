@@ -1,9 +1,18 @@
 import random
+import zlib
 import numpy as np
 import torch
 from utils.commons.dataset_utils import BaseDataset, collate_1d_or_2d
 from utils.commons.indexed_datasets import IndexedDataset
 from utils.audio.pitch.utils import norm_interp_f0
+
+
+def _to_float_tensor(value):
+    return torch.as_tensor(value, dtype=torch.float32)
+
+
+def _to_long_tensor(value):
+    return torch.as_tensor(value, dtype=torch.long)
 
 
 class BaseSpeechDataset(BaseDataset):
@@ -55,6 +64,11 @@ class BaseSpeechDataset(BaseDataset):
         self.fixed_ref_indices = None
         self._fixed_ref_ready = False
 
+    def _rng_for_map(self, key):
+        base_seed = int(self.hparams.get('seed', 1234))
+        digest = zlib.crc32(f"{self.prefix}:{key}".encode('utf-8')) & 0xFFFFFFFF
+        return np.random.default_rng((base_seed + digest) % (2 ** 32))
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -103,6 +117,7 @@ class BaseSpeechDataset(BaseDataset):
         max_per_spk = int(self.hparams.get('max_samples_per_spk', 100))
         spk_ids_path = f"{self.data_dir}/{self.prefix}_spk_ids.npy"
         self.spk2indices = defaultdict(list)
+        rng = self._rng_for_map('speaker_map')
 
         if os.path.exists(spk_ids_path):
             # ---------- Fast path ----------
@@ -112,14 +127,14 @@ class BaseSpeechDataset(BaseDataset):
             local_spk_ids = spk_ids[self.avail_idxs]
 
             # Shuffle, so truncation doesn't bias towards early entries
-            for local_idx in np.random.permutation(len(local_spk_ids)):
+            for local_idx in rng.permutation(len(local_spk_ids)):
                 sid = int(local_spk_ids[local_idx])
                 bucket = self.spk2indices[sid]
                 if len(bucket) < max_per_spk:
                     bucket.append(local_idx)
         else:
             # ---------- Slow path for legacy data compatibility ----------
-            for local_idx in np.random.permutation(len(self.avail_idxs)):
+            for local_idx in rng.permutation(len(self.avail_idxs)):
                 sid = int(self._get_item(local_idx)['spk_id'])
                 bucket = self.spk2indices[sid]
                 if len(bucket) < max_per_spk:
@@ -136,7 +151,8 @@ class BaseSpeechDataset(BaseDataset):
         max_per_label = int(self.hparams.get(f'max_samples_per_{field}', self.hparams.get('max_samples_per_spk', 100)))
         field2indices = defaultdict(list)
         local_ids = self.get_local_condition_ids(field)
-        for local_idx in np.random.permutation(len(local_ids)):
+        rng = self._rng_for_map(f'condition_map:{field}')
+        for local_idx in rng.permutation(len(local_ids)):
             cid = int(local_ids[local_idx])
             if cid < 0:
                 continue
@@ -169,7 +185,7 @@ class BaseSpeechDataset(BaseDataset):
         return local_ids
 
     def _trim_ref_spec(self, item):
-        ref_spec = torch.tensor(item['mel'])[:self.hparams['max_frames']]
+        ref_spec = _to_float_tensor(item['mel'])[:self.hparams['max_frames']]
         ref_spec = ref_spec[: (ref_spec.shape[0] // self.hparams['frames_multiple']) * self.hparams['frames_multiple']]
         return ref_spec
 
@@ -268,7 +284,7 @@ class BaseSpeechDataset(BaseDataset):
 
         # 1) Main mel
         max_frames = hparams['max_frames']
-        spec = torch.tensor(item['mel'])[:max_frames]
+        spec = _to_float_tensor(item['mel'])[:max_frames]
         max_frames = spec.shape[0] // hparams['frames_multiple'] * hparams['frames_multiple']
         spec = spec[:max_frames]
 
@@ -281,7 +297,7 @@ class BaseSpeechDataset(BaseDataset):
         if ref_spec is None or ref_item is None:
             ref_local = random.choice([l for l in cand_locals if l != index]) if len(cand_locals) > 1 else index
             ref_item = self._get_item(ref_local)
-            ref_spec = torch.tensor(ref_item['mel'])[:hparams['max_frames']]
+            ref_spec = _to_float_tensor(ref_item['mel'])[:hparams['max_frames']]
             ref_spec = ref_spec[: (ref_spec.shape[0] // hparams['frames_multiple']) * hparams['frames_multiple']]
 
         sample = {
@@ -297,9 +313,9 @@ class BaseSpeechDataset(BaseDataset):
         if hparams.get('use_spk_embed', False):
             embed = item['spk_embed']
             if isinstance(embed, str):
-                embed = torch.tensor([float(x) for x in embed.split()])
+                embed = _to_float_tensor([float(x) for x in embed.split()])
             else:
-                embed = torch.tensor(embed, dtype=torch.float32)
+                embed = _to_float_tensor(embed)
             sample['spk_embed'] = embed
 
         # Provide spk_id to model only if enabled
@@ -388,15 +404,15 @@ class FastSpeechDataset(BaseSpeechDataset):
         if hparams.get('use_pitch_embed', False):
             if 'f0' in item:
                 f0, uv = norm_interp_f0(item['f0'][:T])
-                sample['f0'] = torch.tensor(f0, dtype=torch.float32)
-                sample['uv'] = torch.tensor(uv, dtype=torch.float32)
+                sample['f0'] = _to_float_tensor(f0)
+                sample['uv'] = _to_float_tensor(uv)
             else:
                 f0, uv = None, None
         else:
             sample['f0'], sample['uv'] = None, None
 
         if 'energy' in item:
-            sample['energy'] = torch.tensor(np.asarray(item['energy'])[:T], dtype=torch.float32)
+            sample['energy'] = _to_float_tensor(np.asarray(item['energy'])[:T])
 
         return sample
 
@@ -419,13 +435,13 @@ class FastSpeechWordDataset(FastSpeechDataset):
         if 'word' in item:
             sample['words'] = item['word']
             sample["ph_words"] = item["ph_gb_word"]
-            sample["word_tokens"] = torch.LongTensor(item["word_token"])
+            sample["word_tokens"] = _to_long_tensor(item["word_token"])
         else:
             sample['words'] = item['words']
             sample["ph_words"] = " ".join(item["ph_words"])
-            sample["word_tokens"] = torch.LongTensor(item["word_tokens"])
-        sample["mel2word"] = torch.LongTensor(item.get("mel2word"))[:max_frames]
-        sample["ph2word"] = torch.LongTensor(item['ph2word'][:self.hparams['max_input_tokens']])
+            sample["word_tokens"] = _to_long_tensor(item["word_tokens"])
+        sample["mel2word"] = _to_long_tensor(item.get("mel2word"))[:max_frames]
+        sample["ph2word"] = _to_long_tensor(item['ph2word'][:self.hparams['max_input_tokens']])
         return sample
 
     def collater(self, samples):

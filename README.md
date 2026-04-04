@@ -2,6 +2,19 @@
 
 Updated: 2026-04-04
 
+## Audit update (2026-04-04)
+
+A focused repository audit/update pass landed on 2026-04-04. Highlights:
+
+- multi-optimizer training no longer performs duplicate batch CUDA transfers
+- split-reference inference no longer recomputes identical reference mels within one request
+- the NumPy indexed-dataset compatibility shim no longer relies on the deprecated `numpy.core` import path in normal cases
+- binary indexed datasets now write plain `int64` offset sidecars while keeping legacy dict-style `.idx` files readable
+- training datasets now build speaker/condition sampling buckets deterministically from `seed` and avoid extra tensor copies on hot data paths
+- inference hot paths now run under `torch.inference_mode()` for lower autograd overhead
+
+See `docs/project_audit_20260404.md` for the concrete findings and shipped fixes.
+
 **Repository note:** this repo is our Conan-based modified implementation, not an official Conan upstream repository or the authoritative "official implementation". This README only describes the shipped contract in this codebase.
 
 This repository snapshot keeps only our Conan-based single-reference strong-style mainline adaptation. Here, "canonical" means the supported mainline path in this repo, not an upstream-official release label.
@@ -201,6 +214,16 @@ Local-audit guidance:
 - this repo does **not** claim universal trainability from the checked-in code alone
 - the expected minimum local verification is: `compileall` -> prep gate -> short real-data smoke -> short inference smoke
 - keep the smoke budget small during audit work; this closure pass uses `<= 50` update examples rather than long warm-start claims
+
+## 2026-04-04 hardening / performance pass
+
+This audit pass also landed a few low-risk runtime improvements on the shipped mainline:
+
+- pitch-loss and VQ commit-loss paths now clamp zero-length denominators, so all-unvoiced / all-masked edge batches resolve to finite `0.0` instead of surfacing `NaN`
+- proxy-negative backfill for `style_success` is now row-vectorized instead of Python-looped, reducing per-batch ranking overhead on larger training batches
+- dynamic-timbre support weighting now uses vectorized row quantiles (with a safe fallback path when masked rows are empty), reducing control-loss / diagnostics overhead
+- forced prosody/timbre alignment no longer rebuilds index tensors through Python lists on every call
+- targeted regression tests now cover these edge cases explicitly
 
 ## Commands
 

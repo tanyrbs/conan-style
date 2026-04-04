@@ -409,34 +409,26 @@ def _topk_farthest_negative_mask(
         and tuple(existing_mask.shape) == tuple(distance.shape)
         else torch.zeros_like(eye)
     )
-    backfill_mask = torch.zeros_like(eye)
     min_distance = max(float(min_distance), 0.0)
-    for row_idx in range(batch_size):
-        row_existing = resolved_existing_mask[row_idx]
-        missing_count = target_count - int(row_existing.sum().item())
-        if missing_count <= 0:
-            continue
-        row_distance = distance[row_idx]
-        candidate_mask = (~eye[row_idx]) & (~row_existing) & torch.isfinite(row_distance)
-        if min_distance > 0.0:
-            candidate_mask = candidate_mask & (row_distance >= min_distance)
-        candidate_indices = candidate_mask.nonzero(as_tuple=False).view(-1)
-        if candidate_indices.numel() <= 0:
-            continue
-        topk = min(int(candidate_indices.numel()), int(missing_count))
-        if topk <= 0:
-            continue
-        candidate_distance = row_distance[candidate_indices]
-        _, topk_pos = torch.topk(
-            candidate_distance,
-            k=topk,
-            largest=True,
-            sorted=False,
-        )
-        selected_indices = candidate_indices[topk_pos]
-        if selected_indices.numel() <= 0:
-            continue
-        backfill_mask[row_idx, selected_indices] = True
+    missing_count = (
+        target_count - resolved_existing_mask.sum(dim=-1, dtype=torch.int64)
+    ).clamp_min(0)
+    candidate_mask = (~eye) & (~resolved_existing_mask) & torch.isfinite(distance)
+    if min_distance > 0.0:
+        candidate_mask = candidate_mask & (distance >= min_distance)
+    candidate_distance = distance.masked_fill(~candidate_mask, float("-inf"))
+    topk_distance, topk_indices = torch.topk(
+        candidate_distance,
+        k=target_count,
+        dim=-1,
+        largest=True,
+        sorted=False,
+    )
+    selection_rank = torch.arange(target_count, device=distance.device).unsqueeze(0)
+    selected_mask = selection_rank < missing_count.unsqueeze(1)
+    selected_mask = selected_mask & torch.isfinite(topk_distance)
+    backfill_mask = torch.zeros_like(eye)
+    backfill_mask.scatter_(1, topk_indices, selected_mask)
     return backfill_mask
 
 

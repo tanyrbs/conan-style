@@ -92,7 +92,7 @@ class VQEmbeddingEMA(nn.Module):
 
         e_latent_loss = F.mse_loss(x, quantized.detach(), reduction='none')
         nonpadding = (x.abs().sum(-1) > 0).float()
-        e_latent_loss = (e_latent_loss.mean(-1) * nonpadding).sum() / nonpadding.sum()
+        e_latent_loss = (e_latent_loss.mean(-1) * nonpadding).sum() / nonpadding.sum().clamp_min(1.0)
         loss = self.commitment_cost * e_latent_loss
 
         quantized = x + (quantized - x).detach()
@@ -120,8 +120,9 @@ class CrossAttenLayer(nn.Module):
         if forcing:
             maxlength = src.shape[0]
             k = local_emotion.shape[0] / src.shape[0]
-            lengths1 = torch.ceil(torch.tensor([i for i in range(maxlength)]).to(src.device) * k) + 1
-            lengths2 = torch.floor(torch.tensor([i for i in range(maxlength)]).to(src.device) * k) - 1
+            positions = torch.arange(maxlength, device=src.device, dtype=torch.float32)
+            lengths1 = torch.ceil(positions * k) + 1
+            lengths2 = torch.floor(positions * k) - 1
             mask1 = sequence_mask(lengths1, local_emotion.shape[0])
             mask2 = sequence_mask(lengths2, local_emotion.shape[0])
             mask = mask1.float() - mask2.float()

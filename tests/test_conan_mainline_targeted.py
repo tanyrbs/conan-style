@@ -1,6 +1,7 @@
 import unittest
 import warnings
 import sys
+from types import SimpleNamespace
 import subprocess
 import textwrap
 from pathlib import Path
@@ -30,6 +31,8 @@ from tasks.Conan.control_losses import add_style_timbre_regularization_losses
 from tasks.Conan.mainline_train_prep import (
     _check_binary_sidecar_consistency,
     _resolve_torchaudio_python_range,
+    _style_success_supervision_summary,
+    run_prep,
 )
 from utils.commons.indexed_datasets import (
     _install_numpy_pickle_compat_aliases,
@@ -38,6 +41,7 @@ from utils.commons.indexed_datasets import (
     IndexedDatasetBuilder,
 )
 import utils.commons.base_task as base_task_module
+from utils.commons.weight_norm_compat import apply_weight_norm, remove_weight_norm_compat
 import utils.commons.trainer as trainer_module
 from utils.commons.trainer import Trainer
 
@@ -82,6 +86,33 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_weight_norm_compat_applies_and_removes_without_futurewarning(self):
+        conv = nn.Conv1d(4, 4, 3)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            conv = apply_weight_norm(conv)
+            remove_weight_norm_compat(conv)
+        self.assertFalse(
+            any(
+                issubclass(w.category, FutureWarning)
+                and "weight_norm" in str(w.message)
+                for w in caught
+            )
+        )
+        self.assertFalse(torch.nn.utils.parametrize.is_parametrized(conv, "weight"))
+
+    def test_run_prep_entry_config_keeps_code_contract_ready_even_when_env_not_ready(self):
+        with TemporaryDirectory() as tmpdir:
+            summary = run_prep(
+                SimpleNamespace(
+                    config="egs/conan_emformer.yaml",
+                    binary_data_dir=None,
+                    output_path=f"{tmpdir}/prep.json",
+                )
+            )
+        self.assertTrue(summary["code_contract_ready"])
+        self.assertFalse(summary["train_ready_now"])
 
     def test_numpy_pickle_compat_aliases_no_longer_trigger_numpy_core_deprecation(self):
         with warnings.catch_warnings(record=True) as caught:
@@ -542,6 +573,94 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(losses["style_success_rank"]))
         self.assertIn("style_success_rank_row_scale_mean", output)
         self.assertAlmostEqual(float(output["style_success_rank_row_scale_mean"]), 0.8125, places=6)
+
+    def test_style_success_proxy_only_support_soft_scales_min_batch_boundary(self):
+        negative_state = {
+            "source": "proxy",
+            "batch_size": 4,
+            "valid_rows": torch.tensor([True, True, True, True], dtype=torch.bool),
+            "negative_row_density": torch.tensor(1.0),
+            "mean_negatives_per_valid_row": torch.tensor(2.0),
+            "proxy_informative_feature_count": 2,
+            "proxy_min_batch": 4,
+        }
+        support_state = resolve_style_success_rank_support_state(
+            negative_state,
+            {
+                "style_success_rank_min_negative_row_frac": 0.25,
+                "style_success_rank_min_mean_negatives_per_row": 2.0,
+                "style_success_rank_min_effective_support": 0.20,
+                "style_success_proxy_min_informative_features": 2,
+                "style_success_proxy_target_batch": 8,
+            },
+            device=torch.device("cpu"),
+        )
+        self.assertAlmostEqual(float(support_state["proxy_batch_scale"].item()), 0.5, places=6)
+        self.assertAlmostEqual(float(support_state["support_scale"].item()), 0.5, places=6)
+        self.assertTrue(bool(float(support_state["gate_passed"].item()) > 0.0))
+
+    def test_style_success_proxy_backfill_support_tracks_label_authority(self):
+        sample = {
+            "emotion_ids": torch.tensor([0, 0, 0, 1], dtype=torch.long),
+            "mel_lengths": torch.tensor([4, 4, 4, 4], dtype=torch.long),
+            "energy": torch.tensor(
+                [
+                    [1.0, 1.0, 1.0, 1.0],
+                    [1.1, 1.1, 1.1, 1.1],
+                    [1.3, 1.3, 1.3, 1.3],
+                    [2.2, 2.2, 2.2, 2.2],
+                ],
+                dtype=torch.float32,
+            ),
+            "uv": torch.zeros((4, 4), dtype=torch.float32),
+            "f0": torch.tensor(
+                [
+                    [100.0, 100.0, 100.0, 100.0],
+                    [120.0, 120.0, 120.0, 120.0],
+                    [145.0, 145.0, 145.0, 145.0],
+                    [240.0, 240.0, 240.0, 240.0],
+                ],
+                dtype=torch.float32,
+            ),
+        }
+        negative_state = resolve_style_success_negative_masks(
+            sample,
+            batch_size=4,
+            device=torch.device("cpu"),
+            proxy_threshold=10.0,
+            proxy_min_count=2,
+            proxy_min_batch=4,
+            use_rate_proxy=False,
+        )
+        support_state = resolve_style_success_rank_support_state(
+            negative_state,
+            {
+                "style_success_rank_min_negative_row_frac": 0.25,
+                "style_success_rank_min_mean_negatives_per_row": 2.0,
+                "style_success_rank_min_effective_support": 0.20,
+                "style_success_proxy_min_informative_features": 2,
+                "style_success_label_authority_row_frac": 0.5,
+            },
+            device=torch.device("cpu"),
+        )
+        self.assertAlmostEqual(float(support_state["label_proxy_sufficient_row_frac"].item()), 0.25, places=6)
+        self.assertAlmostEqual(float(support_state["label_authority_frac"].item()), 0.25, places=6)
+        self.assertAlmostEqual(float(support_state["batch_composition_scale"].item()), 0.5, places=6)
+        self.assertAlmostEqual(float(support_state["support_scale"].item()), 0.5, places=6)
+
+    def test_style_success_supervision_summary_surfaces_proxy_batch_and_authority_guardrails(self):
+        summary = _style_success_supervision_summary(
+            {
+                "lambda_style_success_rank": 1.0,
+                "style_success_proxy_min_batch": 4,
+                "style_success_proxy_target_batch": 8,
+                "style_success_label_authority_row_frac": 0.5,
+            },
+            {},
+            runtime_preview={"available": False, "reason": "unit_test"},
+        )
+        self.assertEqual(summary["proxy_target_batch"], 8)
+        self.assertAlmostEqual(summary["label_authority_row_frac"], 0.5, places=6)
 
     def test_style_success_negative_source_scale_defaults(self):
         self.assertEqual(resolve_style_success_rank_source_scale("label", {}), 1.0)

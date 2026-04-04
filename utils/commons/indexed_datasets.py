@@ -17,22 +17,29 @@ def _install_numpy_pickle_compat_aliases():
     """
 
     numpy_core = None
+    selected_base = None
     for module_name in ("numpy._core", "numpy.core"):
         try:
             numpy_core = importlib.import_module(module_name)
+            selected_base = module_name
             break
         except Exception:
             continue
-    if numpy_core is None:
+    if numpy_core is None or selected_base is None:
         return
 
-    aliases = {
-        "numpy._core": numpy_core,
-    }
+    aliases = {"numpy._core": numpy_core}
+    if selected_base == "numpy._core":
+        aliases.setdefault("numpy.core", numpy_core)
     for submodule in ("multiarray", "numeric", "_multiarray_umath", "umath"):
-        target = getattr(numpy_core, submodule, None)
+        try:
+            target = importlib.import_module(f"{selected_base}.{submodule}")
+        except Exception:
+            target = None
         if target is not None:
             aliases[f"numpy._core.{submodule}"] = target
+            if selected_base == "numpy._core":
+                aliases.setdefault(f"numpy.core.{submodule}", target)
     for name, module in aliases.items():
         sys.modules.setdefault(name, module)
 

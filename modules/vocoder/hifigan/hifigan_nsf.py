@@ -3,7 +3,8 @@ import torch.nn.functional as F
 import torch.nn as nn
 import scipy.signal
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
-from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
+from torch.nn.utils import spectral_norm
+from utils.commons.weight_norm_compat import apply_weight_norm as weight_norm, remove_weight_norm_compat as remove_weight_norm
 
 if not hasattr(scipy.signal, "kaiser") and hasattr(scipy.signal, "windows"):
     scipy.signal.kaiser = scipy.signal.windows.kaiser

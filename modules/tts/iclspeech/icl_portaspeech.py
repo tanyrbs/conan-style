@@ -159,7 +159,7 @@ class ICLPortaSpeech(FastSpeech):
             try:
                 if hasattr(m, 'store_inverse'):
                     m.store_inverse()
-                nn.utils.remove_weight_norm(m)
+                remove_weight_norm_compat(m)
             except ValueError:  # this module didn't have weight norm
                 return
 

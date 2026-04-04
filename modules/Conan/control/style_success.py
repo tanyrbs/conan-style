@@ -15,6 +15,8 @@ STYLE_SUCCESS_SELF_REF_SCALE = 0.35
 STYLE_SUCCESS_MEMORY_FALLBACK_SCALE = 0.60
 STYLE_SUCCESS_PROXY_BACKFILL_MIN_DISTANCE = 1.0e-4
 STYLE_SUCCESS_PROXY_MIN_BATCH = 4
+STYLE_SUCCESS_PROXY_TARGET_BATCH = 8
+STYLE_SUCCESS_LABEL_AUTHORITY_ROW_FRAC = 0.50
 STYLE_SUCCESS_LABEL_RANK_SCALE = 1.00
 STYLE_SUCCESS_LABEL_PLUS_PROXY_BACKFILL_SCALE = 0.75
 STYLE_SUCCESS_PROXY_RANK_SCALE = 0.50
@@ -617,6 +619,7 @@ def resolve_style_success_negative_masks(
         "proxy_negative_pair_density": proxy_negative_pair_density,
         "proxy_backfill_rows": proxy_backfill_rows,
         "proxy_backfill_row_frac": proxy_backfill_row_frac,
+        "batch_size": int(batch_size),
         "proxy_min_batch": int(proxy_min_batch),
         "proxy_batch_gate_passed": bool(proxy_batch_gate_passed),
         "proxy_disabled_reason": proxy_disabled_reason,
@@ -638,11 +641,18 @@ def resolve_style_success_rank_support_state(
     negative_mask = negative_state.get("negative_mask") if isinstance(negative_state, Mapping) else None
     valid_rows = negative_state.get("valid_rows") if isinstance(negative_state, Mapping) else None
     source = str(negative_state.get("source", "none")) if isinstance(negative_state, Mapping) else "none"
+    label_proxy_sufficient_rows = (
+        negative_state.get("label_proxy_sufficient_rows")
+        if isinstance(negative_state, Mapping)
+        else None
+    )
     if device is None:
         if isinstance(negative_mask, torch.Tensor):
             device = negative_mask.device
         elif isinstance(valid_rows, torch.Tensor):
             device = valid_rows.device
+        elif isinstance(label_proxy_sufficient_rows, torch.Tensor):
+            device = label_proxy_sufficient_rows.device
     scalar_kwargs = {"dtype": torch.float32}
     if device is not None:
         scalar_kwargs["device"] = device
@@ -700,7 +710,61 @@ def resolve_style_success_rank_support_state(
             0.0,
             1.0,
         )
-    support_scale = row_scale * negatives_scale * proxy_scale
+
+    batch_size = int(negative_state.get("batch_size", 0) if isinstance(negative_state, Mapping) else 0)
+    if batch_size <= 0:
+        if isinstance(negative_mask, torch.Tensor):
+            batch_size = int(negative_mask.size(0))
+        elif isinstance(valid_rows, torch.Tensor):
+            batch_size = int(valid_rows.numel())
+        elif isinstance(label_proxy_sufficient_rows, torch.Tensor):
+            batch_size = int(label_proxy_sufficient_rows.numel())
+    proxy_min_batch = max(
+        int(
+            negative_state.get("proxy_min_batch", STYLE_SUCCESS_PROXY_MIN_BATCH)
+            if isinstance(negative_state, Mapping)
+            else STYLE_SUCCESS_PROXY_MIN_BATCH
+        ),
+        0,
+    )
+    proxy_target_batch = max(
+        int(config.get("style_success_proxy_target_batch", max(proxy_min_batch, STYLE_SUCCESS_PROXY_TARGET_BATCH))),
+        max(proxy_min_batch, 1),
+    )
+    proxy_batch_scale = torch.clamp(
+        _scalar(float(batch_size)) / float(proxy_target_batch),
+        0.0,
+        1.0,
+    )
+
+    label_proxy_sufficient_row_frac = zero
+    if isinstance(label_proxy_sufficient_rows, torch.Tensor):
+        label_proxy_sufficient_row_frac = label_proxy_sufficient_rows.float().mean().detach().to(**scalar_kwargs)
+    elif isinstance(negative_state, Mapping):
+        candidate = negative_state.get("label_proxy_sufficient_row_frac")
+        if isinstance(candidate, torch.Tensor):
+            label_proxy_sufficient_row_frac = candidate.detach().to(**scalar_kwargs)
+        elif isinstance(candidate, (int, float)):
+            label_proxy_sufficient_row_frac = _scalar(candidate)
+    label_authority_frac = torch.clamp(
+        label_proxy_sufficient_row_frac / row_density.clamp_min(1.0e-6),
+        0.0,
+        1.0,
+    )
+    min_label_authority_row_frac = max(
+        float(config.get("style_success_label_authority_row_frac", STYLE_SUCCESS_LABEL_AUTHORITY_ROW_FRAC)),
+        1.0e-6,
+    )
+    batch_composition_scale = one
+    if source == "proxy":
+        batch_composition_scale = proxy_batch_scale
+    elif source == "label_plus_proxy_backfill":
+        batch_composition_scale = torch.clamp(
+            label_authority_frac / float(min_label_authority_row_frac),
+            0.0,
+            1.0,
+        )
+    support_scale = row_scale * negatives_scale * proxy_scale * batch_composition_scale
     has_valid_rows = bool(isinstance(valid_rows, torch.Tensor) and valid_rows.any())
     gate_passed = bool(
         has_valid_rows
@@ -717,6 +781,14 @@ def resolve_style_success_rank_support_state(
         disabled_reason = "mean_negatives_per_row_below_floor"
     elif source == "proxy" and proxy_informative_feature_count < min_proxy_informative_features:
         disabled_reason = "proxy_informative_features_below_floor"
+    elif source == "proxy" and float(proxy_batch_scale.item()) < 1.0 and float(support_scale.item()) < min_effective_support:
+        disabled_reason = "proxy_batch_support_below_floor"
+    elif (
+        source == "label_plus_proxy_backfill"
+        and float(batch_composition_scale.item()) < 1.0
+        and float(support_scale.item()) < min_effective_support
+    ):
+        disabled_reason = "proxy_backfill_support_below_floor"
     elif float(support_scale.item()) < min_effective_support:
         disabled_reason = "effective_support_below_floor"
     else:
@@ -731,6 +803,12 @@ def resolve_style_success_rank_support_state(
         "min_mean_negatives_per_row": _scalar(min_mean_negatives),
         "min_effective_support": _scalar(min_effective_support),
         "min_proxy_informative_features": _scalar(float(min_proxy_informative_features)),
+        "proxy_batch_scale": proxy_batch_scale,
+        "proxy_target_batch": _scalar(float(proxy_target_batch)),
+        "label_proxy_sufficient_row_frac": label_proxy_sufficient_row_frac,
+        "label_authority_frac": label_authority_frac,
+        "min_label_authority_row_frac": _scalar(min_label_authority_row_frac),
+        "batch_composition_scale": batch_composition_scale,
     }
 
 
@@ -949,6 +1027,8 @@ __all__ = [
     "STYLE_SUCCESS_MEMORY_FALLBACK_SCALE",
     "STYLE_SUCCESS_SELF_DERIVED_RUNTIME_SOURCES",
     "STYLE_SUCCESS_PROXY_MIN_BATCH",
+    "STYLE_SUCCESS_PROXY_TARGET_BATCH",
+    "STYLE_SUCCESS_LABEL_AUTHORITY_ROW_FRAC",
     "STYLE_SUCCESS_LABEL_RANK_SCALE",
     "STYLE_SUCCESS_LABEL_PLUS_PROXY_BACKFILL_SCALE",
     "STYLE_SUCCESS_PROXY_RANK_SCALE",

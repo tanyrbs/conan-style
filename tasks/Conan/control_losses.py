@@ -548,6 +548,10 @@ def _compute_style_success_control_loss(
             "label_rows_below_proxy_min_count",
             "style_success_label_rows_below_proxy_min_count_frac",
         ),
+        (
+            "label_proxy_sufficient_rows",
+            "style_success_label_proxy_sufficient_row_frac",
+        ),
         ("proxy_valid_rows", "style_success_proxy_negative_row_frac"),
         ("proxy_supplemented_rows", "style_success_proxy_supplemented_row_frac"),
         ("proxy_augmented_rows", "style_success_proxy_augmented_row_frac"),
@@ -627,6 +631,12 @@ def _compute_style_success_control_loss(
         ("min_mean_negatives_per_row", "style_success_rank_min_mean_negatives_per_row"),
         ("min_effective_support", "style_success_rank_min_effective_support"),
         ("min_proxy_informative_features", "style_success_proxy_min_informative_features"),
+        ("proxy_batch_scale", "style_success_proxy_batch_scale"),
+        ("proxy_target_batch", "style_success_proxy_target_batch"),
+        ("label_proxy_sufficient_row_frac", "style_success_label_proxy_sufficient_row_frac"),
+        ("label_authority_frac", "style_success_label_authority_frac"),
+        ("min_label_authority_row_frac", "style_success_label_authority_row_frac"),
+        ("batch_composition_scale", "style_success_batch_composition_scale"),
     ):
         _store_detached_scalar(
             output,

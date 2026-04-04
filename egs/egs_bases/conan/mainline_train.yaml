@@ -86,6 +86,8 @@ pitch_residual_smooth_weight: 0.1
 style_success_proxy_negative_threshold: 1.25
 style_success_proxy_negative_min_count: 2
 style_success_proxy_min_batch: 4
+style_success_proxy_target_batch: 8
+style_success_label_authority_row_frac: 0.5
 style_success_proxy_use_rate_proxy: false
 style_success_label_rank_scale: 1.0
 style_success_label_plus_proxy_backfill_scale: 0.75

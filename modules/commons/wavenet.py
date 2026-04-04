@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 
+from utils.commons.weight_norm_compat import apply_weight_norm, remove_weight_norm_compat
+
 
 def fused_add_tanh_sigmoid_multiply(input_a, input_b, n_channels):
     n_channels_int = n_channels[0]
@@ -32,14 +34,14 @@ class WN(torch.nn.Module):
 
         if c_cond != 0 and not share_cond_layers:
             cond_layer = torch.nn.Conv1d(c_cond, 2 * hidden_size * n_layers, 1)
-            self.cond_layer = torch.nn.utils.weight_norm(cond_layer, name='weight')
+            self.cond_layer = apply_weight_norm(cond_layer, name='weight')
 
         for i in range(n_layers):
             dilation = dilation_rate ** i
             padding = int((kernel_size * dilation - dilation) / 2)
             in_layer = torch.nn.Conv1d(hidden_size, 2 * hidden_size, kernel_size,
                                        dilation=dilation, padding=padding)
-            in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
+            in_layer = apply_weight_norm(in_layer, name='weight')
             self.in_layers.append(in_layer)
 
             # last one is not necessary
@@ -49,7 +51,7 @@ class WN(torch.nn.Module):
                 res_skip_channels = hidden_size
 
             res_skip_layer = torch.nn.Conv1d(hidden_size, res_skip_channels, 1)
-            res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')
+            res_skip_layer = apply_weight_norm(res_skip_layer, name='weight')
             self.res_skip_layers.append(res_skip_layer)
 
     def forward(self, x, nonpadding=None, cond=None):
@@ -90,7 +92,7 @@ class WN(torch.nn.Module):
     def remove_weight_norm(self):
         def remove_weight_norm(m):
             try:
-                nn.utils.remove_weight_norm(m)
+                remove_weight_norm_compat(m)
             except ValueError:  # this module didn't have weight norm
                 return
 
@@ -127,7 +129,7 @@ class CausalConv1d(nn.Module):
                       **kwargs)
         )
         # inline weight-norm; keep consistent with old version
-        self.conv = nn.utils.weight_norm(self.conv, name='weight')
+        self.conv = apply_weight_norm(self.conv, name='weight')
         # How many frames to pad on the left
         self.left_pad = dilation * (kernel_size - 1)
 
@@ -163,7 +165,7 @@ class CausalWN(nn.Module):
         # conditional convolution layer (kernel_size=1 is inherently causal)
         if c_cond != 0 and not share_cond_layers:
             cond_layer = nn.Conv1d(c_cond, 2 * hidden_size * n_layers, 1)
-            self.cond_layer = nn.utils.weight_norm(cond_layer, name='weight')
+            self.cond_layer = apply_weight_norm(cond_layer, name='weight')
 
         # stack dilated causal conv
         for i in range(n_layers):
@@ -177,7 +179,7 @@ class CausalWN(nn.Module):
             # last layer only outputs skip, no longer outputs residual
             res_skip_channels = 2 * hidden_size if i < n_layers - 1 else hidden_size
             res_skip_layer = nn.Conv1d(hidden_size, res_skip_channels, 1)
-            res_skip_layer = nn.utils.weight_norm(res_skip_layer, name='weight')
+            res_skip_layer = apply_weight_norm(res_skip_layer, name='weight')
             self.res_skip_layers.append(res_skip_layer)
 
     # --------------------------------------------------
@@ -222,7 +224,7 @@ class CausalWN(nn.Module):
     def remove_weight_norm(self):
         def _remove(m):
             try:
-                nn.utils.remove_weight_norm(m)
+                remove_weight_norm_compat(m)
             except ValueError:
                 pass
         self.apply(_remove)

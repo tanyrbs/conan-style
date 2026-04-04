@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from dataclasses import dataclass, field
 import importlib
 from importlib import metadata as importlib_metadata
 import json
@@ -737,6 +738,11 @@ def _style_success_runtime_preview(batch, hparams):
         ("effective_support", "rank_effective_support"),
         ("gate_passed", "rank_gate_passed"),
         ("rank_term_active", "rank_term_active"),
+        ("proxy_batch_scale", "proxy_batch_scale"),
+        ("proxy_target_batch", "proxy_target_batch"),
+        ("label_proxy_sufficient_row_frac", "label_proxy_sufficient_row_frac"),
+        ("label_authority_frac", "label_authority_frac"),
+        ("batch_composition_scale", "batch_composition_scale"),
     ):
         value = support_state.get(state_key)
         if isinstance(value, torch.Tensor):
@@ -758,6 +764,10 @@ def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime
     proxy_negative_threshold = float(hparams.get("style_success_proxy_negative_threshold", 1.25) or 1.25)
     proxy_negative_min_count = int(hparams.get("style_success_proxy_negative_min_count", 2) or 0)
     proxy_min_batch = int(hparams.get("style_success_proxy_min_batch", 4) or 0)
+    proxy_target_batch = int(
+        hparams.get("style_success_proxy_target_batch", max(proxy_min_batch, 8)) or max(proxy_min_batch, 8)
+    )
+    label_authority_row_frac = float(hparams.get("style_success_label_authority_row_frac", 0.5) or 0.5)
     proxy_use_rate_proxy = bool(
         resolve_style_success_bool_flag(
             hparams.get("style_success_proxy_use_rate_proxy", False),
@@ -807,7 +817,9 @@ def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime
         "proxy_negative_threshold": proxy_negative_threshold,
         "proxy_negative_min_count": proxy_negative_min_count,
         "proxy_min_batch": proxy_min_batch,
+        "proxy_target_batch": proxy_target_batch,
         "proxy_use_rate_proxy": proxy_use_rate_proxy,
+        "label_authority_row_frac": label_authority_row_frac,
         "label_rank_scale": label_rank_scale,
         "label_plus_proxy_backfill_scale": label_plus_proxy_backfill_scale,
         "proxy_rank_scale": proxy_rank_scale,
@@ -832,10 +844,10 @@ def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime
         "note": (
             "artifact-level label summary plus optional small-batch runtime preview; actual rank negatives still depend "
             "on per-item batch composition, and label negatives remain authoritative while proxy negatives only backfill "
-            "rows that still fall below the proxy minimum count. Canonical mainline also keeps a proxy min-batch gate and source-aware rank "
-            "downscaling so small batches and proxy-only negatives stay conservative. The text/content-length rate "
-            "proxy remains disabled by default so the fallback negatives stay acoustic/prosodic unless research "
-            "overrides explicitly opt in."
+            "rows that still fall below the proxy minimum count. Canonical mainline now keeps both a hard proxy min-batch gate and a softer "
+            "proxy target-batch / label-authority downscale so proxy-only or proxy-heavy batches stay conservative even "
+            "after they clear the minimum gate. The text/content-length rate proxy remains disabled by default so the "
+            "fallback negatives stay acoustic/prosodic unless research overrides explicitly opt in."
         ),
     }
 
@@ -922,59 +934,32 @@ def _jsonable(value):
     return value
 
 
-def run_prep(args):
-    set_hparams(config=args.config, print_hparams=False)
-    config_chain, config_duplicates, config_top_level_keys = _scan_config_chain(args.config)
-    if getattr(args, "binary_data_dir", None):
-        hparams["binary_data_dir"] = str(args.binary_data_dir)
-    controls = resolve_style_mainline_controls(hparams=hparams)
-    resolved_profile = resolve_style_profile(
-        {
-            "style_profile": hparams.get("style_profile", "strong_style"),
-            "style_trace_mode": hparams.get("style_trace_mode", None),
-            "style_strength": hparams.get("style_strength", None),
-            "style_temperature": hparams.get("style_temperature", None),
-            "style_to_pitch_residual_include_timbre": hparams.get(
-                "style_to_pitch_residual_include_timbre",
-                None,
-            ),
-            "global_style_trace_blend": hparams.get("global_style_trace_blend", None),
-            "style_query_global_summary_scale": hparams.get("style_query_global_summary_scale", None),
-            "dynamic_timbre_style_condition_scale": hparams.get("dynamic_timbre_style_condition_scale", None),
-            "dynamic_timbre_temperature": hparams.get("dynamic_timbre_temperature", None),
-            "dynamic_timbre_coarse_style_context_scale": hparams.get(
-                "dynamic_timbre_coarse_style_context_scale",
-                None,
-            ),
-            "dynamic_timbre_query_style_condition_scale": hparams.get(
-                "dynamic_timbre_query_style_condition_scale",
-                None,
-            ),
-            "dynamic_timbre_use_tvt": hparams.get("dynamic_timbre_use_tvt", None),
-            "dynamic_timbre_tvt_prior_scale": hparams.get(
-                "dynamic_timbre_tvt_prior_scale",
-                None,
-            ),
-            "runtime_dynamic_timbre_style_budget_enabled": hparams.get(
-                "runtime_dynamic_timbre_style_budget_enabled",
-                None,
-            ),
-            "runtime_dynamic_timbre_style_budget_ratio": hparams.get(
-                "runtime_dynamic_timbre_style_budget_ratio",
-                None,
-            ),
-            "runtime_dynamic_timbre_style_budget_margin": hparams.get(
-                "runtime_dynamic_timbre_style_budget_margin",
-                None,
-            ),
-            "allow_explicit_dynamic_timbre_strength": hparams.get(
-                "allow_explicit_dynamic_timbre_strength",
-                False,
-            ),
-        },
-        preset=hparams.get("style_profile", "strong_style"),
+@dataclass
+class MainlineTrainPrepContext:
+    config_chain: list
+    config_duplicates: dict
+    config_top_level_keys: dict
+    controls: object
+    resolved_profile: dict
+    regularization: dict
+    identity_loss_constraint_mode: str
+    use_external_speaker_verifier: bool
+    freeze_internal_identity_encoder_for_loss: bool
+    upper_bound_preview: dict
+    batch_controls: object = None
+    batch_controls_error: str | None = None
+    style_success_runtime_preview: dict = field(
+        default_factory=lambda: {
+            "available": False,
+            "reason": "dataset_preview_unavailable",
+        }
     )
-    regularization = resolve_control_regularization_config(hparams, global_step=0)
+    boundary_preview: list = field(default_factory=list)
+    resolved_condition_maps: dict = field(default_factory=dict)
+    style_success_supervision: dict = field(default_factory=dict)
+
+
+def _resolve_identity_loss_constraint_mode():
     use_external_speaker_verifier = bool(hparams.get("use_external_speaker_verifier", False))
     freeze_internal_identity_encoder_for_loss = bool(
         hparams.get("freeze_internal_identity_encoder_for_loss", True)
@@ -988,10 +973,14 @@ def run_prep(args):
             else "internal_encoder_trainable_for_loss"
         )
     )
-    upper_bound_preview_0 = resolve_expressive_upper_bound_progress(0, hparams=hparams)
-    upper_bound_preview_20000 = resolve_expressive_upper_bound_progress(20000, hparams=hparams)
-    upper_bound_preview_50000 = resolve_expressive_upper_bound_progress(50000, hparams=hparams)
-    upper_bound_preview_80000 = resolve_expressive_upper_bound_progress(80000, hparams=hparams)
+    return (
+        use_external_speaker_verifier,
+        freeze_internal_identity_encoder_for_loss,
+        identity_loss_constraint_mode,
+    )
+
+
+def _build_dataset_preview_state():
     batch_controls = None
     batch_controls_error = None
     style_success_runtime_preview = {
@@ -1071,17 +1060,108 @@ def run_prep(args):
             "available": False,
             "reason": f"{type(exc).__name__}: {exc}",
         }
+    return {
+        "batch_controls": batch_controls,
+        "batch_controls_error": batch_controls_error,
+        "style_success_runtime_preview": style_success_runtime_preview,
+        "boundary_preview": boundary_preview,
+    }
 
-    checks = []
+
+def _build_mainline_train_prep_context(args):
+    config_chain, config_duplicates, config_top_level_keys = _scan_config_chain(args.config)
+    controls = resolve_style_mainline_controls(hparams=hparams)
+    resolved_profile = resolve_style_profile(
+        {
+            "style_profile": hparams.get("style_profile", "strong_style"),
+            "style_trace_mode": hparams.get("style_trace_mode", None),
+            "style_strength": hparams.get("style_strength", None),
+            "style_temperature": hparams.get("style_temperature", None),
+            "style_to_pitch_residual_include_timbre": hparams.get(
+                "style_to_pitch_residual_include_timbre",
+                None,
+            ),
+            "global_style_trace_blend": hparams.get("global_style_trace_blend", None),
+            "style_query_global_summary_scale": hparams.get("style_query_global_summary_scale", None),
+            "dynamic_timbre_style_condition_scale": hparams.get("dynamic_timbre_style_condition_scale", None),
+            "dynamic_timbre_temperature": hparams.get("dynamic_timbre_temperature", None),
+            "dynamic_timbre_coarse_style_context_scale": hparams.get(
+                "dynamic_timbre_coarse_style_context_scale",
+                None,
+            ),
+            "dynamic_timbre_query_style_condition_scale": hparams.get(
+                "dynamic_timbre_query_style_condition_scale",
+                None,
+            ),
+            "dynamic_timbre_use_tvt": hparams.get("dynamic_timbre_use_tvt", None),
+            "dynamic_timbre_tvt_prior_scale": hparams.get(
+                "dynamic_timbre_tvt_prior_scale",
+                None,
+            ),
+            "runtime_dynamic_timbre_style_budget_enabled": hparams.get(
+                "runtime_dynamic_timbre_style_budget_enabled",
+                None,
+            ),
+            "runtime_dynamic_timbre_style_budget_ratio": hparams.get(
+                "runtime_dynamic_timbre_style_budget_ratio",
+                None,
+            ),
+            "runtime_dynamic_timbre_style_budget_margin": hparams.get(
+                "runtime_dynamic_timbre_style_budget_margin",
+                None,
+            ),
+            "allow_explicit_dynamic_timbre_strength": hparams.get(
+                "allow_explicit_dynamic_timbre_strength",
+                False,
+            ),
+        },
+        preset=hparams.get("style_profile", "strong_style"),
+    )
+    regularization = resolve_control_regularization_config(hparams, global_step=0)
+    (
+        use_external_speaker_verifier,
+        freeze_internal_identity_encoder_for_loss,
+        identity_loss_constraint_mode,
+    ) = _resolve_identity_loss_constraint_mode()
+    dataset_preview = _build_dataset_preview_state()
+    upper_bound_preview = {
+        0: resolve_expressive_upper_bound_progress(0, hparams=hparams),
+        20000: resolve_expressive_upper_bound_progress(20000, hparams=hparams),
+        50000: resolve_expressive_upper_bound_progress(50000, hparams=hparams),
+        80000: resolve_expressive_upper_bound_progress(80000, hparams=hparams),
+    }
+    return MainlineTrainPrepContext(
+        config_chain=config_chain,
+        config_duplicates=config_duplicates,
+        config_top_level_keys=config_top_level_keys,
+        controls=controls,
+        resolved_profile=resolved_profile,
+        regularization=regularization,
+        identity_loss_constraint_mode=identity_loss_constraint_mode,
+        use_external_speaker_verifier=use_external_speaker_verifier,
+        freeze_internal_identity_encoder_for_loss=freeze_internal_identity_encoder_for_loss,
+        upper_bound_preview=upper_bound_preview,
+        batch_controls=dataset_preview.get("batch_controls"),
+        batch_controls_error=dataset_preview.get("batch_controls_error"),
+        style_success_runtime_preview=dataset_preview.get("style_success_runtime_preview")
+        or {
+            "available": False,
+            "reason": "dataset_preview_unavailable",
+        },
+        boundary_preview=list(dataset_preview.get("boundary_preview") or []),
+    )
+
+
+def _collect_config_surface_checks(checks, prep_ctx):
     _check_true(
         checks,
         "config_top_level_duplicate_keys_absent",
-        len(config_duplicates) == 0,
-        actual=config_duplicates if config_duplicates else {},
+        len(prep_ctx.config_duplicates) == 0,
+        actual=prep_ctx.config_duplicates if prep_ctx.config_duplicates else {},
         expected="no duplicate top-level keys",
     )
     for key in CANONICAL_REMOVED_CONFIG_KEYS:
-        locations = config_top_level_keys.get(key, [])
+        locations = prep_ctx.config_top_level_keys.get(key, [])
         _check_true(
             checks,
             f"config_removed_key_absent::{key}",
@@ -1089,6 +1169,11 @@ def run_prep(args):
             actual={"present": bool(locations), "locations": locations},
             expected={"present": False},
         )
+
+
+def _collect_mainline_decoder_contract_checks(checks, prep_ctx):
+    controls = prep_ctx.controls
+    regularization = prep_ctx.regularization
     _check_equal(checks, "reference_contract_mode", hparams.get("reference_contract_mode"), "collapsed_reference")
     _check_equal(checks, "decoder_style_condition_mode", controls.mode, "mainline_full")
     _check_equal(checks, "global_timbre_to_pitch", bool(controls.global_timbre_to_pitch), False)
@@ -1142,6 +1227,11 @@ def run_prep(args):
         False,
     )
     _check_equal(checks, "control_loss_profile", regularization.get("control_loss_profile"), "mainline_minimal")
+
+
+def _collect_style_profile_contract_checks(checks, prep_ctx):
+    controls = prep_ctx.controls
+    resolved_profile = prep_ctx.resolved_profile
     _check_equal(
         checks,
         "style_profile_track",
@@ -1201,6 +1291,9 @@ def run_prep(args):
         resolved_profile.get("dynamic_timbre_tvt_prior_scale", 1.0),
         tol=1e-6,
     )
+
+
+def _collect_upper_bound_and_runtime_timbre_contract_checks(checks, prep_ctx):
     _check_equal(
         checks,
         "upper_bound_curriculum_enabled",
@@ -1222,109 +1315,31 @@ def run_prep(args):
     _check_close(
         checks,
         "upper_bound_progress_step_0",
-        upper_bound_preview_0,
+        prep_ctx.upper_bound_preview[0],
         0.0,
         tol=1e-6,
     )
     _check_close(
         checks,
         "upper_bound_progress_step_20000",
-        upper_bound_preview_20000,
+        prep_ctx.upper_bound_preview[20000],
         0.0,
         tol=1e-6,
     )
     _check_close(
         checks,
         "upper_bound_progress_step_50000",
-        upper_bound_preview_50000,
+        prep_ctx.upper_bound_preview[50000],
         0.5,
         tol=1e-6,
     )
     _check_close(
         checks,
         "upper_bound_progress_step_80000",
-        upper_bound_preview_80000,
+        prep_ctx.upper_bound_preview[80000],
         1.0,
         tol=1e-6,
     )
-    _check_true(
-        checks,
-        "train_batch_mainline_controls_resolvable",
-        batch_controls is not None,
-        actual=batch_controls_error if batch_controls is None else "resolved",
-        expected="resolved",
-    )
-    preview_coverages = [
-        float(item["boundary_coverage"])
-        for item in boundary_preview
-        if item.get("boundary_coverage") is not None
-    ]
-    _check_true(
-        checks,
-        "dynamic_timbre_boundary_preview_available",
-        len(preview_coverages) > 0,
-        actual=len(preview_coverages),
-        expected="> 0",
-    )
-    if preview_coverages:
-        _check_true(
-            checks,
-            "dynamic_timbre_boundary_not_global_on_real_data",
-            float(max(preview_coverages)) < 0.50,
-            actual={
-                "max_boundary_coverage": float(max(preview_coverages)),
-                "mean_boundary_coverage": float(sum(preview_coverages) / len(preview_coverages)),
-            },
-            expected="max_boundary_coverage < 0.50 on sampled real-data batches",
-        )
-    if batch_controls is not None:
-        _check_close(
-            checks,
-            "train_batch_style_strength_matches_profile",
-            batch_controls.style_strength,
-            resolved_profile.get("style_strength", batch_controls.style_strength),
-            tol=1e-6,
-        )
-        _check_close(
-            checks,
-            "train_batch_dynamic_timbre_strength_matches_profile",
-            batch_controls.dynamic_timbre_strength,
-            resolved_profile.get("dynamic_timbre_strength", batch_controls.dynamic_timbre_strength),
-            tol=1e-6,
-        )
-        _check_equal(
-            checks,
-            "train_batch_dynamic_timbre_strength_source_matches_profile",
-            getattr(batch_controls, "dynamic_timbre_strength_source", None),
-            "derived_from_style_strength",
-        )
-        _check_close(
-            checks,
-            "train_batch_style_temperature_matches_profile",
-            batch_controls.style_temperature,
-            resolved_profile.get("style_temperature", batch_controls.style_temperature),
-        )
-        _check_close(
-            checks,
-            "train_batch_dynamic_timbre_temperature_matches_profile",
-            batch_controls.dynamic_timbre_temperature,
-            resolved_profile.get("dynamic_timbre_temperature", batch_controls.dynamic_timbre_temperature),
-        )
-        _check_equal(
-            checks,
-            "train_batch_dynamic_timbre_use_tvt_matches_profile",
-            bool(batch_controls.dynamic_timbre_use_tvt),
-            bool(resolved_profile.get("dynamic_timbre_use_tvt", batch_controls.dynamic_timbre_use_tvt)),
-        )
-        _check_close(
-            checks,
-            "train_batch_dynamic_timbre_tvt_prior_scale_matches_profile",
-            batch_controls.dynamic_timbre_tvt_prior_scale,
-            resolved_profile.get(
-                "dynamic_timbre_tvt_prior_scale",
-                batch_controls.dynamic_timbre_tvt_prior_scale,
-            ),
-        )
     _check_close(
         checks,
         "runtime_dynamic_timbre_style_budget_ratio",
@@ -1405,22 +1420,25 @@ def run_prep(args):
         bool(hparams.get("allow_item_style_strength_override", False)),
         False,
     )
+
+
+def _collect_identity_and_schedule_contract_checks(checks, prep_ctx):
     _check_equal(
         checks,
         "use_external_speaker_verifier",
-        use_external_speaker_verifier,
+        prep_ctx.use_external_speaker_verifier,
         False,
     )
     _check_equal(
         checks,
         "freeze_internal_identity_encoder_for_loss",
-        freeze_internal_identity_encoder_for_loss,
+        prep_ctx.freeze_internal_identity_encoder_for_loss,
         True,
     )
     _check_equal(
         checks,
         "identity_loss_constraint_mode",
-        identity_loss_constraint_mode,
+        prep_ctx.identity_loss_constraint_mode,
         "internal_encoder_frozen_for_loss",
     )
     _check_equal(
@@ -1487,6 +1505,15 @@ def run_prep(args):
     )
     _check_close(checks, "forcing_prob_init", hparams.get("forcing_prob_init", 1.0), 1.0)
     _check_close(checks, "forcing_prob_final", hparams.get("forcing_prob_final", 0.0), 0.0)
+
+
+def _collect_mainline_contract_checks(checks, prep_ctx):
+    _collect_mainline_decoder_contract_checks(checks, prep_ctx)
+    _collect_style_profile_contract_checks(checks, prep_ctx)
+    _collect_upper_bound_and_runtime_timbre_contract_checks(checks, prep_ctx)
+    _collect_identity_and_schedule_contract_checks(checks, prep_ctx)
+
+def _collect_runtime_dependency_checks(checks, args):
     _check_runtime_requirement_pins(
         checks,
         ROOT_DIR / "requirements.txt",
@@ -1535,21 +1562,140 @@ def run_prep(args):
         _check_nltk_cmudict_for_g2p_en,
         expected="nltk cmudict available for g2p_en",
     )
+
+
+def _collect_data_staging_checks(checks, prep_ctx):
+    _check_exists(checks, "binary_data_dir_exists", hparams.get("binary_data_dir"))
+    _check_exists(checks, "processed_data_dir_exists", hparams.get("processed_data_dir"))
+    binary_data_dir = hparams.get("binary_data_dir")
+    if binary_data_dir:
+        for filename in (
+            "train.data",
+            "train.idx",
+            "train_lengths.npy",
+            "train_ref_indices.npy",
+            "train_spk_ids.npy",
+            "valid.data",
+            "valid.idx",
+            "valid_lengths.npy",
+            "valid_ref_indices.npy",
+            "valid_spk_ids.npy",
+            "test.data",
+            "test.idx",
+            "test_lengths.npy",
+            "test_ref_indices.npy",
+            "test_spk_ids.npy",
+        ):
+            _check_exists(
+                checks,
+                f"binary_{filename}_exists",
+                os.path.join(str(binary_data_dir), filename),
+            )
+        for split in ("train", "valid", "test"):
+            _check_npy_count_positive(
+                checks,
+                f"binary_{split}_items_nonempty",
+                os.path.join(str(binary_data_dir), f"{split}_lengths.npy"),
+            )
+            _check_binary_sidecar_consistency(checks, binary_data_dir, split)
     condition_artifact_dirs = [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")]
-    resolved_condition_maps = _check_condition_artifacts(
+    prep_ctx.resolved_condition_maps = _check_condition_artifacts(
         checks,
         condition_artifact_dirs,
     )
-    style_success_supervision = _style_success_supervision_summary(
+
+
+def _collect_control_preview_checks(checks, prep_ctx):
+    resolved_profile = prep_ctx.resolved_profile
+    batch_controls = prep_ctx.batch_controls
+    _check_true(
+        checks,
+        "train_batch_mainline_controls_resolvable",
+        batch_controls is not None,
+        actual=prep_ctx.batch_controls_error if batch_controls is None else "resolved",
+        expected="resolved",
+    )
+    preview_coverages = [
+        float(item["boundary_coverage"])
+        for item in prep_ctx.boundary_preview
+        if item.get("boundary_coverage") is not None
+    ]
+    _check_true(
+        checks,
+        "dynamic_timbre_boundary_preview_available",
+        len(preview_coverages) > 0,
+        actual=len(preview_coverages),
+        expected="> 0",
+    )
+    if preview_coverages:
+        _check_true(
+            checks,
+            "dynamic_timbre_boundary_not_global_on_real_data",
+            float(max(preview_coverages)) < 0.50,
+            actual={
+                "max_boundary_coverage": float(max(preview_coverages)),
+                "mean_boundary_coverage": float(sum(preview_coverages) / len(preview_coverages)),
+            },
+            expected="max_boundary_coverage < 0.50 on sampled real-data batches",
+        )
+    if batch_controls is not None:
+        _check_close(
+            checks,
+            "train_batch_style_strength_matches_profile",
+            batch_controls.style_strength,
+            resolved_profile.get("style_strength", batch_controls.style_strength),
+            tol=1e-6,
+        )
+        _check_close(
+            checks,
+            "train_batch_dynamic_timbre_strength_matches_profile",
+            batch_controls.dynamic_timbre_strength,
+            resolved_profile.get("dynamic_timbre_strength", batch_controls.dynamic_timbre_strength),
+            tol=1e-6,
+        )
+        _check_equal(
+            checks,
+            "train_batch_dynamic_timbre_strength_source_matches_profile",
+            getattr(batch_controls, "dynamic_timbre_strength_source", None),
+            "derived_from_style_strength",
+        )
+        _check_close(
+            checks,
+            "train_batch_style_temperature_matches_profile",
+            batch_controls.style_temperature,
+            resolved_profile.get("style_temperature", batch_controls.style_temperature),
+        )
+        _check_close(
+            checks,
+            "train_batch_dynamic_timbre_temperature_matches_profile",
+            batch_controls.dynamic_timbre_temperature,
+            resolved_profile.get("dynamic_timbre_temperature", batch_controls.dynamic_timbre_temperature),
+        )
+        _check_equal(
+            checks,
+            "train_batch_dynamic_timbre_use_tvt_matches_profile",
+            bool(batch_controls.dynamic_timbre_use_tvt),
+            bool(resolved_profile.get("dynamic_timbre_use_tvt", batch_controls.dynamic_timbre_use_tvt)),
+        )
+        _check_close(
+            checks,
+            "train_batch_dynamic_timbre_tvt_prior_scale_matches_profile",
+            batch_controls.dynamic_timbre_tvt_prior_scale,
+            resolved_profile.get(
+                "dynamic_timbre_tvt_prior_scale",
+                batch_controls.dynamic_timbre_tvt_prior_scale,
+            ),
+        )
+    prep_ctx.style_success_supervision = _style_success_supervision_summary(
         hparams,
-        resolved_condition_maps,
-        runtime_preview=style_success_runtime_preview,
+        prep_ctx.resolved_condition_maps,
+        runtime_preview=prep_ctx.style_success_runtime_preview,
     )
     checks.append(
         {
             "name": "style_success_supervision_mode",
             "ok": True,
-            "actual": _jsonable(style_success_supervision),
+            "actual": _jsonable(prep_ctx.style_success_supervision),
             "expected": "informational",
         }
     )
@@ -1557,10 +1703,13 @@ def run_prep(args):
         {
             "name": "style_success_runtime_preview",
             "ok": True,
-            "actual": _jsonable(style_success_runtime_preview),
+            "actual": _jsonable(prep_ctx.style_success_runtime_preview),
             "expected": "informational",
         }
     )
+
+
+def _collect_schedule_alignment_checks(checks):
     _check_close(
         checks,
         "random_speaker_steps_matches_curriculum_end",
@@ -1631,6 +1780,9 @@ def run_prep(args):
         0.9330127019,
         tol=1e-6,
     )
+
+
+def _collect_active_mainline_control_loss_checks(checks):
     active_mainline_control_keys = tuple(
         key for key in MAINLINE_MINIMAL_CONTROL_LAMBDAS if float(hparams.get(key, 0.0)) > 0.0
     )
@@ -1651,6 +1803,8 @@ def run_prep(args):
         }
     )
 
+
+def _collect_required_loss_key_checks(checks):
     for key in REQUIRED_POSITIVE_KEYS:
         checks.append(
             {
@@ -1672,6 +1826,8 @@ def run_prep(args):
             }
         )
 
+
+def _collect_overlap_pitch_guardrail_checks(checks):
     overlap_margin = float(hparams.get("style_timbre_runtime_overlap_margin", 0.10))
     checks.append(
         {
@@ -1726,6 +1882,9 @@ def run_prep(args):
             "expected": ">= 0.0",
         }
     )
+
+
+def _collect_dynamic_timbre_budget_guardrail_checks(checks):
     dynamic_timbre_budget_uv_floor = float(hparams.get("dynamic_timbre_budget_uv_floor", 0.25))
     checks.append(
         {
@@ -1792,6 +1951,29 @@ def run_prep(args):
             "expected": "> 0.0",
         }
     )
+
+
+def _collect_style_success_guardrail_checks(checks):
+    style_success_self_ref_scale = float(hparams.get("style_success_self_ref_scale", 0.35))
+    checks.append(
+        {
+            "name": "style_success_self_ref_scale_range",
+            "ok": 0.0 <= style_success_self_ref_scale <= 1.0,
+            "actual": style_success_self_ref_scale,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    style_success_memory_fallback_scale = float(
+        hparams.get("style_success_memory_fallback_scale", STYLE_SUCCESS_MEMORY_FALLBACK_SCALE)
+    )
+    checks.append(
+        {
+            "name": "style_success_memory_fallback_scale_range",
+            "ok": 0.0 <= style_success_memory_fallback_scale <= 1.0,
+            "actual": style_success_memory_fallback_scale,
+            "expected": "[0.0, 1.0]",
+        }
+    )
     style_success_proxy_negative_threshold = float(hparams.get("style_success_proxy_negative_threshold", 1.25))
     checks.append(
         {
@@ -1828,9 +2010,18 @@ def run_prep(args):
             "expected": ">= 0",
         }
     )
-    style_success_label_rank_scale = float(
-        hparams.get("style_success_label_rank_scale", 1.0)
+    style_success_proxy_target_batch = int(
+        hparams.get("style_success_proxy_target_batch", max(style_success_proxy_min_batch, 8))
     )
+    checks.append(
+        {
+            "name": "style_success_proxy_target_batch_floor",
+            "ok": style_success_proxy_target_batch >= max(style_success_proxy_min_batch, 1),
+            "actual": style_success_proxy_target_batch,
+            "expected": f">= {max(style_success_proxy_min_batch, 1)}",
+        }
+    )
+    style_success_label_rank_scale = float(hparams.get("style_success_label_rank_scale", 1.0))
     checks.append(
         {
             "name": "style_success_label_rank_scale_range",
@@ -1850,17 +2041,6 @@ def run_prep(args):
             "expected": "[0.0, 1.0]",
         }
     )
-    style_success_self_ref_scale = float(
-        hparams.get("style_success_self_ref_scale", 0.35)
-    )
-    checks.append(
-        {
-            "name": "style_success_self_ref_scale_range",
-            "ok": 0.0 <= style_success_self_ref_scale <= 1.0,
-            "actual": style_success_self_ref_scale,
-            "expected": "[0.0, 1.0]",
-        }
-    )
     style_success_proxy_rank_scale = float(
         hparams.get(
             "style_success_proxy_rank_scale",
@@ -1872,20 +2052,6 @@ def run_prep(args):
             "name": "style_success_proxy_rank_scale_range",
             "ok": 0.0 <= style_success_proxy_rank_scale <= 1.0,
             "actual": style_success_proxy_rank_scale,
-            "expected": "[0.0, 1.0]",
-        }
-    )
-    style_success_memory_fallback_scale = float(
-        hparams.get(
-            "style_success_memory_fallback_scale",
-            STYLE_SUCCESS_MEMORY_FALLBACK_SCALE,
-        )
-    )
-    checks.append(
-        {
-            "name": "style_success_memory_fallback_scale_range",
-            "ok": 0.0 <= style_success_memory_fallback_scale <= 1.0,
-            "actual": style_success_memory_fallback_scale,
             "expected": "[0.0, 1.0]",
         }
     )
@@ -1945,6 +2111,20 @@ def run_prep(args):
             "expected": ">= 0",
         }
     )
+    style_success_label_authority_row_frac = float(
+        hparams.get("style_success_label_authority_row_frac", 0.5)
+    )
+    checks.append(
+        {
+            "name": "style_success_label_authority_row_frac_range",
+            "ok": 0.0 < style_success_label_authority_row_frac <= 1.0,
+            "actual": style_success_label_authority_row_frac,
+            "expected": "(0.0, 1.0]",
+        }
+    )
+
+
+def _collect_decoder_late_style_guardrail_checks(checks):
     decoder_late_style_floor_ratio = float(hparams.get("decoder_late_style_floor_ratio", 0.15))
     checks.append(
         {
@@ -1973,40 +2153,16 @@ def run_prep(args):
         }
     )
 
-    _check_exists(checks, "binary_data_dir_exists", hparams.get("binary_data_dir"))
-    _check_exists(checks, "processed_data_dir_exists", hparams.get("processed_data_dir"))
-    binary_data_dir = hparams.get("binary_data_dir")
-    if binary_data_dir:
-        for filename in (
-            "train.data",
-            "train.idx",
-            "train_lengths.npy",
-            "train_ref_indices.npy",
-            "train_spk_ids.npy",
-            "valid.data",
-            "valid.idx",
-            "valid_lengths.npy",
-            "valid_ref_indices.npy",
-            "valid_spk_ids.npy",
-            "test.data",
-            "test.idx",
-            "test_lengths.npy",
-            "test_ref_indices.npy",
-            "test_spk_ids.npy",
-        ):
-            _check_exists(
-                checks,
-                f"binary_{filename}_exists",
-                os.path.join(str(binary_data_dir), filename),
-            )
-        for split in ("train", "valid", "test"):
-            _check_npy_count_positive(
-                checks,
-                f"binary_{split}_items_nonempty",
-                os.path.join(str(binary_data_dir), f"{split}_lengths.npy"),
-            )
-            _check_binary_sidecar_consistency(checks, binary_data_dir, split)
 
+def _collect_loss_and_proxy_guardrail_checks(checks):
+    _collect_active_mainline_control_loss_checks(checks)
+    _collect_required_loss_key_checks(checks)
+    _collect_overlap_pitch_guardrail_checks(checks)
+    _collect_dynamic_timbre_budget_guardrail_checks(checks)
+    _collect_style_success_guardrail_checks(checks)
+    _collect_decoder_late_style_guardrail_checks(checks)
+
+def _assemble_prep_summary(args, prep_ctx, checks):
     reference_preview_steps = (0, 20000, 40000, 70000, 100000)
     forcing_preview_steps = (0, 12000, 20000, 60000, 100000)
     failed_summary = _summarize_failed_checks(checks)
@@ -2031,19 +2187,23 @@ def run_prep(args):
         for item in checks
     )
     all_ready = bool(all(item["ok"] for item in checks))
-    summary = {
+    return {
         "config": args.config,
-        "config_chain": config_chain,
-        "identity_loss_constraint_mode": identity_loss_constraint_mode,
+        "config_chain": prep_ctx.config_chain,
+        "identity_loss_constraint_mode": prep_ctx.identity_loss_constraint_mode,
         "style_strength_override_mode": (
             "dataset_item_override_enabled"
             if bool(hparams.get("allow_item_style_strength_override", False))
             else "profile_locked"
         ),
-        "mainline_controls": _jsonable(controls.as_dict()),
-        "train_batch_mainline_controls": None if batch_controls is None else _jsonable(batch_controls.as_dict()),
-        "resolved_profile": _jsonable(resolved_profile),
-        "style_success_supervision": _jsonable(style_success_supervision),
+        "mainline_controls": _jsonable(prep_ctx.controls.as_dict()),
+        "train_batch_mainline_controls": (
+            None
+            if prep_ctx.batch_controls is None
+            else _jsonable(prep_ctx.batch_controls.as_dict())
+        ),
+        "resolved_profile": _jsonable(prep_ctx.resolved_profile),
+        "style_success_supervision": _jsonable(prep_ctx.style_success_supervision),
         "reference_curriculum_preview": [
             _jsonable({"step": int(step), **resolve_reference_curriculum(step, hparams)})
             for step in reference_preview_steps
@@ -2059,7 +2219,7 @@ def run_prep(args):
             }
             for step in (0, 20000, 50000, 80000, 100000)
         ],
-        "dynamic_timbre_boundary_preview": _jsonable(boundary_preview),
+        "dynamic_timbre_boundary_preview": _jsonable(prep_ctx.boundary_preview),
         "checks": _jsonable(checks),
         "failed_summary": failed_summary,
         "failed_checks_by_category": _jsonable(failed_summary.get("blocking_categories", {})),
@@ -2070,6 +2230,22 @@ def run_prep(args):
         "ready": all_ready,
         "train_ready_now": all_ready,
     }
+
+
+def run_prep(args):
+    set_hparams(config=args.config, print_hparams=False)
+    if getattr(args, "binary_data_dir", None):
+        hparams["binary_data_dir"] = str(args.binary_data_dir)
+    prep_ctx = _build_mainline_train_prep_context(args)
+    checks = []
+    _collect_config_surface_checks(checks, prep_ctx)
+    _collect_mainline_contract_checks(checks, prep_ctx)
+    _collect_runtime_dependency_checks(checks, args)
+    _collect_data_staging_checks(checks, prep_ctx)
+    _collect_control_preview_checks(checks, prep_ctx)
+    _collect_schedule_alignment_checks(checks)
+    _collect_loss_and_proxy_guardrail_checks(checks)
+    summary = _assemble_prep_summary(args, prep_ctx, checks)
     output_path = Path(args.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:

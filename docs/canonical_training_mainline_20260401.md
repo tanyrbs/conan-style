@@ -74,6 +74,17 @@ It also no longer treats “negative mask exists” as sufficient evidence that 
 
 Separately, the codebase now exposes an optional runtime-separation regularizer, `lambda_style_timbre_runtime_overlap`, but keeps it at `0.0` in the shipped canonical config. Its purpose is diagnostic/ablation-oriented: measure and optionally penalize excessive frame-wise overlap between `style_decoder_residual` and `dynamic_timbre_decoder_residual_prebudget`, not to assert that true disentanglement has been proved. Explicit ablation runs can now enable it without leaving `control_loss_profile: mainline_minimal`; the schedule layer no longer silently zeros that opt-in regularizer.
 
+## Known training blockers (engineering, 2026-04-04)
+
+Even when `mainline_train_prep.py` reports ready, **large-scale GPU training on Windows is not yet green** without the following fixes:
+
+- **OS shell ops:** core file operations still shell out to `rm -rf`, `cp -r`, `mv`, and `ln -s` via `utils/os_utils.py`. Those are used by checkpoint eviction and binarizer copy paths and can crash training on Windows.
+- **DDP backend:** canonical config still uses `ddp_backend: nccl`. There is no platform guard in prep, so Windows multi-GPU launch can fail even if prep passes. A Windows-safe default (e.g., `gloo`) must be enforced.
+- **AMP path:** AMP clipping and scheduler stepping are incorrect when `amp: true` (scaled grads are clipped and schedulers advance even when `GradScaler.step()` skips). Canonical configs keep AMP off, but this must be fixed before enabling AMP.
+- **Vocoder weight-norm compat:** the new compat wrapper breaks the intended HiFi-GAN init (custom normal init does not apply after parametrized wrapping), and `icl_portaspeech.py` is missing a `remove_weight_norm_compat` import.
+
+These are engineering bugs, not conceptual constraints. Resolve them before any long multi-GPU run.
+
 When `use_external_speaker_verifier: false`, the identity loss is evaluated through the model's own speaker encoder,
 but the canonical config now freezes that internal encoder during the auxiliary identity-loss pass so the loss behaves like a fixed reference space rather than a moving target.
 

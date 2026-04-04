@@ -40,6 +40,17 @@ In the verified `conan` env, the following all passed:
 
 This machine is still CPU-only, so that result should be read as **train-readiness / chain integrity confirmed**, not as a throughput claim.
 
+## Known pre-train blockers (2026-04-04 audit)
+
+If you intend large-scale GPU training or Windows multi-GPU runs, there are still real blockers that are **not** caught by the current prep gate:
+
+- **Windows file ops:** `utils/os_utils.py` still shells out to `rm -rf`, `cp -r`, `mv`, `ln -s`. Those are used on the training/data hot path (checkpoint eviction, binarizer copy, hparams cleanup) and already caused a real failure during checkpoint cleanup.
+- **DDP backend on Windows:** canonical config still pins `ddp_backend: nccl`, which is not the safe default on Windows. There is no platform guard in `mainline_train_prep.py`, so prep can report ready even though multi-GPU launch will fail.
+- **AMP (if enabled):** AMP clipping currently runs on scaled gradients (no `GradScaler.unscale_()`), and schedulers advance even when an AMP step is skipped on overflow. Canonical configs keep `amp: false`, but if you turn AMP on this must be fixed first.
+- **Vocoder weight-norm compat regression:** the new `weight_norm_compat` path changes init semantics for HiFi-GAN (custom normal init does not take effect after wrapping), and `icl_portaspeech.py` is missing an import for `remove_weight_norm_compat`. Treat vocoder training/export as not yet fully safe without a follow-up fix.
+
+These are engineering blockers, not conceptual ones. Until they are addressed, treat large-scale GPU training as **not** green even if prep passes.
+
 ## Canonical configs
 
 - binarization: `egs/conan_binarize.yaml`

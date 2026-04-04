@@ -10,6 +10,10 @@ from .diffusion import Mish
 from utils.commons.hparams import hparams
 
 
+def _resolve_diff_hparams(hparams_override=None):
+    return hparams if hparams_override is None else hparams_override
+
+
 def kaiming_init(layer):
     nn.init.kaiming_normal_(layer.weight)
     if layer.bias is not None:
@@ -166,14 +170,15 @@ class OriResidualBlock(nn.Module):
         return (x + residual) / sqrt(2.0), skip
 
 class OriDiffNet(nn.Module):
-    def __init__(self, in_dims=80):
+    def __init__(self, in_dims=80, hparams_override=None):
         super().__init__()
+        hp = _resolve_diff_hparams(hparams_override)
         self.params = params = AttrDict(
             # Model params
-            encoder_hidden=hparams['hidden_size'],
-            residual_layers=hparams['residual_layers'],
-            residual_channels=hparams['residual_channels'],
-            dilation_cycle_length=hparams['dilation_cycle_length'],
+            encoder_hidden=hp['hidden_size'],
+            residual_layers=hp['residual_layers'],
+            residual_channels=hp['residual_channels'],
+            dilation_cycle_length=hp['dilation_cycle_length'],
         )
         self.input_projection = Conv1d(in_dims, params.residual_channels, 1)
         self.diffusion_embedding = SinusoidalPosEmb(params.residual_channels)
@@ -217,14 +222,15 @@ class OriDiffNet(nn.Module):
         return x[:, None, :, :]
 
 class DiffNet(nn.Module):
-    def __init__(self, in_dims=80):
+    def __init__(self, in_dims=80, hparams_override=None):
         super().__init__()
+        hp = _resolve_diff_hparams(hparams_override)
         self.params = params = AttrDict(
             # Model params
-            encoder_hidden=hparams['hidden_size'],
-            residual_layers=hparams['residual_layers'],
-            residual_channels=hparams['residual_channels'],
-            dilation_cycle_length=hparams['dilation_cycle_length'],
+            encoder_hidden=hp['hidden_size'],
+            residual_layers=hp['residual_layers'],
+            residual_channels=hp['residual_channels'],
+            dilation_cycle_length=hp['dilation_cycle_length'],
         )
         self.input_projection = Conv1d(in_dims, params.residual_channels, 1)
         self.diffusion_embedding = SinusoidalPosEmb(params.residual_channels)
@@ -268,14 +274,15 @@ class DiffNet(nn.Module):
         return x[:, None, :, :]
 
 class F0DiffNet(nn.Module):
-    def __init__(self, in_dims=80):
+    def __init__(self, in_dims=80, hparams_override=None):
         super().__init__()
+        hp = _resolve_diff_hparams(hparams_override)
         self.params = params = AttrDict(
             # Model params
-            encoder_hidden=hparams['hidden_size'],
-            residual_layers=hparams['f0_residual_layers'],
-            residual_channels=hparams['f0_residual_channels'],
-            dilation_cycle_length=hparams['f0_dilation_cycle_length'],
+            encoder_hidden=hp['hidden_size'],
+            residual_layers=hp['f0_residual_layers'],
+            residual_channels=hp['f0_residual_channels'],
+            dilation_cycle_length=hp['f0_dilation_cycle_length'],
         )
         self.input_projection = Conv1d(in_dims, params.residual_channels, 1)
         self.diffusion_embedding = SinusoidalPosEmb(params.residual_channels)
@@ -351,14 +358,15 @@ def init_weights_func(m):
 
 # continuous diffusion for f0, multimodal diffusion for uv
 class DDiffNet(nn.Module):
-    def __init__(self, in_dims=80, num_classes=2):
+    def __init__(self, in_dims=80, num_classes=2, hparams_override=None):
         super().__init__()
+        hp = _resolve_diff_hparams(hparams_override)
         self.params = params = AttrDict(
             # Model params
-            encoder_hidden=hparams['hidden_size'],
-            residual_layers=hparams['f0_residual_layers'],
-            residual_channels=hparams['f0_residual_channels'],
-            dilation_cycle_length=hparams['f0_dilation_cycle_length'],
+            encoder_hidden=hp['hidden_size'],
+            residual_layers=hp['f0_residual_layers'],
+            residual_channels=hp['f0_residual_channels'],
+            dilation_cycle_length=hp['f0_dilation_cycle_length'],
         )
         self.input_projection = Conv1d(in_dims, params.residual_channels // 2, 1)
         self.uv_embed = nn.Embedding(2, params.residual_channels // 2)
@@ -404,14 +412,15 @@ class DDiffNet(nn.Module):
         return x * nonpadding[:, None, :]
 
 class MDiffNet(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(self, num_classes=2, hparams_override=None):
         super().__init__()
+        hp = _resolve_diff_hparams(hparams_override)
         self.params = params = AttrDict(
             # Model params
-            encoder_hidden=hparams['hidden_size'],
-            residual_layers=hparams['f0_residual_layers'],
-            residual_channels=hparams['f0_residual_channels'],
-            dilation_cycle_length=hparams['f0_dilation_cycle_length'],
+            encoder_hidden=hp['hidden_size'],
+            residual_layers=hp['f0_residual_layers'],
+            residual_channels=hp['f0_residual_channels'],
+            dilation_cycle_length=hp['f0_dilation_cycle_length'],
         )
         # self.input_projection = Conv1d(in_dims, params.residual_channels // 2, 1)
         self.uv_embed = nn.Embedding(2, params.residual_channels)
@@ -455,4 +464,3 @@ class MDiffNet(nn.Module):
         x = F.relu(x)
         x = self.output_projection(x)  # [B, 80, T]
         return x * nonpadding[:, None, :]
-

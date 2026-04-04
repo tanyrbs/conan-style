@@ -1,7 +1,6 @@
 from torch import nn
 import copy
 import torch
-from utils.commons.hparams import hparams
 from modules.commons.wavenet import WN
 import math
 
@@ -139,9 +138,32 @@ class CrossAttenLayer(nn.Module):
 
 
 class ProsodyAligner(nn.Module):
-    def __init__(self, num_layers, guided_sigma=0.3, guided_layers=None, norm=None):
+    def __init__(
+        self,
+        num_layers,
+        guided_sigma=0.3,
+        guided_layers=None,
+        norm=None,
+        *,
+        d_model=None,
+        nhead=2,
+        dropout=0.1,
+        dim_feedforward=2048,
+    ):
         super(ProsodyAligner, self).__init__()
-        self.layers = nn.ModuleList([CrossAttenLayer(d_model=hparams['hidden_size'], nhead=2) for _ in range(num_layers)])
+        if d_model is None:
+            raise ValueError("ProsodyAligner now requires explicit `d_model`.")
+        self.layers = nn.ModuleList(
+            [
+                CrossAttenLayer(
+                    d_model=d_model,
+                    nhead=nhead,
+                    dim_feedforward=dim_feedforward,
+                    dropout=dropout,
+                )
+                for _ in range(num_layers)
+            ]
+        )
         self.num_layers = num_layers
         self.norm = norm
         self.guided_sigma = guided_sigma
@@ -157,7 +179,13 @@ class ProsodyAligner(nn.Module):
             output, attn_emo = mod(output, local_emotion, emotion_key_padding_mask=emotion_key_padding_mask, forcing=forcing)
             attn_emo_list.append(attn_emo.unsqueeze(1))
             # attn_emo: (B, Tph, Temo) attn: (B, Tph, Tph)
-            if i < self.guided_layers and src_key_padding_mask is not None:
+            if (
+                i < self.guided_layers
+                and isinstance(src_key_padding_mask, torch.Tensor)
+                and isinstance(emotion_key_padding_mask, torch.Tensor)
+                and src_key_padding_mask.dim() == 2
+                and emotion_key_padding_mask.dim() == 2
+            ):
                 s_length = (~src_key_padding_mask).float().sum(-1) # B
                 emo_length = (~emotion_key_padding_mask).float().sum(-1)
                 attn_w_emo = _make_guided_attention_mask(src_key_padding_mask.size(-1), s_length, emotion_key_padding_mask.size(-1), emo_length, self.guided_sigma)
@@ -186,11 +214,23 @@ def _make_guided_attention_mask(ilen, rilen, olen, rolen, sigma):
     )
 
 class LocalStyleAdaptor(nn.Module):
-    def __init__(self, hidden_size, num_vq_codes=64, padding_idx=0):
+    def __init__(
+        self,
+        hidden_size,
+        num_vq_codes=64,
+        padding_idx=0,
+        *,
+        dropout=0.0,
+        commitment_cost=0.25,
+    ):
         super(LocalStyleAdaptor, self).__init__()
-        self.encoder = ConvBlocks(80, hidden_size, [1] * 5, 5, dropout=hparams['vae_dropout'])
+        self.encoder = ConvBlocks(80, hidden_size, [1] * 5, 5, dropout=dropout)
         self.n_embed = num_vq_codes
-        self.vqvae = VQEmbeddingEMA(self.n_embed, hidden_size, commitment_cost=hparams['lambda_commit'])
+        self.vqvae = VQEmbeddingEMA(
+            self.n_embed,
+            hidden_size,
+            commitment_cost=commitment_cost,
+        )
         self.wavenet = WN(80, kernel_size=3, dilation_rate=1, n_layers=4)
         self.padding_idx = padding_idx
         self.hidden_size = hidden_size
@@ -216,9 +256,18 @@ class LocalStyleAdaptor(nn.Module):
 
 
 class LocalTimbreAdaptor(nn.Module):
-    def __init__(self, hidden_size, num_vq_codes=64, padding_idx=0, use_vq=False):
+    def __init__(
+        self,
+        hidden_size,
+        num_vq_codes=64,
+        padding_idx=0,
+        use_vq=False,
+        *,
+        dropout=0.0,
+        commitment_cost=0.25,
+    ):
         super(LocalTimbreAdaptor, self).__init__()
-        self.encoder = ConvBlocks(80, hidden_size, [1] * 5, 5, dropout=hparams['vae_dropout'])
+        self.encoder = ConvBlocks(80, hidden_size, [1] * 5, 5, dropout=dropout)
         self.wavenet = WN(80, kernel_size=3, dilation_rate=1, n_layers=4)
         self.padding_idx = padding_idx
         self.hidden_size = hidden_size
@@ -226,7 +275,9 @@ class LocalTimbreAdaptor(nn.Module):
         self.n_embed = num_vq_codes
         if self.use_vq:
             self.vqvae = VQEmbeddingEMA(
-                self.n_embed, hidden_size, commitment_cost=hparams['lambda_commit']
+                self.n_embed,
+                hidden_size,
+                commitment_cost=commitment_cost,
             )
 
     def forward(self, ref_mels, mel2ph=None):

@@ -69,7 +69,8 @@ Their effective strengths still follow the schedule, so this is the configured l
 
 This is intentionally a **bounded weak internal factorization** contract, not a proof of perfect disentanglement. The mainline explicitly reports `factorization_guaranteed: false`; the active losses constrain lower-level failure modes, but they do not prove that each latent/control branch has become uniquely interpretable.
 
-The new `lambda_style_success_rank` is a training-only lower-bound signal rather than a new inference knob: it combines paired self/reference style alignment with weak-label batch ranking whenever metadata negatives are available, while leaving the shipped runtime surface closed. `tasks/Conan/mainline_train_prep.py` now reports whether the staged artifacts imply `paired_plus_weak_label_ranking` or only `paired_only`; if staged condition artifacts expose no usable label buckets (`num_labels <= 1`), the label-driven weak-ranking branch naturally collapses toward paired alignment instead of informative cross-label ranking. In the currently staged LibriTTS-single artifacts in this checkout, those weak-label buckets are empty, so the artifact-level preview resolves to `paired_only`. Separately, the shipped rank loss now has a conservative **proxy-negative fallback** for label-sparse batches: label negatives still take priority, but unsupported rows can backfill negatives from batch proxy features such as log-energy statistics, a text/content-length speaking-rate proxy, voiced ratio, and voiced-frame `f0` spread. The prep gate now also exposes a small-batch runtime preview of which negative path is actually available (`label`, `proxy`, or `label_plus_proxy_backfill`) so the artifact-level summary is not mistaken for the actual in-batch supervision path.
+The new `lambda_style_success_rank` is a training-only lower-bound signal rather than a new inference knob: it combines paired self/reference style alignment with weak-label batch ranking whenever metadata negatives are available, while leaving the shipped runtime surface closed. The target bank is now provenance-honest: self-derived runtime summaries such as `style_trace_pooled` / `style_trace_blended_with_reference` are excluded, runtime summaries that merely inherit the upstream global summary preserve the **true** upstream source, and `fallback_timbre_anchor` is no longer allowed to masquerade as reference-derived style supervision. `style_trace_memory` is also no longer blended into every sample target by default; it is only used as an explicit fallback bank when no approved reference-derived summary exists, surfacing as `style_memory_reference_fallback` with `style_success_target_memory_fallback_used=1` (the older `style_success_target_memory_used` flag remains as a compatibility alias). `tasks/Conan/mainline_train_prep.py` now reports whether the staged artifacts imply `paired_plus_weak_label_ranking` or only `paired_only`; if staged condition artifacts expose no usable label buckets (`num_labels <= 1`), the label-driven weak-ranking branch naturally collapses toward paired alignment instead of informative cross-label ranking. In the currently staged LibriTTS-single artifacts in this checkout, those weak-label buckets are empty, so the artifact-level preview resolves to `paired_only`. Separately, the shipped rank loss now has a conservative **proxy-negative fallback** for label-sparse batches: label negatives still take priority, the distance-threshold proxy mask is still first-choice, and only rows that remain below the proxy minimum count receive row-wise farthest-example backfill. That backfill also keeps a tiny minimum-distance guard, so homogeneous batches do not fabricate fake negatives merely to satisfy the ranking path. Canonical mainline now also disables proxy negatives entirely for very small batches (`style_success_proxy_min_batch: 4`) and keeps source-aware rank downscaling (`label: 1.0`, `label_plus_proxy_backfill: 0.75`, `proxy: 0.5`) so proxy-only supervision is explicitly treated as weaker than label-backed negatives. Canonical mainline keeps `style_success_proxy_use_rate_proxy: false`, so the fallback defaults to acoustic/prosodic features (`log_energy_mean/std`, voiced ratio, voiced-frame **log-domain** `f0` spread) rather than treating text/content-length rate proxy as a public default; that shortcut remains research opt-in only. The prep gate now also exposes a small-batch runtime preview of which negative path is actually available (`label`, `proxy`, or `label_plus_proxy_backfill`) so the artifact-level summary is not mistaken for the actual in-batch supervision path.
+It also no longer treats “negative mask exists” as sufficient evidence that the ranking term is healthy: the rank branch is now support-gated by negative row/pair density, mean negatives per row, and proxy feature informativeness. When support is too weak, the pair-alignment branch can stay active while the rank branch is explicitly disabled and diagnostics record why.
 
 Separately, the codebase now exposes an optional runtime-separation regularizer, `lambda_style_timbre_runtime_overlap`, but keeps it at `0.0` in the shipped canonical config. Its purpose is diagnostic/ablation-oriented: measure and optionally penalize excessive frame-wise overlap between `style_decoder_residual` and `dynamic_timbre_decoder_residual_prebudget`, not to assert that true disentanglement has been proved. Explicit ablation runs can now enable it without leaving `control_loss_profile: mainline_minimal`; the schedule layer no longer silently zeros that opt-in regularizer.
 
@@ -137,10 +138,11 @@ Expected result:
 - `MAINLINE_TRAIN_PREP_OK`
 
 If your local checkout still has dependency pin drift or missing staged artifacts, the honest result is `MAINLINE_TRAIN_PREP_NOT_READY`; in that case, read the JSON summary fields `code_contract_ready` vs `ready` / `train_ready_now` rather than inferring readiness from this document alone.
+That summary is now split more explicitly into `code_contract_ready`, `environment_ready`, `data_ready`, and `data_dependent_preview_ready`, with `failed_checks_by_category` exposing which class of issue is still blocking the current checkout.
 
 This prep gate now also checks that style-profile defaults really control mainline runtime strengths instead of silently falling back to neutral values.
 When the environment is incomplete, the JSON summary now separates `code_contract_ready` from the stricter `ready` / `train_ready_now` flags so mainline code-contract failures are not conflated with missing staged data or missing runtime libraries.
-It also checks exact `requirements.txt` pins for `torch` / `torchaudio` / `torchdyn` / `textgrid`, plus Python-vs-pinned-`torchaudio` compatibility, so a local checkout can legitimately report `code_contract_ready: true` while still failing `train_ready_now`.
+It also checks exact `requirements.txt` pins for `torch` / `torchaudio` / `torchdyn` / `textgrid` / `g2p_en` / `nltk`, plus Python-vs-pinned-`torchaudio` compatibility. That compatibility gate is now updated to the currently published wheel boundary: `torchaudio 2.3.x .. 2.5.x` are treated as Python `3.8 .. 3.12`, while `2.6.x` extends to Python `3.13`; out-of-range runtimes are no longer silently accepted just because a local import happens to work. The runtime side now explicitly checks `g2p_en` importability, the NLTK tagger + `cmudict` resources that `g2p_en` needs, `tasks.Conan.Conan` importability, and a **local** `Conan(0, hparams)` construction path using `set_hparams(..., global_hparams=False)`, so hidden singleton-config dependencies are surfaced instead of being silently masked by global state. On the data side, prep now also verifies that `*_lengths.npy`, `*_ref_indices.npy`, and `*_spk_ids.npy` remain aligned and that each reference index still points to a same-speaker item, reducing false-green prep results from stale binary sidecars.
 
 It now also checks that the shipped runtime dynamic-timbre budget contract matches the canonical mainline hparams, including the public budget ratio / margin plus the internal hparam-owned budget stabilization scalars:
 
@@ -211,6 +213,8 @@ Notes:
 
 - the evaluation entrypoint now lazy-loads the optional research-only factorized report writer, so the canonical evaluator no longer crashes just because `inference/research/` is absent
 - explicit timbre/style/dynamic-timbre/emotion/accent reference metrics are computed whenever the sweep metadata actually provides those explicit reference wavs; they are no longer hidden behind the research-metadata flag
+- explicit factorized reference paths are now validated before scoring; missing `ref_timbre_wav` / `ref_style_wav` / `ref_dynamic_timbre_wav` no longer hard-crash the evaluator, and the output surfaces `*_reference_status` plus invalid-path counts instead
+- the profile report now separates `style_following_score`, `identity_preservation_score`, optional `factorized_reference_score`, and `stability_score` instead of folding factorized-reference metrics back into the canonical single-reference score
 
 Streaming latency instrumentation:
 
@@ -233,8 +237,9 @@ python inference/run_streaming_latency_report.py
 - fast style / TVT timbre / pitch residual no longer start fully open at step 0; they share one `20000 -> 80000` upper-bound curriculum during training
 - dynamic timbre now uses a unified residual semantic on both TVT and non-TVT paths (`local_delta` relative to the global timbre anchor)
 - dynamic-timbre boundary suppression now detects dense HuBERT-like unit streams and avoids turning token-transition boundaries into a global mask
-- `style_to_pitch_residual` smoothing is applied after projection onto the final pitch canvas and is mask-aware; when a bounded target residual exists, the safe loss now combines **robust target alignment + one-sided magnitude budget + target-slope matching** instead of penalizing any raw residual variation equally
+- `style_to_pitch_residual` smoothing is applied after projection onto the final pitch canvas and is mask-aware; when a bounded target residual exists, the safe loss now combines **robust target alignment + one-sided magnitude budget + target-slope matching** instead of penalizing any raw residual variation equally, and normal canvas-selection paths are now tracked via `selection_reason` while `fallback_reason` is reserved for real degradations
 - direct library-style inference (`set_hparams(..., global_hparams=False)` + `StreamingVoiceConversion(...)`) no longer requires the global singleton hparams dict on the canonical style/timbre path, although some legacy fallback reads still exist outside that main path
+- optional flow-side entrypoints are cleaner as well: `ConanPostnet`, `FlowMel`, and `ReflowF0` now accept explicit hparam injection on the local/library path instead of silently depending on the global singleton config
 - `VCBinarizer.process_item(...)` is now the single shared VC item-processing path; Conan only overrides frame-feature loading for cached `f0`
 - binary indexed dataset loading is robust across the current NumPy 1.x/2.x artifact boundary
 - runtime maintainability is now explicitly layered:
@@ -273,6 +278,11 @@ python inference/run_streaming_latency_report.py
   - `diag_style_success_pair_margin`
   - `diag_style_success_uses_weak_negative_ranking`
   - `diag_style_success_uses_proxy_negative_ranking`
+  - `diag_style_success_rank_row_scale_mean`
+  - `diag_style_success_rank_source_scale`
+  - `diag_style_success_proxy_min_batch`
+  - `diag_style_success_proxy_batch_gate_passed`
+  - `diag_style_success_proxy_only_negative_row_frac`
   - `diag_style_success_label_negative_row_frac`
   - `diag_style_success_proxy_negative_row_frac`
   - `diag_style_success_negative_row_frac`
@@ -281,6 +291,11 @@ python inference/run_streaming_latency_report.py
   - `diag_style_success_negative_source_label_plus_proxy_backfill`
   - `diag_style_success_target_source_runtime_reference_derived`
   - `diag_style_success_target_source_global_reference_derived`
+  - `diag_style_success_target_source_style_memory_reference_fallback`
+  - `diag_style_success_target_memory_fallback_used`
+  - `diag_style_success_proxy_backfill_row_frac`
+  - `diag_style_success_target_source_memory_reference_derived` (compatibility alias)
+  - `diag_style_success_target_memory_used` (compatibility alias)
   - `diag_style_success_target_source_none`
   - `diag_identity_backend_is_external`
   - `diag_identity_encoder_frozen_for_loss`

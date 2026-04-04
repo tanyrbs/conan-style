@@ -75,9 +75,16 @@ def main():
 
     builder.finalize()
     np.save(f"{hparams['binary_data_dir']}/train_lengths.npy", np.array(lengths, np.int32))
+    np.save(
+        f"{hparams['binary_data_dir']}/train_ref_indices.npy",
+        np.arange(kept, dtype=np.int32),
+    )
     np.save(f"{hparams['binary_data_dir']}/train_spk_ids.npy", np.array(spk_ids, np.int32))
 
-    print(f"| Smoke binarize done. kept={kept}, out_dir={hparams['binary_data_dir']}")
+    print(
+        f"| Smoke binarize done. kept={kept}, out_dir={hparams['binary_data_dir']}, "
+        "train_ref_indices.npy emitted as identity fallback pairs"
+    )
 
 
 if __name__ == '__main__':

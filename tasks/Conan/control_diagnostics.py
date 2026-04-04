@@ -1,20 +1,23 @@
 import torch
 import torch.nn.functional as F
 
+from modules.Conan.control.budget_support import (
+    resolve_dynamic_timbre_budget_support_weight as _resolve_dynamic_timbre_budget_support_weight,
+)
 from modules.Conan.control.common import summary_vector
 from modules.Conan.control.separation_metrics import (
     build_sequence_weight,
     masked_sequence_cosine,
-    resolve_dynamic_timbre_frame_weight,
     sequence_energy_mean,
     weighted_mean,
 )
 from modules.Conan.control.style_success import (
-    mean_optional_vectors,
     normalized_summary_batch,
     resolve_style_success_anchor,
+    resolve_style_success_bool_flag,
     resolve_style_success_negative_masks,
-    resolve_style_success_target_summary,
+    resolve_style_success_rank_support_state,
+    resolve_style_success_target_bank,
     style_success_supervision_scale,
 )
 from modules.Conan.dynamic_timbre_control import resolve_stage_dynamic_timbre_budget_terms
@@ -64,23 +67,6 @@ def _resolve_style_owner_sequence(output):
     if isinstance(style_owner, torch.Tensor):
         return style_owner, style_owner_mask
     return resolve_combined_style_trace(output)
-
-
-def _resolve_dynamic_timbre_budget_support_weight(sample, output, config, reference):
-    if not isinstance(reference, torch.Tensor):
-        return None
-    return resolve_dynamic_timbre_frame_weight(
-        sample.get("uv") if isinstance(sample, dict) else None,
-        sample.get("energy") if isinstance(sample, dict) else None,
-        reference,
-        mask=output.get("dynamic_timbre_mask", output.get("style_trace_mask"))
-        if isinstance(output, dict)
-        else None,
-        uv_floor=float(config.get("dynamic_timbre_budget_uv_floor", 0.25)),
-        energy_floor=float(config.get("dynamic_timbre_budget_energy_floor", 0.10)),
-        energy_power=float(config.get("dynamic_timbre_budget_energy_power", 0.5)),
-        energy_quantile=float(config.get("dynamic_timbre_budget_energy_quantile", 0.90)),
-    )
 
 
 def _label_repeat_fraction(labels):
@@ -552,6 +538,299 @@ def _decoder_style_adapter_statistics(stage_outputs, dynamic_timbre_residual=Non
     return stats
 
 
+def _record_style_success_diagnostics(
+    diagnostics,
+    output,
+    sample,
+    config,
+    *,
+    style_repr,
+    slow_style_repr,
+    fast_style_repr,
+):
+    style_success_anchor = resolve_style_success_anchor(
+        style_repr,
+        slow_style_repr,
+        fast_style_summary=fast_style_repr,
+        combined_style_summary=style_repr,
+    )
+    style_success_target_state = resolve_style_success_target_bank(
+        output,
+        memory_summary=_masked_sequence_mean(
+            output.get("style_trace_memory"),
+            output.get("style_trace_memory_mask"),
+        ),
+    )
+    style_success_target = style_success_target_state.get("summary")
+    anchor_bank = normalized_summary_batch(style_success_anchor)
+    target_bank = normalized_summary_batch(style_success_target)
+    diagnostics["diag_style_success_supervision_scale"] = torch.tensor(
+        float(style_success_supervision_scale(output, config))
+    )
+    for output_key, diag_key in (
+        ("style_success_rank_support_scale", "diag_style_success_rank_support_scale"),
+        ("style_success_rank_effective_support", "diag_style_success_rank_effective_support"),
+        ("style_success_rank_gate_passed", "diag_style_success_rank_gate_passed"),
+        ("style_success_rank_term_active", "diag_style_success_rank_term_active"),
+        ("style_success_rank_row_scale_mean", "diag_style_success_rank_row_scale_mean"),
+        ("style_success_proxy_only_negative_row_frac", "diag_style_success_proxy_only_negative_row_frac"),
+        ("style_success_proxy_backfill_row_frac", "diag_style_success_proxy_backfill_row_frac"),
+        ("style_success_rank_source_scale", "diag_style_success_rank_source_scale"),
+        ("style_success_proxy_min_batch", "diag_style_success_proxy_min_batch"),
+        ("style_success_proxy_batch_gate_passed", "diag_style_success_proxy_batch_gate_passed"),
+    ):
+        value = output.get(output_key)
+        if isinstance(value, torch.Tensor):
+            diagnostics[diag_key] = value.detach().float().mean()
+    for output_key, diag_key in (
+        ("style_success_negative_pair_density", "diag_style_success_negative_pair_density"),
+        ("style_success_negative_row_density", "diag_style_success_negative_row_density"),
+        ("style_success_mean_negatives_per_row", "diag_style_success_mean_negatives_per_row"),
+        (
+            "style_success_mean_negatives_per_valid_row",
+            "diag_style_success_mean_negatives_per_valid_row",
+        ),
+        (
+            "style_success_proxy_informative_feature_count",
+            "diag_style_success_proxy_informative_feature_count",
+        ),
+        ("style_success_proxy_feature_count", "diag_style_success_proxy_feature_count"),
+        (
+            "style_success_label_negative_pair_density",
+            "diag_style_success_label_negative_pair_density",
+        ),
+        (
+            "style_success_proxy_negative_pair_density",
+            "diag_style_success_proxy_negative_pair_density",
+        ),
+        (
+            "style_success_rank_min_negative_row_frac",
+            "diag_style_success_rank_min_negative_row_frac",
+        ),
+        (
+            "style_success_rank_min_mean_negatives_per_row",
+            "diag_style_success_rank_min_mean_negatives_per_row",
+        ),
+        (
+            "style_success_rank_min_effective_support",
+            "diag_style_success_rank_min_effective_support",
+        ),
+        (
+            "style_success_proxy_min_informative_features",
+            "diag_style_success_proxy_min_informative_features",
+        ),
+    ):
+        value = output.get(output_key)
+        if isinstance(value, torch.Tensor):
+            diagnostics[diag_key] = value.detach().float().mean()
+    style_success_target_source = str(style_success_target_state.get("source", "none"))
+    style_success_memory_fallback_used = bool(
+        style_success_target_state.get(
+            "memory_fallback_used",
+            style_success_target_state.get("memory_used", False),
+        )
+    )
+    diagnostics["diag_style_success_target_memory_fallback_used"] = torch.tensor(
+        1.0 if style_success_memory_fallback_used else 0.0
+    )
+    diagnostics["diag_style_success_target_memory_used"] = torch.tensor(
+        1.0 if style_success_memory_fallback_used else 0.0
+    )
+    diagnostics["diag_style_success_runtime_target_is_self_derived"] = torch.tensor(
+        1.0 if style_success_target_source == "runtime_self_derived" else 0.0
+    )
+    diagnostics["diag_style_success_runtime_target_is_reference_driven"] = torch.tensor(
+        1.0
+        if style_success_target_source
+        in {
+            "runtime_reference_derived",
+            "global_reference_derived",
+        }
+        else 0.0
+    )
+    diagnostics["diag_style_success_target_source_runtime_reference_derived"] = torch.tensor(
+        1.0 if style_success_target_source == "runtime_reference_derived" else 0.0
+    )
+    diagnostics["diag_style_success_target_source_global_reference_derived"] = torch.tensor(
+        1.0 if style_success_target_source == "global_reference_derived" else 0.0
+    )
+    diagnostics["diag_style_success_target_source_style_memory_reference_fallback"] = torch.tensor(
+        1.0 if style_success_target_source == "style_memory_reference_fallback" else 0.0
+    )
+    diagnostics["diag_style_success_target_source_memory_reference_derived"] = torch.tensor(
+        1.0
+        if style_success_target_source in {"style_memory_reference_fallback", "memory_reference_derived"}
+        else 0.0
+    )
+    diagnostics["diag_style_success_target_source_none"] = torch.tensor(
+        1.0 if style_success_target_source == "none" else 0.0
+    )
+    diagnostics["diag_style_success_uses_weak_negative_ranking"] = torch.tensor(0.0)
+    diagnostics["diag_style_success_uses_proxy_negative_ranking"] = torch.tensor(0.0)
+    if not (
+        isinstance(anchor_bank, torch.Tensor)
+        and isinstance(target_bank, torch.Tensor)
+        and tuple(anchor_bank.shape) == tuple(target_bank.shape)
+    ):
+        return
+
+    pair_cos = (anchor_bank * target_bank).sum(dim=-1)
+    diagnostics["diag_style_success_pair_cos"] = pair_cos.mean()
+    negative_state = resolve_style_success_negative_masks(
+        sample,
+        batch_size=anchor_bank.size(0),
+        device=anchor_bank.device,
+        proxy_threshold=float(config.get("style_success_proxy_negative_threshold", 1.25)),
+        proxy_min_count=int(config.get("style_success_proxy_negative_min_count", 2)),
+        proxy_min_batch=int(config.get("style_success_proxy_min_batch", 4)),
+        use_rate_proxy=resolve_style_success_bool_flag(
+            config.get("style_success_proxy_use_rate_proxy", False),
+            default=False,
+        ),
+    )
+    negative_mask = negative_state.get("negative_mask")
+    label_valid_rows = negative_state.get("label_valid_rows")
+    proxy_valid_rows = negative_state.get("proxy_valid_rows")
+    valid_rows = negative_state.get("valid_rows")
+    negative_source = str(negative_state.get("source", "none"))
+    support_state = resolve_style_success_rank_support_state(
+        negative_state,
+        config,
+        device=anchor_bank.device,
+    )
+    rank_supervision_active = (
+        float(config.get("lambda_style_success_rank", 0.0)) > 0.0
+        and float(config.get("style_success_rank_weight", 1.0)) > 0.0
+    )
+    diagnostics["diag_style_success_uses_weak_negative_ranking"] = torch.tensor(
+        1.0
+        if rank_supervision_active
+        and negative_source in {"label", "label_plus_proxy_backfill"}
+        and bool(float(support_state["gate_passed"].item()) > 0.0)
+        else 0.0,
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_uses_proxy_negative_ranking"] = torch.tensor(
+        1.0
+        if rank_supervision_active
+        and negative_source in {"proxy", "label_plus_proxy_backfill"}
+        and bool(float(support_state["gate_passed"].item()) > 0.0)
+        else 0.0,
+        device=anchor_bank.device,
+    )
+    if isinstance(label_valid_rows, torch.Tensor):
+        diagnostics["diag_style_success_label_negative_row_frac"] = label_valid_rows.float().mean()
+    if isinstance(proxy_valid_rows, torch.Tensor):
+        diagnostics["diag_style_success_proxy_negative_row_frac"] = proxy_valid_rows.float().mean()
+    if isinstance(valid_rows, torch.Tensor):
+        diagnostics["diag_style_success_negative_row_frac"] = valid_rows.float().mean()
+        diagnostics["diag_style_success_rank_valid_row_frac"] = valid_rows.float().mean()
+    for state_key, diag_key in (
+        ("negative_pair_density", "diag_style_success_negative_pair_density"),
+        ("negative_row_density", "diag_style_success_negative_row_density"),
+        ("mean_negatives_per_row", "diag_style_success_mean_negatives_per_row"),
+        (
+            "mean_negatives_per_valid_row",
+            "diag_style_success_mean_negatives_per_valid_row",
+        ),
+        (
+            "label_negative_pair_density",
+            "diag_style_success_label_negative_pair_density",
+        ),
+        (
+            "proxy_negative_pair_density",
+            "diag_style_success_proxy_negative_pair_density",
+        ),
+        (
+            "proxy_backfill_row_frac",
+            "diag_style_success_proxy_backfill_row_frac",
+        ),
+    ):
+        value = negative_state.get(state_key)
+        if isinstance(value, torch.Tensor):
+            diagnostics[diag_key] = value.detach().float().mean()
+        elif isinstance(value, (int, float)):
+            diagnostics[diag_key] = torch.tensor(float(value), device=anchor_bank.device)
+    diagnostics["diag_style_success_proxy_informative_feature_count"] = torch.tensor(
+        float(negative_state.get("proxy_informative_feature_count", 0)),
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_proxy_feature_count"] = torch.tensor(
+        float(negative_state.get("proxy_feature_count", 0)),
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_rank_effective_support"] = support_state[
+        "effective_support"
+    ].detach().float().mean()
+    diagnostics["diag_style_success_rank_gate_passed"] = support_state[
+        "gate_passed"
+    ].detach().float().mean()
+    diagnostics["diag_style_success_rank_term_active"] = support_state[
+        "rank_term_active"
+    ].detach().float().mean()
+    diagnostics["diag_style_success_negative_source_label"] = torch.tensor(
+        1.0 if negative_source == "label" else 0.0,
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_negative_source_proxy"] = torch.tensor(
+        1.0 if negative_source == "proxy" else 0.0,
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_negative_source_label_plus_proxy_backfill"] = torch.tensor(
+        1.0 if negative_source == "label_plus_proxy_backfill" else 0.0,
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_rank_disabled_reason_active"] = torch.tensor(
+        1.0 if str(support_state.get("disabled_reason", "unknown")) == "active" else 0.0,
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_rank_disabled_reason_no_valid_rows"] = torch.tensor(
+        1.0
+        if str(support_state.get("disabled_reason", "unknown")) == "no_valid_negative_rows"
+        else 0.0,
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_rank_disabled_reason_low_row_density"] = torch.tensor(
+        1.0
+        if str(support_state.get("disabled_reason", "unknown")) == "negative_row_density_below_floor"
+        else 0.0,
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_rank_disabled_reason_low_negatives"] = torch.tensor(
+        1.0
+        if str(support_state.get("disabled_reason", "unknown")) == "mean_negatives_per_row_below_floor"
+        else 0.0,
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_rank_disabled_reason_low_proxy_features"] = torch.tensor(
+        1.0
+        if str(support_state.get("disabled_reason", "unknown")) == "proxy_informative_features_below_floor"
+        else 0.0,
+        device=anchor_bank.device,
+    )
+    diagnostics["diag_style_success_rank_disabled_reason_low_effective_support"] = torch.tensor(
+        1.0
+        if str(support_state.get("disabled_reason", "unknown")) == "effective_support_below_floor"
+        else 0.0,
+        device=anchor_bank.device,
+    )
+    if isinstance(negative_mask, torch.Tensor):
+        diagnostics["diag_style_success_negative_pair_frac"] = negative_mask.float().mean()
+        if isinstance(valid_rows, torch.Tensor) and valid_rows.any():
+            similarity = anchor_bank @ target_bank.transpose(0, 1)
+            hard_negative = similarity.masked_fill(
+                ~negative_mask,
+                float("-inf"),
+            ).max(dim=-1).values
+            hard_negative = hard_negative[valid_rows]
+            if hard_negative.numel() > 0 and torch.isfinite(hard_negative).any():
+                hard_negative = hard_negative[torch.isfinite(hard_negative)]
+                diagnostics["diag_style_success_hard_negative_cos"] = hard_negative.mean()
+                diagnostics["diag_style_success_pair_margin"] = (
+                    pair_cos[valid_rows].mean() - hard_negative.mean()
+                )
+
+
 def collect_control_diagnostics(output, sample, config):
     if not config.get("log_control_diagnostics", True):
         return {}
@@ -653,131 +932,15 @@ def collect_control_diagnostics(output, sample, config):
         slow_style_global_cos = _cosine_mean(slow_style_repr, global_style_summary)
         if slow_style_global_cos is not None:
             diagnostics["diag_slow_style_global_cos"] = slow_style_global_cos
-        style_success_anchor = resolve_style_success_anchor(
-            style_repr,
-            slow_style_repr,
-            fast_style_summary=fast_style_repr,
-            combined_style_summary=style_repr,
+        _record_style_success_diagnostics(
+            diagnostics,
+            output,
+            sample,
+            config,
+            style_repr=style_repr,
+            slow_style_repr=slow_style_repr,
+            fast_style_repr=fast_style_repr,
         )
-        style_success_target_state = resolve_style_success_target_summary(output)
-        style_success_target = mean_optional_vectors(
-            style_success_target_state.get("summary"),
-            _masked_sequence_mean(
-                output.get("style_trace_memory"),
-                output.get("style_trace_memory_mask"),
-            ),
-        )
-        anchor_bank = normalized_summary_batch(style_success_anchor)
-        target_bank = normalized_summary_batch(style_success_target)
-        diagnostics["diag_style_success_supervision_scale"] = torch.tensor(
-            float(style_success_supervision_scale(output, config))
-        )
-        support_scale = output.get("style_success_rank_support_scale")
-        if isinstance(support_scale, torch.Tensor):
-            diagnostics["diag_style_success_rank_support_scale"] = support_scale.detach().float().mean()
-        style_success_target_source = str(style_success_target_state.get("source", "none"))
-        diagnostics["diag_style_success_runtime_target_is_self_derived"] = torch.tensor(
-            1.0 if style_success_target_source == "runtime_self_derived" else 0.0
-        )
-        diagnostics["diag_style_success_runtime_target_is_reference_driven"] = torch.tensor(
-            1.0
-            if style_success_target_source in {"runtime_reference_derived", "global_reference_derived"}
-            else 0.0
-        )
-        diagnostics["diag_style_success_target_source_runtime_reference_derived"] = torch.tensor(
-            1.0 if style_success_target_source == "runtime_reference_derived" else 0.0
-        )
-        diagnostics["diag_style_success_target_source_global_reference_derived"] = torch.tensor(
-            1.0 if style_success_target_source == "global_reference_derived" else 0.0
-        )
-        diagnostics["diag_style_success_target_source_none"] = torch.tensor(
-            1.0 if style_success_target_source == "none" else 0.0
-        )
-        diagnostics["diag_style_success_uses_weak_negative_ranking"] = torch.tensor(0.0)
-        diagnostics["diag_style_success_uses_proxy_negative_ranking"] = torch.tensor(0.0)
-        if (
-            isinstance(anchor_bank, torch.Tensor)
-            and isinstance(target_bank, torch.Tensor)
-            and tuple(anchor_bank.shape) == tuple(target_bank.shape)
-        ):
-            pair_cos = (anchor_bank * target_bank).sum(dim=-1)
-            diagnostics["diag_style_success_pair_cos"] = pair_cos.mean()
-            negative_state = resolve_style_success_negative_masks(
-                sample,
-                batch_size=anchor_bank.size(0),
-                device=anchor_bank.device,
-                proxy_threshold=float(config.get("style_success_proxy_negative_threshold", 1.25)),
-                proxy_min_count=int(config.get("style_success_proxy_negative_min_count", 2)),
-            )
-            negative_mask = negative_state.get("negative_mask")
-            label_negative_mask = negative_state.get("label_negative_mask")
-            proxy_negative_mask = negative_state.get("proxy_negative_mask")
-            label_valid_rows = negative_state.get("label_valid_rows")
-            proxy_valid_rows = negative_state.get("proxy_valid_rows")
-            valid_rows = negative_state.get("valid_rows")
-            negative_source = str(negative_state.get("source", "none"))
-            rank_supervision_active = (
-                float(config.get("lambda_style_success_rank", 0.0)) > 0.0
-                and float(config.get("style_success_rank_weight", 1.0)) > 0.0
-            )
-            diagnostics["diag_style_success_uses_weak_negative_ranking"] = torch.tensor(
-                1.0
-                if rank_supervision_active and negative_source in {"label", "label_plus_proxy_backfill"}
-                else 0.0,
-                device=anchor_bank.device,
-            )
-            diagnostics["diag_style_success_uses_proxy_negative_ranking"] = torch.tensor(
-                1.0
-                if rank_supervision_active and negative_source in {"proxy", "label_plus_proxy_backfill"}
-                else 0.0,
-                device=anchor_bank.device,
-            )
-            if isinstance(label_valid_rows, torch.Tensor):
-                diagnostics["diag_style_success_label_negative_row_frac"] = (
-                    label_valid_rows.float().mean()
-                )
-            if isinstance(proxy_valid_rows, torch.Tensor):
-                diagnostics["diag_style_success_proxy_negative_row_frac"] = (
-                    proxy_valid_rows.float().mean()
-                )
-            if isinstance(valid_rows, torch.Tensor):
-                diagnostics["diag_style_success_negative_row_frac"] = (
-                    valid_rows.float().mean()
-                )
-                diagnostics["diag_style_success_rank_valid_row_frac"] = (
-                    valid_rows.float().mean()
-                )
-            diagnostics["diag_style_success_negative_source_label"] = torch.tensor(
-                1.0 if negative_source == "label" else 0.0,
-                device=anchor_bank.device,
-            )
-            diagnostics["diag_style_success_negative_source_proxy"] = torch.tensor(
-                1.0 if negative_source == "proxy" else 0.0,
-                device=anchor_bank.device,
-            )
-            diagnostics["diag_style_success_negative_source_label_plus_proxy_backfill"] = torch.tensor(
-                1.0 if negative_source == "label_plus_proxy_backfill" else 0.0,
-                device=anchor_bank.device,
-            )
-            if isinstance(negative_mask, torch.Tensor):
-                diagnostics["diag_style_success_negative_pair_frac"] = (
-                    negative_mask.float().mean()
-                )
-                if isinstance(valid_rows, torch.Tensor) and valid_rows.any():
-                    similarity = anchor_bank @ target_bank.transpose(0, 1)
-                    hard_negative = similarity.masked_fill(
-                        ~negative_mask,
-                        float("-inf"),
-                    ).max(dim=-1).values
-                    hard_negative = hard_negative[valid_rows]
-                    if hard_negative.numel() > 0 and torch.isfinite(hard_negative).any():
-                        hard_negative = hard_negative[torch.isfinite(hard_negative)]
-                        diagnostics["diag_style_success_hard_negative_cos"] = (
-                            hard_negative.mean()
-                        )
-                        diagnostics["diag_style_success_pair_margin"] = (
-                            pair_cos[valid_rows].mean() - hard_negative.mean()
-                        )
         timbre_anchor_cos = _cosine_mean(timbre_repr, global_timbre_anchor)
         if timbre_anchor_cos is not None:
             diagnostics["diag_timbre_anchor_cos"] = timbre_anchor_cos
@@ -888,7 +1051,10 @@ def collect_control_diagnostics(output, sample, config):
             diagnostics["diag_dynamic_timbre_post_to_pre_budget_ratio"] = budget_ratio
         style_decoder_residual = output.get("style_decoder_residual")
         overlap_margin = float(config.get("style_timbre_runtime_overlap_margin", 0.10))
-        overlap_use_abs = bool(config.get("style_timbre_runtime_overlap_use_abs", True))
+        overlap_use_abs = resolve_style_success_bool_flag(
+            config.get("style_timbre_runtime_overlap_use_abs", True),
+            default=True,
+        )
         overlap_terms = masked_sequence_cosine(
             style_decoder_residual,
             prebudget_dynamic_timbre,
@@ -1182,10 +1348,17 @@ def collect_control_diagnostics(output, sample, config):
                 float(bool(output.get("pitch_residual_safe_target_available")))
             )
         for output_key, diag_key in (
+            ("dynamic_timbre_budget_prebudget_term", "diag_dynamic_timbre_budget_prebudget_term"),
+            ("dynamic_timbre_budget_mid_term", "diag_dynamic_timbre_budget_mid_term"),
+            ("dynamic_timbre_budget_late_term", "diag_dynamic_timbre_budget_late_term"),
             ("pitch_residual_safe_align_term", "diag_pitch_residual_align_term"),
             ("pitch_residual_safe_budget_overflow_term", "diag_pitch_residual_budget_overflow"),
             ("pitch_residual_safe_slope_term", "diag_pitch_residual_slope_term"),
             ("pitch_residual_safe_zero_fallback_term", "diag_pitch_residual_zero_fallback_term"),
+            ("decoder_late_owner_overflow_term", "diag_decoder_late_owner_overflow_term"),
+            ("decoder_late_owner_style_floor_term", "diag_decoder_late_owner_style_floor_term"),
+            ("decoder_late_owner_full_style_energy", "diag_decoder_late_owner_full_style_energy"),
+            ("decoder_late_owner_late_style_energy", "diag_decoder_late_owner_late_style_energy"),
         ):
             value = output.get(output_key)
             if isinstance(value, torch.Tensor):

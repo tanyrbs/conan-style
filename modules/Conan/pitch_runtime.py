@@ -409,6 +409,10 @@ class ConanStylePitchRuntimeMixin:
         ret["style_to_pitch_residual_post_rhythm_projection_used"] = bool(
             canvas_meta.get("post_rhythm_projection_used", False)
         )
+        selection_reason = canvas_meta.get("selection_reason")
+        if selection_reason is not None:
+            ret["style_to_pitch_residual_canvas_selection_reason"] = str(selection_reason)
+            ret["style_to_pitch_residual_projection_selection_reason"] = str(selection_reason)
         fallback_reason = canvas_meta.get("fallback_reason")
         if fallback_reason is not None:
             ret["style_to_pitch_residual_canvas_fallback_reason"] = str(fallback_reason)

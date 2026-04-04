@@ -75,6 +75,7 @@ def project_source_sequence_to_pitch_canvas(
         "mask": None,
         "blank_mask": None,
         "valid_mask": None,
+        "selection_reason": None,
         "requested_mode": mode,
         "post_rhythm_requested": bool(mode == "post_rhythm"),
         "post_rhythm_available": False,
@@ -90,7 +91,7 @@ def project_source_sequence_to_pitch_canvas(
         tuple(target_shape) if target_shape is not None else None
     )
     if mode == "source_aligned":
-        meta["fallback_reason"] = "source_aligned_requested"
+        meta["selection_reason"] = "source_aligned_requested"
         meta["mask"] = resolve_content_padding_mask(
             runtime_state.get("content"),
             content_padding_idx,
@@ -99,7 +100,7 @@ def project_source_sequence_to_pitch_canvas(
         return sequence, meta
 
     if normalized_target_shape is not None and tuple(sequence.shape) == normalized_target_shape and mode == "auto":
-        meta["fallback_reason"] = "auto_source_aligned_target_shape"
+        meta["selection_reason"] = "auto_source_aligned_target_shape"
         meta["mask"] = resolve_content_padding_mask(
             runtime_state.get("content"),
             content_padding_idx,
@@ -179,6 +180,7 @@ def project_source_sequence_to_pitch_canvas(
                     "mask": invalid_mask,
                     "blank_mask": resolved_blank_mask,
                     "valid_mask": valid_mask,
+                    "selection_reason": canvas or "post_rhythm_projection_used",
                     "post_rhythm_projection_used": True,
                     "fallback_reason": None,
                 }

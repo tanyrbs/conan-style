@@ -801,13 +801,18 @@ class VCPostnetTask(ConanTask):
 
     def build_model(self):
         self.build_pretrain_model()
-        self.model = ConanPostnet()
+        self.model = ConanPostnet(hparams_override=hparams)
 
     def build_pretrain_model(self):
         dict_size = 0
         self.pretrain = Conan(dict_size, hparams)
         from utils.commons.ckpt_utils import load_ckpt
-        load_ckpt(self.pretrain, hparams['fs2_ckpt_dir'], 'model', strict=True) 
+        load_ckpt(
+            self.pretrain,
+            hparams['fs2_ckpt_dir'],
+            'model',
+            strict=bool(hparams.get('postnet_pretrain_strict_load', False)),
+        )
         for k, v in self.pretrain.named_parameters():
             v.requires_grad = False    
     
@@ -821,9 +826,11 @@ class VCPostnetTask(ConanTask):
         target = sample["mels"]
         ref=sample['ref_mels']
         cfg = False
-        output = self.pretrain(content,spk_embed=spk_embed, target=target,ref=ref,
-                f0=f0, uv=uv,
-                infer=infer)
+        self.pretrain.eval()
+        with torch.no_grad():
+            output = self.pretrain(content,spk_embed=spk_embed, target=target,ref=ref,
+                    f0=f0, uv=uv,
+                    infer=infer)
 
         self.model(target, infer, output, cfg, cfg_scale=hparams['cfg_scale'],  noise=noise)
         losses = {}

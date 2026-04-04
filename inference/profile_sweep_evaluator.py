@@ -64,6 +64,17 @@ def _cosine_similarity(a, b):
     return F.cosine_similarity(a, b, dim=-1, eps=1e-6).mean().item()
 
 
+def _reference_margin(to_target, to_source):
+    if to_target is None or to_source is None:
+        return None
+    return float(to_target) - float(to_source)
+
+
+def _normalize_optional_path(path_value):
+    text = str(path_value or "").strip()
+    return Path(text) if text else None
+
+
 def _mean_abs_diff(a, b):
     a = np.asarray(a, dtype=np.float32)
     b = np.asarray(b, dtype=np.float32)
@@ -338,49 +349,125 @@ class StyleProfileSweepEvaluator:
 
     def _evaluate_explicit_reference_metrics(self, gen_path, model_input):
         metrics = {}
+        margin_values = []
         gen_audio = self.audio_cache.get(gen_path)
         explicit_refs = {
-            "timbre_ref": model_input.get("ref_timbre_wav"),
-            "style_ref": model_input.get("ref_style_wav"),
-            "dynamic_timbre_ref": model_input.get("ref_dynamic_timbre_wav"),
-            "emotion_ref": model_input.get("ref_emotion_wav"),
-            "accent_ref": model_input.get("ref_accent_wav"),
+            "timbre_ref": _normalize_optional_path(model_input.get("ref_timbre_wav")),
+            "style_ref": _normalize_optional_path(model_input.get("ref_style_wav")),
+            "dynamic_timbre_ref": _normalize_optional_path(model_input.get("ref_dynamic_timbre_wav")),
+            "emotion_ref": _normalize_optional_path(model_input.get("ref_emotion_wav")),
+            "accent_ref": _normalize_optional_path(model_input.get("ref_accent_wav")),
         }
+        valid_refs = {}
+        invalid_refs = []
         for prefix, ref_path in explicit_refs.items():
-            if not ref_path:
+            if ref_path is None:
+                metrics[f"{prefix}_reference_status"] = "not_requested"
                 continue
-            ref_audio = self.audio_cache.get(Path(ref_path))
+            if not ref_path.exists():
+                metrics[f"{prefix}_reference_status"] = "missing_path"
+                metrics[f"{prefix}_reference_path_valid"] = 0.0
+                invalid_refs.append(str(ref_path))
+                continue
+            metrics[f"{prefix}_reference_status"] = "ok"
+            metrics[f"{prefix}_reference_path_valid"] = 1.0
+            valid_refs[prefix] = ref_path
+            ref_audio = self.audio_cache.get(ref_path)
             metrics.update(evaluate_audio_against_reference(gen_audio, ref_audio, prefix))
+        metrics["factorized_reference_paths_all_valid"] = float(len(invalid_refs) == 0)
+        metrics["factorized_reference_invalid_path_count"] = float(len(invalid_refs))
+        if invalid_refs:
+            metrics["factorized_reference_invalid_paths"] = invalid_refs
 
         if self.model_cache is not None:
             gen_feat = self.model_cache.get(gen_path)
-            if explicit_refs["timbre_ref"]:
-                timbre_feat = self.model_cache.get(Path(explicit_refs["timbre_ref"]))
+            src_feat = self.model_cache.get(Path(model_input["src_wav"])) if model_input.get("src_wav") else None
+            global_cos_to_src = (
+                _cosine_similarity(gen_feat["style_global"], src_feat["style_global"])
+                if src_feat is not None
+                else None
+            )
+            prosody_cos_to_src = (
+                _cosine_similarity(gen_feat["prosody"], src_feat["prosody"])
+                if src_feat is not None
+                else None
+            )
+            timbre_global_cos_to_src = (
+                _cosine_similarity(gen_feat["timbre_global"], src_feat["timbre_global"])
+                if src_feat is not None
+                else None
+            )
+            dynamic_timbre_cos_to_src = (
+                _cosine_similarity(gen_feat["dynamic_timbre"], src_feat["dynamic_timbre"])
+                if src_feat is not None
+                else None
+            )
+            if valid_refs.get("timbre_ref") is not None:
+                timbre_feat = self.model_cache.get(valid_refs["timbre_ref"])
                 metrics["timbre_global_cos_to_timbre_ref"] = _cosine_similarity(
                     gen_feat["timbre_global"], timbre_feat["timbre_global"]
                 )
-            if explicit_refs["style_ref"]:
-                style_feat = self.model_cache.get(Path(explicit_refs["style_ref"]))
+                timbre_margin = _reference_margin(
+                    metrics.get("timbre_global_cos_to_timbre_ref"),
+                    timbre_global_cos_to_src,
+                )
+                if timbre_margin is not None:
+                    metrics["timbre_reference_margin"] = timbre_margin
+                    margin_values.append(timbre_margin)
+            if valid_refs.get("style_ref") is not None:
+                style_feat = self.model_cache.get(valid_refs["style_ref"])
                 metrics["global_cos_to_style_ref"] = _cosine_similarity(
                     gen_feat["style_global"], style_feat["style_global"]
                 )
                 metrics["prosody_cos_to_style_ref"] = _cosine_similarity(
                     gen_feat["prosody"], style_feat["prosody"]
                 )
-            if explicit_refs["dynamic_timbre_ref"]:
-                dynamic_feat = self.model_cache.get(Path(explicit_refs["dynamic_timbre_ref"]))
+                global_style_margin = _reference_margin(
+                    metrics.get("global_cos_to_style_ref"),
+                    global_cos_to_src,
+                )
+                if global_style_margin is not None:
+                    metrics["global_style_reference_margin"] = global_style_margin
+                    margin_values.append(global_style_margin)
+                prosody_style_margin = _reference_margin(
+                    metrics.get("prosody_cos_to_style_ref"),
+                    prosody_cos_to_src,
+                )
+                if prosody_style_margin is not None:
+                    metrics["prosody_style_reference_margin"] = prosody_style_margin
+                    margin_values.append(prosody_style_margin)
+            if valid_refs.get("dynamic_timbre_ref") is not None:
+                dynamic_feat = self.model_cache.get(valid_refs["dynamic_timbre_ref"])
                 metrics["dynamic_timbre_cos_to_dynamic_timbre_ref"] = _cosine_similarity(
                     gen_feat["dynamic_timbre"], dynamic_feat["dynamic_timbre"]
                 )
+                dynamic_margin = _reference_margin(
+                    metrics.get("dynamic_timbre_cos_to_dynamic_timbre_ref"),
+                    dynamic_timbre_cos_to_src,
+                )
+                if dynamic_margin is not None:
+                    metrics["dynamic_timbre_reference_margin"] = dynamic_margin
+                    margin_values.append(dynamic_margin)
+
+        if margin_values:
+            margin_array = np.asarray(margin_values, dtype=np.float32)
+            metrics["factorized_reference_margin_mean"] = float(margin_array.mean())
+            metrics["factorized_reference_margin_positive_frac"] = float(
+                (margin_array > 0.0).mean()
+            )
 
         if self.external_metrics is not None and self.external_metrics.available:
             metrics.update(
                 self.external_metrics.evaluate(
                     gen_path=gen_path,
                     src_path=model_input.get("src_wav"),
-                    timbre_ref_path=explicit_refs["timbre_ref"],
-                    style_ref_path=explicit_refs["style_ref"],
-                    dynamic_timbre_ref_path=explicit_refs["dynamic_timbre_ref"],
+                    timbre_ref_path=str(valid_refs["timbre_ref"]) if valid_refs.get("timbre_ref") is not None else None,
+                    style_ref_path=str(valid_refs["style_ref"]) if valid_refs.get("style_ref") is not None else None,
+                    dynamic_timbre_ref_path=(
+                        str(valid_refs["dynamic_timbre_ref"])
+                        if valid_refs.get("dynamic_timbre_ref") is not None
+                        else None
+                    ),
                 )
             )
         return metrics
@@ -481,6 +568,24 @@ class StyleProfileSweepEvaluator:
             "use_model_metrics": self.model_cache is not None,
             "use_external_metrics": self.external_metrics is not None and self.external_metrics.available,
         }
+        factorized_margin_mean_values = [
+            _safe_float(item.get("factorized_reference_margin_mean"))
+            for item in results
+            if item.get("factorized_reference_margin_mean") is not None
+        ]
+        factorized_margin_positive_frac_values = [
+            _safe_float(item.get("factorized_reference_margin_positive_frac"))
+            for item in results
+            if item.get("factorized_reference_margin_positive_frac") is not None
+        ]
+        if factorized_margin_mean_values:
+            report["factorized_reference_margin_mean"] = float(
+                np.mean(np.asarray(factorized_margin_mean_values, dtype=np.float32))
+            )
+        if factorized_margin_positive_frac_values:
+            report["factorized_reference_margin_positive_frac"] = float(
+                np.mean(np.asarray(factorized_margin_positive_frac_values, dtype=np.float32))
+            )
         if self.external_metrics is not None and self.external_metrics.init_errors:
             report["external_metric_init_errors"] = dict(self.external_metrics.init_errors)
         with open(self.sweep_dir / "evaluation_report.json", "w", encoding="utf-8") as f:

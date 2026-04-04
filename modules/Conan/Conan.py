@@ -1,4 +1,6 @@
 # midi singer
+from copy import deepcopy
+from collections.abc import Mapping
 import torch.nn as nn
 from modules.tts.fs import FastSpeech
 import torch
@@ -40,8 +42,14 @@ from modules.Conan.style_timbre_runtime import (
 from modules.commons.transformer import SinusoidalPositionalEmbedding
 
 Flow_DECODERS = {
-    "wavenet": lambda hp: DiffNet(hp["audio_num_mel_bins"]),
-    "orig": lambda hp: OriDiffNet(hp["audio_num_mel_bins"]),
+    "wavenet": lambda hp: DiffNet(
+        hp["audio_num_mel_bins"],
+        hparams_override=hp,
+    ),
+    "orig": lambda hp: OriDiffNet(
+        hp["audio_num_mel_bins"],
+        hparams_override=hp,
+    ),
     "conv": lambda hp: CausalFM(
         hp["hidden_size"],
         hp["hidden_size"],
@@ -114,19 +122,45 @@ class Conan(
         self.padding_idx = 0
         self.max_source_positions = DEFAULT_MAX_SOURCE_POSITIONS
         if hparams["style"]:
+            vae_dropout = float(hparams.get("vae_dropout", 0.0))
+            commitment_cost = float(hparams.get("lambda_commit", 0.25))
+            prosody_align_heads = int(hparams.get("prosody_aligner_num_heads", 2))
+            prosody_align_dropout = float(hparams.get("prosody_aligner_dropout", 0.1))
+            timbre_align_heads = int(
+                hparams.get("tv_timbre_aligner_num_heads", prosody_align_heads)
+            )
+            timbre_align_dropout = float(
+                hparams.get("tv_timbre_aligner_dropout", prosody_align_dropout)
+            )
             self.padding_idx = 0
             self.prosody_extractor = LocalStyleAdaptor(
-                self.hidden_size, hparams["nVQ"], self.padding_idx
+                self.hidden_size,
+                hparams["nVQ"],
+                self.padding_idx,
+                dropout=vae_dropout,
+                commitment_cost=commitment_cost,
             )
             self.local_timbre_extractor = LocalTimbreAdaptor(
                 self.hidden_size,
                 hparams.get("tv_timbre_nVQ", hparams.get("nVQ", 64)),
                 self.padding_idx,
                 use_vq=hparams.get("tv_timbre_use_vq", False),
+                dropout=vae_dropout,
+                commitment_cost=commitment_cost,
             )
             self.l1 = nn.Linear(self.hidden_size * 2, self.hidden_size)
-            self.align = ProsodyAligner(num_layers=2)
-            self.timbre_align = ProsodyAligner(num_layers=hparams.get("tv_timbre_layers", 1))
+            self.align = ProsodyAligner(
+                num_layers=2,
+                d_model=hidden_size,
+                nhead=prosody_align_heads,
+                dropout=prosody_align_dropout,
+            )
+            self.timbre_align = ProsodyAligner(
+                num_layers=hparams.get("tv_timbre_layers", 1),
+                d_model=hidden_size,
+                nhead=timbre_align_heads,
+                dropout=timbre_align_dropout,
+            )
             gate_hidden = int(hparams.get("tv_timbre_gate_hidden", self.hidden_size))
             self.timbre_gate = nn.Sequential(
                 nn.Linear(self.hidden_size * 3, gate_hidden),
@@ -333,13 +367,14 @@ class Conan(
                 odim=2,
                 kernel_size=hparams["predictor_kernel"],
             )
-            self.pitch_flownet = F0DiffNet(in_dims=1)
+            self.pitch_flownet = F0DiffNet(in_dims=1, hparams_override=hparams)
             reflow_f0_cls = _lazy_import_reflow_f0()
             self.f0_gen = reflow_f0_cls(
                 out_dims=1,
                 denoise_fn=self.pitch_flownet,
                 timesteps=hparams["f0_timesteps"],
                 f0_K_step=hparams["f0_K_step"],
+                hparams_override=hparams,
             )
         else:
             self.uv_predictor = PitchPredictor(
@@ -539,11 +574,18 @@ class Conan(
         return global_z_e_x
 
     def temporal_avg_pool(self, x, mask=None):
-        len_ = (~mask).sum(dim=-1).unsqueeze(-1)
-        x = x.masked_fill(mask, 0)
-        x = x.sum(dim=-1).unsqueeze(-1)
-        out = torch.div(x, len_)
-        return out
+        if not isinstance(x, torch.Tensor):
+            return x
+        if not isinstance(mask, torch.Tensor):
+            return x.mean(dim=-1, keepdim=True)
+        mask = mask.to(device=x.device, dtype=torch.bool)
+        if x.dim() == 3 and mask.dim() == 2 and mask.size(0) == x.size(0) and mask.size(1) == x.size(-1):
+            mask = mask.unsqueeze(1)
+        if tuple(mask.shape) != tuple(x.shape):
+            return x.mean(dim=-1, keepdim=True)
+        len_ = (~mask).to(dtype=x.dtype).sum(dim=-1, keepdim=True).clamp_min(1.0)
+        pooled = x.masked_fill(mask, 0).sum(dim=-1, keepdim=True) / len_
+        return torch.nan_to_num(pooled, nan=0.0, posinf=0.0, neginf=0.0)
 
     def forward_decoder(self, decoder_inp, tgt_nonpadding, ret, infer, **kwargs):
         x = decoder_inp  # [B, T, H]
@@ -584,20 +626,36 @@ class Conan(
 
 
 class ConanPostnet(nn.Module):
-    def __init__(self):
+    def __init__(self, hparams_override=None):
         super().__init__()
-        cond_hs = 80 + hparams["hidden_size"]
+        if hparams_override is None:
+            if not isinstance(hparams, Mapping) or len(hparams) <= 0:
+                raise ValueError(
+                    "ConanPostnet requires explicit `hparams_override` when the global "
+                    "singleton hparams store is empty. Use ConanPostnet(hparams_override=hp) "
+                    "for local/library construction."
+                )
+            resolved_hparams = hparams
+        else:
+            if not isinstance(hparams_override, Mapping):
+                raise TypeError(
+                    "ConanPostnet `hparams_override` must be a mapping-like config object."
+                )
+            resolved_hparams = hparams_override
+        self.hparams = deepcopy(resolved_hparams)
+        cond_hs = 80 + self.hparams["hidden_size"]
 
-        self.ln_proj = nn.Linear(cond_hs, hparams["hidden_size"])
+        self.ln_proj = nn.Linear(cond_hs, self.hparams["hidden_size"])
         flow_mel_cls = _lazy_import_flow_mel()
         self.postflow = flow_mel_cls(
             out_dims=80,
-            denoise_fn=Flow_DECODERS[hparams["flow_decoder_type"]](hparams),
-            timesteps=hparams["timesteps"],
-            K_step=hparams["K_step"],
-            loss_type=hparams["flow_loss_type"],
-            spec_min=hparams["spec_min"],
-            spec_max=hparams["spec_max"],
+            denoise_fn=Flow_DECODERS[self.hparams["flow_decoder_type"]](self.hparams),
+            timesteps=self.hparams["timesteps"],
+            K_step=self.hparams["K_step"],
+            loss_type=self.hparams["flow_loss_type"],
+            spec_min=self.hparams["spec_min"],
+            spec_max=self.hparams["spec_max"],
+            hparams_override=self.hparams,
         )
 
     def forward(self, tgt_mels, infer, ret, cfg=False, cfg_scale=1.0, noise=None):

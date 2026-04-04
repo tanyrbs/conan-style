@@ -8,6 +8,10 @@ from utils.commons.hparams import hparams
 from torchdyn.core import NeuralODE
 sigma = 1e-4
 
+
+def _resolve_flow_f0_hparams(hparams_override=None):
+    return hparams if hparams_override is None else hparams_override
+
 def exists(x):
     return x is not None
 
@@ -22,17 +26,23 @@ def noise_like(shape, device, repeat=False):
     return repeat_noise() if repeat else noise()
 
 class Wrapper(nn.Module):
-    def __init__(self, net, cond, num_timesteps, dyn_clip):
+    def __init__(self, net, cond, num_timesteps, dyn_clip, hparams_override=None):
         super(Wrapper, self).__init__()
         self.net = net
         self.cond = cond
         self.num_timesteps = num_timesteps
         self.dyn_clip = dyn_clip
+        self.hparams = _resolve_flow_f0_hparams(hparams_override)
 
     def forward(self, t, x, args):
-        t = torch.tensor([t * self.num_timesteps], device=t.device).long()
+        t = torch.full(
+            (x.shape[0],),
+            float(t) * float(self.num_timesteps),
+            device=x.device,
+            dtype=torch.float32,
+        ).long()
         ut = self.net.denoise_fn(x, t, self.cond)
-        if hparams['f0_sample_clip']:
+        if bool(self.hparams.get('f0_sample_clip', False)):
             x_recon = (1 - t / self.num_timesteps) * ut + x
             if self.dyn_clip is not None:
                 x_recon.clamp_(self.dyn_clip[0].unsqueeze(1), self.dyn_clip[1].unsqueeze(1))
@@ -42,22 +52,31 @@ class Wrapper(nn.Module):
         return ut
 
 class ReflowF0(nn.Module):
-    def __init__(self, out_dims, denoise_fn, timesteps=1000, f0_K_step=1000, loss_type='l1'):
+    def __init__(
+        self,
+        out_dims,
+        denoise_fn,
+        timesteps=1000,
+        f0_K_step=1000,
+        loss_type='l1',
+        hparams_override=None,
+    ):
         super().__init__()
         self.denoise_fn = denoise_fn
         self.mel_bins = out_dims
         self.K_step = f0_K_step
         self.num_timesteps = int(timesteps)
         self.loss_type = loss_type
+        self.hparams = _resolve_flow_f0_hparams(hparams_override)
 
     def q_sample(self, x_start, t, noise=None):
-        if noise==None:
+        if noise is None:
             noise = default(noise, lambda: torch.randn_like(x_start))
         x1 = x_start
         x0 = noise
         t_unsqueeze = t.unsqueeze(1).unsqueeze(1).unsqueeze(1).float() / self.num_timesteps
 
-        if hparams['flow_qsample'] == 'sig':
+        if self.hparams.get('flow_qsample', None) == 'sig':
             epsilon = torch.randn_like(x0)
             xt = t_unsqueeze * x1 + (1. - t_unsqueeze) * x0 + sigma * epsilon
         else:
@@ -65,7 +84,7 @@ class ReflowF0(nn.Module):
         return xt
 
     def p_losses(self, x_start, t, cond, noise=None, nonpadding=None):
-        if noise==None:
+        if noise is None:
             noise = default(noise, lambda: torch.randn_like(x_start))
         xt = self.q_sample(x_start=x_start, t=t, noise=noise)
         x1 = x_start
@@ -149,4 +168,4 @@ class ReflowF0(nn.Module):
         return x # Return predicted F0
 
     def ode_wrapper(self, cond, num_timesteps, dyn_clip):
-        return Wrapper(self, cond, num_timesteps, dyn_clip)
+        return Wrapper(self, cond, num_timesteps, dyn_clip, hparams_override=self.hparams)

@@ -8,6 +8,10 @@ from utils.commons.hparams import hparams
 from torchdyn.core import NeuralODE
 
 
+def _resolve_flow_hparams(hparams_override=None):
+    return hparams if hparams_override is None else hparams_override
+
+
 # ------------------ Utility Functions ------------------ #
 def exists(x):
     return x is not None
@@ -44,7 +48,12 @@ class Wrapper(nn.Module):
         self.num_timesteps = num_timesteps
 
     def forward(self, t, x, args):
-        t = torch.tensor([t * self.num_timesteps] * x.shape[0], device=t.device).long()
+        t = torch.full(
+            (x.shape[0],),
+            float(t) * float(self.num_timesteps),
+            device=x.device,
+            dtype=torch.float32,
+        ).long()
         return self.net.denoise_fn(x, t, self.cond)
 
 
@@ -58,7 +67,12 @@ class Wrapper_CFG(nn.Module):
         self.num_timesteps = num_timesteps
 
     def forward(self, t, x, args):
-        t = torch.tensor([t * self.num_timesteps] * x.shape[0], device=t.device).long()
+        t = torch.full(
+            (x.shape[0],),
+            float(t) * float(self.num_timesteps),
+            device=x.device,
+            dtype=torch.float32,
+        ).long()
         cond_in = torch.cat([self.ucond, self.cond])
         t_in = torch.cat([t] * 2)
         x_in = torch.cat([x] * 2)
@@ -75,22 +89,25 @@ class FlowMel(nn.Module):
         denoise_fn,
         timesteps=1000,
         K_step=1000,
-        loss_type=hparams.get("flow_loss_type", "l1"),
+        loss_type=None,
         spec_min=None,
         spec_max=None,
+        hparams_override=None,
     ):
         super().__init__()
+        hp = _resolve_flow_hparams(hparams_override)
         self.denoise_fn = denoise_fn
         self.mel_bins = out_dims
         self.num_timesteps = int(timesteps)
         self.K_step = K_step
-        self.loss_type = loss_type
+        self.loss_type = hp.get("flow_loss_type", "l1") if loss_type is None else loss_type
+        keep_bins = int(hp["keep_bins"])
 
         self.register_buffer(
-            "spec_min", torch.FloatTensor(spec_min)[None, None, : hparams["keep_bins"]]
+            "spec_min", torch.FloatTensor(spec_min)[None, None, : keep_bins]
         )
         self.register_buffer(
-            "spec_max", torch.FloatTensor(spec_max)[None, None, : hparams["keep_bins"]]
+            "spec_max", torch.FloatTensor(spec_max)[None, None, : keep_bins]
         )
 
     # ---------- Forward ---------- #
@@ -112,9 +129,8 @@ class FlowMel(nn.Module):
         fs2_mels = coarse_mels
 
         # Unified mask shape: (B, T)
-        # nonpadding = ret["tgt_nonpadding"]
-        nonpadding=None
-        if nonpadding!=None and nonpadding.dim() == 3 and nonpadding.size(-1) == 1:
+        nonpadding = ret.get("tgt_nonpadding") if isinstance(ret, dict) else None
+        if nonpadding is not None and nonpadding.dim() == 3 and nonpadding.size(-1) == 1:
             nonpadding = nonpadding.squeeze(-1)
 
         if not infer:  # ---------- Training ---------- #
@@ -144,11 +160,13 @@ class FlowMel(nn.Module):
                 atol=1e-4,
                 rtol=1e-4,
             )
-            t_span = torch.linspace(0, 1, self.K_step + 1)
+            t_span = torch.linspace(0, 1, self.K_step + 1, device=device)
             _, traj = neural_ode(x0, t_span)
             x = traj[-1][:, 0].transpose(1, 2)  # (B,T,M)
-            ret["mel_out"] = self.denorm_spec(x) 
-            # * nonpadding.unsqueeze(-1).float()
+            mel_out = self.denorm_spec(x)
+            if nonpadding is not None:
+                mel_out = mel_out * nonpadding.unsqueeze(-1).float()
+            ret["mel_out"] = mel_out
             ret["flow"] = 0.0
         return ret
 

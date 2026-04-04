@@ -100,11 +100,19 @@ def _write_trace_result(ret, trace_result, *, prefix: str):
         ret[f"{prefix}_memory_mode_used"] = trace_result["memory_mode"]
 
 
-def _resolve_global_summary_runtime(model, global_style_summary, style_trace, style_trace_mask, *, blend=0.0):
+def _resolve_global_summary_runtime(
+    model,
+    global_style_summary,
+    style_trace,
+    style_trace_mask,
+    *,
+    blend=0.0,
+    global_style_summary_source: str = "reference_summary",
+):
     blend = float(blend)
     style_trace_summary = _masked_mean(model, style_trace, style_trace_mask)
     if style_trace_summary is None:
-        return global_style_summary, "reference_summary"
+        return global_style_summary, str(global_style_summary_source or "reference_summary")
     if isinstance(global_style_summary, torch.Tensor):
         base = global_style_summary[:, 0, :] if global_style_summary.dim() == 3 else global_style_summary
         if blend > 0.0:
@@ -219,6 +227,7 @@ def build_style_realization_payload(
     global_steps: int,
     controls,
     global_style_summary,
+    global_style_summary_source: str = "reference_summary",
     style_strength,
     forcing_schedule_state=None,
     upper_bound_progress: float = 1.0,
@@ -238,7 +247,9 @@ def build_style_realization_payload(
         "style_owner_source": "missing",
         "global_style_summary_runtime": global_style_summary,
         "style_trace_skip_reason": None,
-        "global_style_summary_runtime_source": "reference_summary",
+        "global_style_summary_runtime_source": str(
+            global_style_summary_source or "reference_summary"
+        ),
     }
 
     ret["style_trace_runtime_mode"] = style_trace_mode
@@ -416,7 +427,11 @@ def build_style_realization_payload(
                 payload["fast_style_decoder_residual"],
                 payload["slow_style_decoder_residual"],
             )
-            blended_mask = ret.get("style_trace_mask", ret.get("slow_style_trace_mask"))
+            blended_mask = _merge_style_masks(
+                ret.get("style_trace_mask"),
+                ret.get("slow_style_trace_mask"),
+                reference=blended_trace,
+            )
 
     payload["global_style_summary_runtime"], payload["global_style_summary_runtime_source"] = _resolve_global_summary_runtime(
         model,
@@ -424,6 +439,7 @@ def build_style_realization_payload(
         blended_trace,
         blended_mask,
         blend=float(getattr(controls, "global_style_trace_blend", 0.0)),
+        global_style_summary_source=global_style_summary_source,
     )
     if isinstance(payload["global_style_summary_runtime"], torch.Tensor):
         ret["global_style_summary_runtime"] = payload["global_style_summary_runtime"]

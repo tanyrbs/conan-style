@@ -72,9 +72,19 @@ def _resolve_style_owner_residual(style_payload, ret):
             fast_style_decoder_residual,
             slow_style_decoder_residual,
         )
-        style_decoder_residual_mask = ret.get(
-            "style_trace_mask",
+        style_decoder_residual_mask = _merge_runtime_masks(
+            ret.get("style_trace_mask"),
             ret.get("slow_style_trace_mask"),
+            reference=style_decoder_residual,
+        )
+    if isinstance(style_decoder_residual, torch.Tensor) and not isinstance(
+        style_decoder_residual_mask,
+        torch.Tensor,
+    ):
+        style_decoder_residual_mask = _merge_runtime_masks(
+            ret.get("style_trace_mask"),
+            ret.get("slow_style_trace_mask"),
+            reference=style_decoder_residual,
         )
     slow_style_decoder_residual_mask = ret.get("slow_style_trace_mask")
     style_owner_base_residual = (
@@ -336,6 +346,11 @@ def realize_style_timbre_decoder_runtime(
         global_steps=global_steps,
         controls=style_mainline,
         global_style_summary=global_style_summary,
+        global_style_summary_source=(
+            reference_cache.get("global_style_summary_source", "reference_summary")
+            if isinstance(reference_cache, Mapping)
+            else "reference_summary"
+        ),
         style_strength=style_strength,
         forcing_schedule_state=kwargs.get("forcing_schedule_state"),
         upper_bound_progress=expressive_upper_bound_progress,

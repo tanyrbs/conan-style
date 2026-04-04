@@ -21,7 +21,12 @@ from modules.Conan.style_mainline import (
 )
 from modules.Conan.style_profiles import resolve_style_profile
 from modules.Conan.reference_bundle import build_control_kwargs, build_style_runtime_kwargs
-from modules.Conan.control.style_success import resolve_style_success_negative_masks
+from modules.Conan.control.style_success import (
+    resolve_style_success_bool_flag,
+    resolve_style_success_negative_masks,
+    resolve_style_success_rank_source_scale,
+    resolve_style_success_rank_support_state,
+)
 from modules.Conan.dynamic_timbre_control import build_dynamic_timbre_boundary_mask
 from tasks.Conan.dataset import ConanDataset
 from tasks.Conan.control_schedule import (
@@ -85,6 +90,14 @@ CANONICAL_REMOVED_CONFIG_KEYS = (
     "valid_plot_prob",
 )
 
+
+def _is_boollike_value(value):
+    if value is None or isinstance(value, (bool, int, float)):
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "0", "true", "false", "yes", "no", "y", "n", "on", "off"}
+    return False
+
 TOP_LEVEL_KEY_PATTERN = re.compile(r"^([A-Za-z0-9_]+):")
 
 
@@ -92,6 +105,7 @@ def _classify_check_name(name):
     name = str(name or "").strip()
     if (
         name.startswith("runtime_import_")
+        or name.startswith("runtime_nltk_")
         or name == "runtime_python_version_compatible_with_pinned_torchaudio"
         or name.endswith("_matches_requirements_pin")
     ):
@@ -197,9 +211,9 @@ def _resolve_torchaudio_python_range(version: str):
     major_minor = ".".join(version.split(".")[:2])
     compat = {
         "2.6": ((3, 9), (3, 13)),
-        "2.5": ((3, 8), (3, 11)),
-        "2.4": ((3, 8), (3, 11)),
-        "2.3": ((3, 8), (3, 11)),
+        "2.5": ((3, 8), (3, 12)),
+        "2.4": ((3, 8), (3, 12)),
+        "2.3": ((3, 8), (3, 12)),
         "2.2": ((3, 8), (3, 11)),
         "2.1": ((3, 8), (3, 11)),
         "2.0": ((3, 8), (3, 11)),
@@ -324,6 +338,94 @@ def _check_npy_count_positive(checks, name, path_value):
         )
 
 
+def _load_1d_npy_array(path_value):
+    array = np.load(str(path_value), mmap_mode='r')
+    return np.asarray(array).reshape(-1)
+
+
+def _check_binary_sidecar_consistency(checks, binary_data_dir, split):
+    if not binary_data_dir:
+        return
+    paths = {
+        "lengths": os.path.join(str(binary_data_dir), f"{split}_lengths.npy"),
+        "ref_indices": os.path.join(str(binary_data_dir), f"{split}_ref_indices.npy"),
+        "spk_ids": os.path.join(str(binary_data_dir), f"{split}_spk_ids.npy"),
+    }
+    missing = [name for name, path in paths.items() if not os.path.exists(path)]
+    if missing:
+        checks.append(
+            {
+                "name": f"binary_{split}_sidecars_consistent",
+                "ok": False,
+                "actual": {"missing": missing},
+                "expected": "lengths/ref_indices/spk_ids sidecars all present and aligned",
+            }
+        )
+        return
+    try:
+        lengths = _load_1d_npy_array(paths["lengths"])
+        ref_indices = _load_1d_npy_array(paths["ref_indices"]).astype(np.int64, copy=False)
+        spk_ids = _load_1d_npy_array(paths["spk_ids"]).astype(np.int64, copy=False)
+    except Exception as exc:
+        checks.append(
+            {
+                "name": f"binary_{split}_sidecars_consistent",
+                "ok": False,
+                "actual": f"{type(exc).__name__}: {exc}",
+                "expected": "lengths/ref_indices/spk_ids sidecars load successfully",
+            }
+        )
+        return
+
+    num_items = int(lengths.shape[0])
+    counts_match = bool(ref_indices.shape[0] == num_items == spk_ids.shape[0])
+    nonnegative_lengths = bool(np.all(lengths >= 0))
+    ref_indices_in_range = bool(
+        num_items > 0
+        and np.all(ref_indices >= 0)
+        and np.all(ref_indices < num_items)
+    )
+    same_speaker_refs = False
+    same_speaker_frac = None
+    if counts_match and ref_indices_in_range and num_items > 0:
+        ref_speakers = spk_ids[ref_indices]
+        speaker_matches = ref_speakers == spk_ids
+        same_speaker_refs = bool(np.all(speaker_matches))
+        same_speaker_frac = float(np.mean(speaker_matches.astype(np.float32)))
+
+    checks.append(
+        {
+            "name": f"binary_{split}_sidecars_consistent",
+            "ok": bool(
+                counts_match
+                and nonnegative_lengths
+                and ref_indices_in_range
+                and same_speaker_refs
+            ),
+            "actual": {
+                "num_items": num_items,
+                "counts": {
+                    "lengths": int(lengths.shape[0]),
+                    "ref_indices": int(ref_indices.shape[0]),
+                    "spk_ids": int(spk_ids.shape[0]),
+                },
+                "nonnegative_lengths": bool(nonnegative_lengths),
+                "ref_indices_in_range": bool(ref_indices_in_range),
+                "same_speaker_refs": bool(same_speaker_refs),
+                "same_speaker_ref_frac": same_speaker_frac,
+                "ref_index_min": int(ref_indices.min()) if ref_indices.size > 0 else None,
+                "ref_index_max": int(ref_indices.max()) if ref_indices.size > 0 else None,
+            },
+            "expected": {
+                "counts_match": True,
+                "nonnegative_lengths": True,
+                "ref_indices_in_range": True,
+                "same_speaker_refs": True,
+            },
+        }
+    )
+
+
 def _check_importable(checks, name, module_name):
     try:
         importlib.import_module(module_name)
@@ -344,6 +446,66 @@ def _check_importable(checks, name, module_name):
                 "expected": "importable",
             }
         )
+
+
+def _check_runtime_callable(checks, name, fn, *, expected="callable succeeded"):
+    try:
+        actual = fn()
+        checks.append(
+            {
+                "name": name,
+                "ok": True,
+                "actual": actual if actual is not None else "ok",
+                "expected": expected,
+            }
+        )
+    except Exception as exc:  # pragma: no cover - surfaced through prep output
+        checks.append(
+            {
+                "name": name,
+                "ok": False,
+                "actual": f"{type(exc).__name__}: {exc}",
+                "expected": expected,
+            }
+        )
+
+
+def _check_nltk_tagger_for_g2p_en():
+    from nltk import pos_tag
+
+    tagged = pos_tag(["test"])
+    return {"tagged_example": tagged[:1]}
+
+
+def _check_nltk_cmudict_for_g2p_en():
+    from nltk.corpus import cmudict
+
+    entries = cmudict.entries()
+    return {"entries": int(len(entries))}
+
+
+def _check_local_conan_model_init(config_path):
+    from modules.Conan.Conan import Conan
+    from utils.commons.hparams import hparams as global_hparams_store
+    from utils.commons.hparams import set_hparams as _set_hparams
+
+    backup = dict(global_hparams_store)
+    try:
+        global_hparams_store.clear()
+        local_hparams = _set_hparams(
+            config=str(config_path),
+            print_hparams=False,
+            global_hparams=False,
+        )
+        model = Conan(0, local_hparams)
+        return {
+            "model_class": type(model).__name__,
+            "global_hparams_len_during_local_init": int(len(global_hparams_store)),
+            "style_enabled": bool(local_hparams.get("style", False)),
+        }
+    finally:
+        global_hparams_store.clear()
+        global_hparams_store.update(backup)
 
 
 def _normalize_condition_label_text(value):
@@ -517,16 +679,39 @@ def _style_success_runtime_preview(batch, hparams):
         device=device,
         proxy_threshold=float(hparams.get("style_success_proxy_negative_threshold", 1.25) or 1.25),
         proxy_min_count=int(hparams.get("style_success_proxy_negative_min_count", 2) or 2),
+        proxy_min_batch=int(hparams.get("style_success_proxy_min_batch", 4) or 0),
+        use_rate_proxy=resolve_style_success_bool_flag(
+            hparams.get("style_success_proxy_use_rate_proxy", False),
+            default=False,
+        ),
     )
     preview = {
         "available": True,
         "batch_size": batch_size,
         "negative_source": str(negative_state.get("source", "none")),
+        "proxy_use_rate_proxy": bool(
+            resolve_style_success_bool_flag(
+                hparams.get("style_success_proxy_use_rate_proxy", False),
+                default=False,
+            )
+        ),
+        "proxy_min_batch": int(hparams.get("style_success_proxy_min_batch", 4) or 0),
     }
+    preview["proxy_batch_gate_passed"] = bool(negative_state.get("proxy_batch_gate_passed", True))
+    preview["proxy_disabled_reason"] = str(negative_state.get("proxy_disabled_reason", "active"))
+    support_state = resolve_style_success_rank_support_state(
+        negative_state,
+        hparams,
+        device=device,
+    )
     for state_key, preview_key in (
         ("label_valid_rows", "label_negative_row_frac"),
         ("proxy_valid_rows", "proxy_negative_row_frac"),
         ("valid_rows", "negative_row_frac"),
+        ("negative_pair_density", "negative_pair_density"),
+        ("negative_row_density", "negative_row_density"),
+        ("mean_negatives_per_row", "mean_negatives_per_row"),
+        ("mean_negatives_per_valid_row", "mean_negatives_per_valid_row"),
     ):
         rows = negative_state.get(state_key)
         if isinstance(rows, torch.Tensor):
@@ -534,6 +719,26 @@ def _style_success_runtime_preview(batch, hparams):
     negative_mask = negative_state.get("negative_mask")
     if isinstance(negative_mask, torch.Tensor):
         preview["negative_pair_frac"] = float(negative_mask.float().mean().detach().cpu())
+    preview["proxy_feature_count"] = int(negative_state.get("proxy_feature_count", 0) or 0)
+    preview["proxy_informative_feature_count"] = int(
+        negative_state.get("proxy_informative_feature_count", 0) or 0
+    )
+    preview["proxy_informative_feature_names"] = list(
+        negative_state.get("proxy_informative_feature_names", ()) or ()
+    )
+    preview["rank_source_scale"] = float(
+        resolve_style_success_rank_source_scale(preview["negative_source"], hparams)
+    )
+    for state_key, preview_key in (
+        ("support_scale", "rank_support_scale"),
+        ("effective_support", "rank_effective_support"),
+        ("gate_passed", "rank_gate_passed"),
+        ("rank_term_active", "rank_term_active"),
+    ):
+        value = support_state.get(state_key)
+        if isinstance(value, torch.Tensor):
+            preview[preview_key] = float(value.detach().float().mean().cpu())
+    preview["rank_disabled_reason"] = str(support_state.get("disabled_reason", "unknown"))
     return preview
 
 
@@ -541,6 +746,23 @@ def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime
     style_success_lambda = float(hparams.get("lambda_style_success_rank", 0.0) or 0.0)
     proxy_negative_threshold = float(hparams.get("style_success_proxy_negative_threshold", 1.25) or 1.25)
     proxy_negative_min_count = int(hparams.get("style_success_proxy_negative_min_count", 2) or 0)
+    proxy_min_batch = int(hparams.get("style_success_proxy_min_batch", 4) or 0)
+    proxy_use_rate_proxy = bool(
+        resolve_style_success_bool_flag(
+            hparams.get("style_success_proxy_use_rate_proxy", False),
+            default=False,
+        )
+    )
+    label_rank_scale = float(hparams.get("style_success_label_rank_scale", 1.0))
+    label_plus_proxy_backfill_scale = float(
+        hparams.get("style_success_label_plus_proxy_backfill_scale", 0.75)
+    )
+    proxy_rank_scale = float(
+        hparams.get(
+            "style_success_proxy_rank_scale",
+            hparams.get("style_success_proxy_only_rank_row_scale", 0.5),
+        )
+    )
     weak_label_counts = {
         field: int(len(resolved_condition_maps.get(field, {})))
         for field in ("emotion", "accent")
@@ -571,8 +793,24 @@ def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime
         "proxy_negative_fallback_enabled": bool(pair_enabled),
         "proxy_negative_threshold": proxy_negative_threshold,
         "proxy_negative_min_count": proxy_negative_min_count,
+        "proxy_min_batch": proxy_min_batch,
+        "proxy_use_rate_proxy": proxy_use_rate_proxy,
+        "label_rank_scale": label_rank_scale,
+        "label_plus_proxy_backfill_scale": label_plus_proxy_backfill_scale,
+        "proxy_rank_scale": proxy_rank_scale,
+        "proxy_feature_family": (
+            "acoustic_prosodic_plus_rate_proxy"
+            if proxy_use_rate_proxy
+            else "acoustic_prosodic_only"
+        ),
         "runtime_negative_strategy": (
-            "disabled" if not pair_enabled else "label_priority_with_proxy_backfill"
+            "disabled"
+            if not pair_enabled
+            else (
+                "label_priority_with_proxy_backfill_plus_rate_proxy"
+                if proxy_use_rate_proxy
+                else "label_priority_with_proxy_backfill_acoustic_only"
+            )
         ),
         "runtime_preview": runtime_preview
         if isinstance(runtime_preview, dict)
@@ -581,7 +819,10 @@ def _style_success_supervision_summary(hparams, resolved_condition_maps, runtime
         "note": (
             "artifact-level label summary plus optional small-batch runtime preview; actual rank negatives still depend "
             "on per-item batch composition, and label negatives remain authoritative while proxy negatives only backfill "
-            "rows that lack label support"
+            "rows that lack label support. Canonical mainline also keeps a proxy min-batch gate and source-aware rank "
+            "downscaling so small batches and proxy-only negatives stay conservative. The text/content-length rate "
+            "proxy remains disabled by default so the fallback negatives stay acoustic/prosodic unless research "
+            "overrides explicitly opt in."
         ),
     }
 
@@ -1236,7 +1477,7 @@ def run_prep(args):
     _check_runtime_requirement_pins(
         checks,
         ROOT_DIR / "requirements.txt",
-        package_names=("torch", "torchaudio", "torchdyn", "textgrid"),
+        package_names=("torch", "torchaudio", "torchdyn", "textgrid", "g2p_en", "nltk"),
     )
     repo_requirements = _load_repo_requirements(ROOT_DIR)
     pinned_torchaudio = repo_requirements.get("torchaudio")
@@ -1244,21 +1485,13 @@ def run_prep(args):
     if pinned_python_range is not None:
         py_version = tuple(int(part) for part in sys.version_info[:2])
         py_min, py_max = pinned_python_range
-        torchaudio_importable_now = True
-        try:
-            importlib.import_module("torchaudio")
-        except Exception:
-            torchaudio_importable_now = False
         _check_true(
             checks,
             "runtime_python_version_compatible_with_pinned_torchaudio",
-            (py_min <= py_version <= py_max) or torchaudio_importable_now,
+            py_min <= py_version <= py_max,
             actual={
                 "python_version": f"{py_version[0]}.{py_version[1]}",
                 "pinned_torchaudio": pinned_torchaudio,
-                "out_of_range_but_importable": bool(
-                    not (py_min <= py_version <= py_max) and torchaudio_importable_now
-                ),
             },
             expected={
                 "python_min": f"{py_min[0]}.{py_min[1]}",
@@ -1269,6 +1502,26 @@ def run_prep(args):
     _check_importable(checks, "runtime_import_torchaudio", "torchaudio")
     _check_importable(checks, "runtime_import_textgrid", "textgrid")
     _check_importable(checks, "runtime_import_torchdyn", "torchdyn")
+    _check_importable(checks, "runtime_import_g2p_en", "g2p_en")
+    _check_importable(checks, "runtime_import_tasks_Conan_Conan", "tasks.Conan.Conan")
+    _check_runtime_callable(
+        checks,
+        "runtime_local_modules_Conan_Conan_init",
+        lambda: _check_local_conan_model_init(args.config),
+        expected="local Conan(0, hparams) init succeeds with global_hparams=False",
+    )
+    _check_runtime_callable(
+        checks,
+        "runtime_nltk_tagger_for_g2p_en",
+        _check_nltk_tagger_for_g2p_en,
+        expected="nltk averaged perceptron tagger available for g2p_en",
+    )
+    _check_runtime_callable(
+        checks,
+        "runtime_nltk_cmudict_for_g2p_en",
+        _check_nltk_cmudict_for_g2p_en,
+        expected="nltk cmudict available for g2p_en",
+    )
     condition_artifact_dirs = [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")]
     resolved_condition_maps = _check_condition_artifacts(
         checks,
@@ -1496,6 +1749,36 @@ def run_prep(args):
             "expected": "(0.0, 1.0]",
         }
     )
+    for key, default in (
+        ("dynamic_timbre_budget_prebudget_term_weight", 1.0),
+        ("dynamic_timbre_budget_mid_term_weight", 0.5),
+        ("dynamic_timbre_budget_late_term_weight", 0.75),
+    ):
+        value = float(hparams.get(key, default))
+        checks.append(
+            {
+                "name": f"{key}_nonnegative",
+                "ok": value >= 0.0,
+                "actual": value,
+                "expected": ">= 0.0",
+            }
+        )
+    dynamic_timbre_budget_term_weight_sum = sum(
+        max(float(hparams.get(key, default)), 0.0)
+        for key, default in (
+            ("dynamic_timbre_budget_prebudget_term_weight", 1.0),
+            ("dynamic_timbre_budget_mid_term_weight", 0.5),
+            ("dynamic_timbre_budget_late_term_weight", 0.75),
+        )
+    )
+    checks.append(
+        {
+            "name": "dynamic_timbre_budget_term_weight_sum_positive",
+            "ok": dynamic_timbre_budget_term_weight_sum > 0.0,
+            "actual": dynamic_timbre_budget_term_weight_sum,
+            "expected": "> 0.0",
+        }
+    )
     style_success_proxy_negative_threshold = float(hparams.get("style_success_proxy_negative_threshold", 1.25))
     checks.append(
         {
@@ -1512,6 +1795,143 @@ def run_prep(args):
             "ok": style_success_proxy_negative_min_count >= 0,
             "actual": style_success_proxy_negative_min_count,
             "expected": ">= 0",
+        }
+    )
+    style_success_proxy_use_rate_proxy = hparams.get("style_success_proxy_use_rate_proxy", False)
+    checks.append(
+        {
+            "name": "style_success_proxy_use_rate_proxy_boollike",
+            "ok": _is_boollike_value(style_success_proxy_use_rate_proxy),
+            "actual": style_success_proxy_use_rate_proxy,
+            "expected": "bool-like",
+        }
+    )
+    style_success_proxy_min_batch = int(hparams.get("style_success_proxy_min_batch", 4))
+    checks.append(
+        {
+            "name": "style_success_proxy_min_batch_nonnegative",
+            "ok": style_success_proxy_min_batch >= 0,
+            "actual": style_success_proxy_min_batch,
+            "expected": ">= 0",
+        }
+    )
+    style_success_label_rank_scale = float(
+        hparams.get("style_success_label_rank_scale", 1.0)
+    )
+    checks.append(
+        {
+            "name": "style_success_label_rank_scale_range",
+            "ok": 0.0 <= style_success_label_rank_scale <= 1.0,
+            "actual": style_success_label_rank_scale,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    style_success_label_plus_proxy_backfill_scale = float(
+        hparams.get("style_success_label_plus_proxy_backfill_scale", 0.75)
+    )
+    checks.append(
+        {
+            "name": "style_success_label_plus_proxy_backfill_scale_range",
+            "ok": 0.0 <= style_success_label_plus_proxy_backfill_scale <= 1.0,
+            "actual": style_success_label_plus_proxy_backfill_scale,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    style_success_proxy_rank_scale = float(
+        hparams.get(
+            "style_success_proxy_rank_scale",
+            hparams.get("style_success_proxy_only_rank_row_scale", 0.5),
+        )
+    )
+    checks.append(
+        {
+            "name": "style_success_proxy_rank_scale_range",
+            "ok": 0.0 <= style_success_proxy_rank_scale <= 1.0,
+            "actual": style_success_proxy_rank_scale,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    if "style_success_proxy_only_rank_row_scale" in hparams:
+        legacy_proxy_only_rank_row_scale = float(
+            hparams.get("style_success_proxy_only_rank_row_scale", 0.35)
+        )
+        checks.append(
+            {
+                "name": "style_success_proxy_only_rank_row_scale_range",
+                "ok": 0.0 <= legacy_proxy_only_rank_row_scale <= 1.0,
+                "actual": legacy_proxy_only_rank_row_scale,
+                "expected": "[0.0, 1.0]",
+            }
+        )
+    style_success_rank_min_negative_row_frac = float(
+        hparams.get("style_success_rank_min_negative_row_frac", 0.25)
+    )
+    checks.append(
+        {
+            "name": "style_success_rank_min_negative_row_frac_range",
+            "ok": 0.0 <= style_success_rank_min_negative_row_frac <= 1.0,
+            "actual": style_success_rank_min_negative_row_frac,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    style_success_rank_min_mean_negatives_per_row = float(
+        hparams.get("style_success_rank_min_mean_negatives_per_row", 2.0)
+    )
+    checks.append(
+        {
+            "name": "style_success_rank_min_mean_negatives_per_row_nonnegative",
+            "ok": style_success_rank_min_mean_negatives_per_row >= 0.0,
+            "actual": style_success_rank_min_mean_negatives_per_row,
+            "expected": ">= 0.0",
+        }
+    )
+    style_success_rank_min_effective_support = float(
+        hparams.get("style_success_rank_min_effective_support", 0.20)
+    )
+    checks.append(
+        {
+            "name": "style_success_rank_min_effective_support_range",
+            "ok": 0.0 <= style_success_rank_min_effective_support <= 1.0,
+            "actual": style_success_rank_min_effective_support,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    style_success_proxy_min_informative_features = int(
+        hparams.get("style_success_proxy_min_informative_features", 2)
+    )
+    checks.append(
+        {
+            "name": "style_success_proxy_min_informative_features_nonnegative",
+            "ok": style_success_proxy_min_informative_features >= 0,
+            "actual": style_success_proxy_min_informative_features,
+            "expected": ">= 0",
+        }
+    )
+    decoder_late_style_floor_ratio = float(hparams.get("decoder_late_style_floor_ratio", 0.15))
+    checks.append(
+        {
+            "name": "decoder_late_style_floor_ratio_range",
+            "ok": 0.0 <= decoder_late_style_floor_ratio <= 1.0,
+            "actual": decoder_late_style_floor_ratio,
+            "expected": "[0.0, 1.0]",
+        }
+    )
+    decoder_late_style_floor_margin = float(hparams.get("decoder_late_style_floor_margin", 0.0))
+    checks.append(
+        {
+            "name": "decoder_late_style_floor_margin_nonnegative",
+            "ok": decoder_late_style_floor_margin >= 0.0,
+            "actual": decoder_late_style_floor_margin,
+            "expected": ">= 0.0",
+        }
+    )
+    decoder_late_style_floor_weight = float(hparams.get("decoder_late_style_floor_weight", 0.35))
+    checks.append(
+        {
+            "name": "decoder_late_style_floor_weight_nonnegative",
+            "ok": decoder_late_style_floor_weight >= 0.0,
+            "actual": decoder_late_style_floor_weight,
+            "expected": ">= 0.0",
         }
     )
 
@@ -1547,15 +1967,32 @@ def run_prep(args):
                 f"binary_{split}_items_nonempty",
                 os.path.join(str(binary_data_dir), f"{split}_lengths.npy"),
             )
+            _check_binary_sidecar_consistency(checks, binary_data_dir, split)
 
     reference_preview_steps = (0, 20000, 40000, 70000, 100000)
     forcing_preview_steps = (0, 12000, 20000, 60000, 100000)
     failed_summary = _summarize_failed_checks(checks)
     non_contract_categories = {"runtime_dependencies", "data_staging", "data_dependent_preview"}
+    environment_ready = all(
+        item.get("ok", False)
+        for item in checks
+        if _classify_check_name(item.get("name")) == "runtime_dependencies"
+    )
+    data_ready = all(
+        item.get("ok", False)
+        for item in checks
+        if _classify_check_name(item.get("name")) == "data_staging"
+    )
+    data_dependent_preview_ready = all(
+        item.get("ok", False)
+        for item in checks
+        if _classify_check_name(item.get("name")) == "data_dependent_preview"
+    )
     code_contract_ready = all(
         item.get("ok", False) or _classify_check_name(item.get("name")) in non_contract_categories
         for item in checks
     )
+    all_ready = bool(all(item["ok"] for item in checks))
     summary = {
         "config": args.config,
         "config_chain": config_chain,
@@ -1587,9 +2024,13 @@ def run_prep(args):
         "dynamic_timbre_boundary_preview": _jsonable(boundary_preview),
         "checks": _jsonable(checks),
         "failed_summary": failed_summary,
+        "failed_checks_by_category": _jsonable(failed_summary.get("blocking_categories", {})),
         "code_contract_ready": bool(code_contract_ready),
-        "ready": bool(all(item["ok"] for item in checks)),
-        "train_ready_now": bool(all(item["ok"] for item in checks)),
+        "environment_ready": bool(environment_ready),
+        "data_ready": bool(data_ready),
+        "data_dependent_preview_ready": bool(data_dependent_preview_ready),
+        "ready": all_ready,
+        "train_ready_now": all_ready,
     }
     output_path = Path(args.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

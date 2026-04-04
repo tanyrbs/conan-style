@@ -666,7 +666,10 @@ class StreamingVoiceConversion:
         string_fields = (
             "style_to_pitch_residual_canvas",
             "style_to_pitch_residual_requested_mode",
+            "style_to_pitch_residual_canvas_selection_reason",
+            "style_to_pitch_residual_projection_selection_reason",
             "style_to_pitch_residual_canvas_fallback_reason",
+            "style_to_pitch_residual_projection_fallback_reason",
             "timbre_query_style_scale_source",
         )
         for key in float_fields:

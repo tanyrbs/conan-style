@@ -37,6 +37,15 @@ SCORABLE_COSINE_PREFIXES = (
     "dynamic_timbre_cos_to_",
 )
 
+FACTORIZED_REFERENCE_MARGIN_KEYS = (
+    "global_style_reference_margin",
+    "prosody_style_reference_margin",
+    "timbre_reference_margin",
+    "dynamic_timbre_reference_margin",
+    "factorized_reference_margin_mean",
+    "factorized_reference_margin_positive_frac",
+)
+
 
 def _safe_float(value, default=None):
     if value is None:
@@ -69,6 +78,22 @@ def _collect_scorable_metric_keys(rows, explicit_keys, prefixes):
             if any(str(key).startswith(prefix) for prefix in prefixes):
                 keys.append(key)
                 seen.add(key)
+    return tuple(keys)
+
+
+def _collect_suffix_metric_keys(rows, prefixes, suffix):
+    keys = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in row.keys():
+            key_text = str(key)
+            if key_text in seen:
+                continue
+            if key_text.endswith(suffix) and any(key_text.startswith(prefix) for prefix in prefixes):
+                keys.append(key_text)
+                seen.add(key_text)
     return tuple(keys)
 
 
@@ -139,37 +164,59 @@ def _normalize_case_metric(rows, key, *, higher_is_better):
 
 
 def score_results_by_case(rows):
-    distance_metric_keys = _collect_scorable_metric_keys(
+    style_distance_metric_keys = _collect_suffix_metric_keys(rows, SCORABLE_DISTANCE_PREFIXES, "_to_ref")
+    style_cosine_metric_keys = _collect_suffix_metric_keys(rows, SCORABLE_COSINE_PREFIXES, "_to_ref")
+    identity_distance_metric_keys = _collect_suffix_metric_keys(rows, SCORABLE_DISTANCE_PREFIXES, "_to_src")
+    identity_cosine_metric_keys = _collect_suffix_metric_keys(rows, SCORABLE_COSINE_PREFIXES, "_to_src")
+    factorized_margin_keys = _collect_scorable_metric_keys(
         rows,
-        DISTANCE_TO_REF_KEYS,
-        SCORABLE_DISTANCE_PREFIXES,
-    )
-    cosine_metric_keys = _collect_scorable_metric_keys(
-        rows,
-        COSINE_TO_REF_KEYS,
-        SCORABLE_COSINE_PREFIXES,
+        FACTORIZED_REFERENCE_MARGIN_KEYS,
+        (),
     )
     rows_by_case = {}
     for row in rows:
         rows_by_case.setdefault(row.get("case_name", "unknown"), []).append(row)
 
     for case_rows in rows_by_case.values():
-        ref_scores = {id(row): [] for row in case_rows}
+        style_scores = {id(row): [] for row in case_rows}
+        identity_scores = {id(row): [] for row in case_rows}
+        factorized_scores = {id(row): [] for row in case_rows}
         stability_scores = {id(row): [] for row in case_rows}
 
-        for key in distance_metric_keys:
+        for key in style_distance_metric_keys:
             normalized = _normalize_case_metric(case_rows, key, higher_is_better=False)
             for row in case_rows:
                 value = normalized.get(id(row))
                 if value is not None:
-                    ref_scores[id(row)].append(value)
+                    style_scores[id(row)].append(value)
 
-        for key in cosine_metric_keys:
+        for key in style_cosine_metric_keys:
             normalized = _normalize_case_metric(case_rows, key, higher_is_better=True)
             for row in case_rows:
                 value = normalized.get(id(row))
                 if value is not None:
-                    ref_scores[id(row)].append(value)
+                    style_scores[id(row)].append(value)
+
+        for key in identity_distance_metric_keys:
+            normalized = _normalize_case_metric(case_rows, key, higher_is_better=False)
+            for row in case_rows:
+                value = normalized.get(id(row))
+                if value is not None:
+                    identity_scores[id(row)].append(value)
+
+        for key in identity_cosine_metric_keys:
+            normalized = _normalize_case_metric(case_rows, key, higher_is_better=True)
+            for row in case_rows:
+                value = normalized.get(id(row))
+                if value is not None:
+                    identity_scores[id(row)].append(value)
+
+        for key in factorized_margin_keys:
+            normalized = _normalize_case_metric(case_rows, key, higher_is_better=True)
+            for row in case_rows:
+                value = normalized.get(id(row))
+                if value is not None:
+                    factorized_scores[id(row)].append(value)
 
         for row in case_rows:
             duration_ratio = _safe_float(row.get("duration_ratio_to_src"), default=None)
@@ -180,12 +227,25 @@ def score_results_by_case(rows):
                 stability_scores[id(row)].append(1.0 / (1.0 + max(elapsed, 0.0)))
 
         for row in case_rows:
-            row["ref_similarity_score"] = round(_mean(ref_scores[id(row)], default=0.0), 6)
+            row["style_following_score"] = round(_mean(style_scores[id(row)], default=0.0), 6)
+            row["identity_preservation_score"] = round(_mean(identity_scores[id(row)], default=0.0), 6)
+            row["factorized_reference_score"] = round(_mean(factorized_scores[id(row)], default=0.0), 6)
+            row["ref_similarity_score"] = row["style_following_score"]
             row["stability_score"] = round(_mean(stability_scores[id(row)], default=0.0), 6)
             row["overall_score"] = round(
-                0.8 * row["ref_similarity_score"] + 0.2 * row["stability_score"],
+                0.6 * row["style_following_score"]
+                + 0.2 * row["identity_preservation_score"]
+                + 0.2 * row["stability_score"],
                 6,
             )
+            if factorized_scores[id(row)]:
+                row["factorized_overall_score"] = round(
+                    0.5 * row["style_following_score"]
+                    + 0.2 * row["identity_preservation_score"]
+                    + 0.15 * row["stability_score"]
+                    + 0.15 * row["factorized_reference_score"],
+                    6,
+                )
 
         ranked = sorted(case_rows, key=lambda item: item.get("overall_score", 0.0), reverse=True)
         for rank, row in enumerate(ranked, start=1):
@@ -207,6 +267,9 @@ def aggregate_profile_summary(rows):
                 "num_cases": len(items),
                 "avg_overall_score": round(_mean([item.get("overall_score") for item in items]), 6),
                 "avg_ref_similarity_score": round(_mean([item.get("ref_similarity_score") for item in items]), 6),
+                "avg_style_following_score": round(_mean([item.get("style_following_score") for item in items]), 6),
+                "avg_identity_preservation_score": round(_mean([item.get("identity_preservation_score") for item in items]), 6),
+                "avg_factorized_reference_score": round(_mean([item.get("factorized_reference_score") for item in items]), 6),
                 "avg_stability_score": round(_mean([item.get("stability_score") for item in items]), 6),
                 "num_case_wins": int(sum(1 for item in items if item.get("case_best"))),
                 "avg_elapsed_sec": round(_mean([item.get("elapsed_sec") for item in items]), 6),
@@ -229,13 +292,14 @@ def _render_profile_summary_markdown(profile_summary):
     lines = [
         "## Profile Summary",
         "",
-        "| Profile | Cases | Avg Overall | Avg Ref Similarity | Avg Stability | Wins | Avg Time (s) |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Profile | Cases | Avg Overall | Avg Style | Avg Identity | Avg Factorized Ref | Avg Stability | Wins | Avg Time (s) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for item in profile_summary:
         lines.append(
             f"| {item['profile']} | {item['num_cases']} | {item['avg_overall_score']:.4f} | "
-            f"{item['avg_ref_similarity_score']:.4f} | {item['avg_stability_score']:.4f} | "
+            f"{item['avg_style_following_score']:.4f} | {item['avg_identity_preservation_score']:.4f} | "
+            f"{item['avg_factorized_reference_score']:.4f} | {item['avg_stability_score']:.4f} | "
             f"{item['num_case_wins']} | {item['avg_elapsed_sec']:.4f} |"
         )
     lines.append("")
@@ -251,7 +315,9 @@ def _render_case_markdown(sweep_dir, case_name, rows):
             [
                 f"### {row.get('profile')} (rank #{row.get('case_rank')})",
                 f"- overall_score: {row.get('overall_score', 0.0):.4f}",
-                f"- ref_similarity_score: {row.get('ref_similarity_score', 0.0):.4f}",
+                f"- style_following_score: {row.get('style_following_score', 0.0):.4f}",
+                f"- identity_preservation_score: {row.get('identity_preservation_score', 0.0):.4f}",
+                f"- factorized_reference_score: {row.get('factorized_reference_score', 0.0):.4f}",
                 f"- stability_score: {row.get('stability_score', 0.0):.4f}",
                 f"- wav: [{wav_path}]({wav_link})" if wav_path else "- wav: N/A",
                 "",
@@ -290,7 +356,9 @@ def render_html_report(sweep_dir, profile_summary, case_summary):
             f"<td>{_html_escape(item['profile'])}</td>"
             f"<td>{item['num_cases']}</td>"
             f"<td>{item['avg_overall_score']:.4f}</td>"
-            f"<td>{item['avg_ref_similarity_score']:.4f}</td>"
+            f"<td>{item['avg_style_following_score']:.4f}</td>"
+            f"<td>{item['avg_identity_preservation_score']:.4f}</td>"
+            f"<td>{item['avg_factorized_reference_score']:.4f}</td>"
             f"<td>{item['avg_stability_score']:.4f}</td>"
             f"<td>{item['num_case_wins']}</td>"
             f"<td>{item['avg_elapsed_sec']:.4f}</td>"
@@ -311,7 +379,9 @@ def render_html_report(sweep_dir, profile_summary, case_summary):
                 <div class="card {'best' if row.get('case_best') else ''}">
                   <h3>{_html_escape(row.get('profile'))} <span class="rank">#{row.get('case_rank')}</span></h3>
                   <p>overall: <strong>{row.get('overall_score', 0.0):.4f}</strong></p>
-                  <p>ref similarity: {row.get('ref_similarity_score', 0.0):.4f}</p>
+                  <p>style follow: {row.get('style_following_score', 0.0):.4f}</p>
+                  <p>identity preserve: {row.get('identity_preservation_score', 0.0):.4f}</p>
+                  <p>factorized ref: {row.get('factorized_reference_score', 0.0):.4f}</p>
                   <p>stability: {row.get('stability_score', 0.0):.4f}</p>
                   <audio controls preload="none" src="{wav_src}"></audio>
                   <details>
@@ -358,8 +428,8 @@ def render_html_report(sweep_dir, profile_summary, case_summary):
   <table>
     <thead>
       <tr>
-        <th>Profile</th><th>Cases</th><th>Avg Overall</th><th>Avg Ref Similarity</th>
-        <th>Avg Stability</th><th>Wins</th><th>Avg Time (s)</th>
+        <th>Profile</th><th>Cases</th><th>Avg Overall</th><th>Avg Style</th>
+        <th>Avg Identity</th><th>Avg Factorized Ref</th><th>Avg Stability</th><th>Wins</th><th>Avg Time (s)</th>
       </tr>
     </thead>
     <tbody>{profile_rows}</tbody>

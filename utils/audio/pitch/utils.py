@@ -33,7 +33,10 @@ def coarse_to_f0(f0_coarse, f0_bin=256, f0_max=900.0, f0_min=50.0):
     f0_mel_max = 1127 * np.log(1 + f0_max / 700)
     uv = f0_coarse == 1
     f0 = f0_mel_min + (f0_coarse - 1) * (f0_mel_max - f0_mel_min) / (f0_bin - 2)
-    f0 = ((f0 / 1127).exp() - 1) * 700
+    if isinstance(f0, torch.Tensor):
+        f0 = (torch.exp(f0 / 1127) - 1) * 700
+    else:
+        f0 = (np.exp(f0 / 1127) - 1) * 700
     f0[uv] = 0
     return f0
 

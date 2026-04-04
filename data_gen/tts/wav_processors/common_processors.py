@@ -54,7 +54,7 @@ class TrimSILProcessor(BaseWavProcessor):
         y, _ = librosa.core.load(input_fn, sr=sr)
         y, _ = librosa.effects.trim(y)
         save_wav(y, output_fn, sr)
-        return output_fn
+        return output_fn, sr
 
 
 @register_wav_processors(name='trim_all_sil')

@@ -1,16 +1,50 @@
 import librosa
 import numpy as np
 import wave
+from functools import lru_cache
+import importlib
 
-try:
-    import pyloudnorm as pyln
-except ImportError:  # optional unless loudness normalization is requested
-    pyln = None
 
-try:
-    import soundfile as sf
-except ImportError:  # optional fallback for uncommon wav containers
-    sf = None
+def _optional_import(module_name):
+    try:
+        return importlib.import_module(module_name), None
+    except Exception as exc:  # optional deps can fail with non-ImportError loader/runtime errors
+        return None, exc
+
+
+pyln = None
+sf = None
+_pyln_import_error = None
+_soundfile_import_error = None
+
+
+def _load_pyloudnorm():
+    global pyln, _pyln_import_error
+    if pyln is not None or _pyln_import_error is not None:
+        return pyln
+    pyln, _pyln_import_error = _optional_import("pyloudnorm")
+    return pyln
+
+
+def _load_soundfile():
+    global sf, _soundfile_import_error
+    if sf is not None or _soundfile_import_error is not None:
+        return sf
+    sf, _soundfile_import_error = _optional_import("soundfile")
+    return sf
+
+
+@lru_cache(maxsize=32)
+def _get_mel_basis(sample_rate, fft_size, num_mels, fmin, fmax):
+    basis = librosa.filters.mel(
+        sr=sample_rate,
+        n_fft=fft_size,
+        n_mels=num_mels,
+        fmin=fmin,
+        fmax=fmax,
+    )
+    basis.setflags(write=False)
+    return basis
 
 
 def librosa_pad_lr(x, fsize, fshift, pad_sides=1):
@@ -61,14 +95,16 @@ def librosa_wav2spec(wav_path,
             wav, _ = librosa.core.load(wav_path, sr=sample_rate)
     else:
         wav = wav_path
-    wav_orig = np.copy(wav)
+    wav_orig = np.asarray(wav)
     
     if loud_norm:
-        if pyln is None:
-            raise ModuleNotFoundError("pyloudnorm is required when loud_norm=True")
-        meter = pyln.Meter(sample_rate)  # create BS.1770 meter
+        pyln_module = _load_pyloudnorm()
+        if pyln_module is None:
+            detail = "" if _pyln_import_error is None else f" (original import error: {_pyln_import_error!r})"
+            raise ModuleNotFoundError(f"pyloudnorm is required when loud_norm=True{detail}")
+        meter = pyln_module.Meter(sample_rate)  # create BS.1770 meter
         loudness = meter.integrated_loudness(wav)
-        wav = pyln.normalize.loudness(wav, loudness, -22.0)
+        wav = pyln_module.normalize.loudness(wav, loudness, -22.0)
         if np.abs(wav).max() > 1:
             wav = wav / np.abs(wav).max()
 
@@ -80,7 +116,7 @@ def librosa_wav2spec(wav_path,
     # get mel basis
     fmin = 0 if fmin == -1 else fmin
     fmax = sample_rate / 2 if fmax == -1 else fmax
-    mel_basis = librosa.filters.mel(sr=sample_rate, n_fft=fft_size, n_mels=num_mels, fmin=fmin, fmax=fmax)
+    mel_basis = _get_mel_basis(sample_rate, fft_size, num_mels, fmin, fmax)
 
     # calculate mel spec
     mel = mel_basis @ linear_spc
@@ -103,8 +139,9 @@ def get_wav_num_frames(path, sr=None):
                 sr = sr_
             return int(f.getnframes() / (sr_ / sr))
     except wave.Error:
-        if sf is not None:
-            wav_file, sr_ = sf.read(path, dtype='float32')
+        soundfile_module = _load_soundfile()
+        if soundfile_module is not None:
+            wav_file, sr_ = soundfile_module.read(path, dtype='float32')
             if sr is None:
                 sr = sr_
             return int(len(wav_file) / (sr_ / sr))
@@ -251,3 +288,9 @@ def coarse_to_anything(x_coarse, bins=256, x_max=1., x_min=0.):
     x = x_min + (x_coarse - 1) * (x_max - x_min) / (bins - 2)
     x[zeros] = 0
     return x
+
+
+def trim_long_silences(*args, **kwargs):
+    from utils.audio.vad import trim_long_silences as _trim_long_silences
+
+    return _trim_long_silences(*args, **kwargs)

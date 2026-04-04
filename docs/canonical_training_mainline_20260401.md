@@ -78,10 +78,10 @@ Separately, the codebase now exposes an optional runtime-separation regularizer,
 
 Even when `mainline_train_prep.py` reports ready, **large-scale GPU training on Windows is not yet green** without the following fixes:
 
-- **OS shell ops:** core file operations still shell out to `rm -rf`, `cp -r`, `mv`, and `ln -s` via `utils/os_utils.py`. Those are used by checkpoint eviction and binarizer copy paths and can crash training on Windows.
 - **DDP backend:** canonical config still uses `ddp_backend: nccl`. There is no platform guard in prep, so Windows multi-GPU launch can fail even if prep passes. A Windows-safe default (e.g., `gloo`) must be enforced.
-- **AMP path:** AMP clipping and scheduler stepping are incorrect when `amp: true` (scaled grads are clipped and schedulers advance even when `GradScaler.step()` skips). Canonical configs keep AMP off, but this must be fixed before enabling AMP.
-- **Vocoder weight-norm compat:** the new compat wrapper breaks the intended HiFi-GAN init (custom normal init does not apply after parametrized wrapping), and `icl_portaspeech.py` is missing a `remove_weight_norm_compat` import.
+- **Inference/runtime singleton bridge:** the inference engine still updates the process-global `hparams` singleton for legacy compatibility. This is acceptable for one local CLI process but is still unsafe for concurrent multi-instance library use.
+- **Streaming latency ceiling:** the current streaming path is still prefix-recompute based. Each chunk re-runs the acoustic model on the whole prefix and still round-trips mel chunks through CPU/NumPy before the vocoder, so production-grade low-latency throughput still needs a real incremental path.
+- **Non-canonical environment drift:** the current base Python `3.13` shell now reaches a structured `MAINLINE_TRAIN_PREP_NOT_READY` result instead of crashing on optional audio imports, but it still fails the canonical environment contract because the pinned training stack remains `torch/torchaudio 2.5.1`, `nltk 3.8.1`, and a compatible Python `3.10/3.11`-class runtime with working `g2p_en` resources.
 
 These are engineering bugs, not conceptual constraints. Resolve them before any long multi-GPU run.
 

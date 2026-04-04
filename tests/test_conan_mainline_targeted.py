@@ -26,7 +26,9 @@ from modules.Conan.control.style_success import (
 from modules.Conan.pitch_runtime import ConanPitchGenerationMixin
 from modules.Conan.prosody_util import ProsodyAligner
 from modules.Conan.prosody_util import VQEmbeddingEMA
+from modules.Conan.style_realization_builder import _resolve_global_summary_runtime
 from modules.Conan.style_timbre_runtime import _resolve_style_owner_residual
+from modules.Conan.tvt_memory import ContentSynchronousTimbreFuser, expand_anchor_sequence
 from tasks.Conan.control_losses import add_style_timbre_regularization_losses
 from tasks.Conan.mainline_train_prep import (
     _check_binary_sidecar_consistency,
@@ -40,6 +42,10 @@ from utils.commons.indexed_datasets import (
     IndexedDataset,
     IndexedDatasetBuilder,
 )
+import utils.audio as audio_utils
+import utils.audio.pitch.utils as pitch_utils_modern
+import utils.audio.pitch_utils as pitch_utils_legacy
+import utils.audio.vad as vad_utils
 import utils.commons.base_task as base_task_module
 from utils.commons.weight_norm_compat import apply_weight_norm, remove_weight_norm_compat
 import utils.commons.trainer as trainer_module
@@ -74,6 +80,20 @@ class _DummyPitchRuntime(ConanPitchGenerationMixin):
         self.uv_predictor = _DummyUvPredictor()
         self.hparams = {"lambda_f0": 1.0, "silent_token": 0}
         self.content_padding_idx = 999
+
+
+class _DummyStyleRuntimeModel:
+    @staticmethod
+    def _masked_mean(sequence, mask=None):
+        if mask is None:
+            return sequence.mean(dim=1)
+        valid = (~mask.bool()).unsqueeze(-1).to(sequence.dtype)
+        denom = valid.sum(dim=1).clamp_min(1.0)
+        return (sequence * valid).sum(dim=1) / denom
+
+    @staticmethod
+    def _normalize_style_embed(value):
+        return value
 
 
 class ConanMainlineTargetedTests(unittest.TestCase):
@@ -896,6 +916,8 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             "reference_contract_mode": "collapsed_reference",
         }
         engine.device = "cpu"
+        engine.reference_mel_cache_max_entries = 8
+        engine._reference_mel_cache = {}
         calls = []
 
         def fake_wav_to_mel(path):
@@ -922,6 +944,174 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         self.assertTrue(meta["split_reference_inputs"])
         self.assertTrue(torch.equal(bundle["ref"], bundle["ref_timbre"]))
         self.assertTrue(torch.equal(bundle["ref_style"], bundle["ref_dynamic_timbre"]))
+
+    def test_streaming_reference_loader_reuses_engine_level_reference_cache_across_requests(self):
+        engine = inference_conan.StreamingVoiceConversion.__new__(inference_conan.StreamingVoiceConversion)
+        engine.hparams = {
+            "allow_split_reference_inputs": False,
+            "prompt_ref_fallback_to_style": True,
+            "reference_contract_mode": "collapsed_reference",
+            "reference_mel_cache_max_entries": 2,
+        }
+        engine.device = "cpu"
+        engine.reference_mel_cache_max_entries = 2
+        calls = []
+
+        def fake_wav_to_mel(path):
+            calls.append(path)
+            return np.ones((4, 80), dtype=np.float32)
+
+        engine._wav_to_mel = fake_wav_to_mel
+        request = {"ref_wav": "ref.wav"}
+        with patch.object(
+            inference_conan,
+            "build_reference_bundle_from_inputs",
+            side_effect=lambda **kwargs: kwargs,
+        ):
+            engine._load_reference_mels(request)
+            engine._load_reference_mels(request)
+        self.assertEqual(calls, ["ref.wav"])
+
+    def test_librosa_wav2spec_reuses_cached_mel_basis(self):
+        audio_utils._get_mel_basis.cache_clear()
+        wav = np.zeros(1024, dtype=np.float32)
+        mel_kwargs = {
+            "fft_size": 256,
+            "hop_size": 64,
+            "win_length": 256,
+            "num_mels": 40,
+            "sample_rate": 22050,
+            "fmin": 80,
+            "fmax": 7600,
+            "loud_norm": False,
+        }
+        with patch.object(audio_utils.librosa.filters, "mel", wraps=audio_utils.librosa.filters.mel) as mel_mock:
+            audio_utils.librosa_wav2spec(wav, **mel_kwargs)
+            audio_utils.librosa_wav2spec(wav, **mel_kwargs)
+        self.assertEqual(mel_mock.call_count, 1)
+
+    def test_audio_optional_import_helper_catches_non_importerror_failures(self):
+        with patch.object(audio_utils.importlib, "import_module", side_effect=RecursionError("boom")):
+            module, error = audio_utils._optional_import("pyloudnorm")
+        self.assertIsNone(module)
+        self.assertIsInstance(error, RecursionError)
+
+    def test_utils_audio_reexports_trim_long_silences_for_wav_processors(self):
+        code = textwrap.dedent(
+            """
+            import data_gen.tts.wav_processors.common_processors as m
+            assert hasattr(m, "TrimAllSILProcessor")
+            print("ok")
+            """
+        )
+        result = self._run_isolated_python(code)
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+    def test_trim_sil_processor_returns_output_path_and_sample_rate(self):
+        from data_gen.tts.wav_processors.common_processors import TrimSILProcessor
+
+        processor = TrimSILProcessor()
+        with patch("data_gen.tts.wav_processors.common_processors.librosa.core.load", return_value=(np.zeros(8), 22050)), \
+             patch("data_gen.tts.wav_processors.common_processors.librosa.effects.trim", return_value=(np.zeros(4), None)), \
+             patch("data_gen.tts.wav_processors.common_processors.save_wav") as save_wav_mock:
+            output = processor.process("a.wav", 22050, None, None, "item", {})
+        self.assertEqual(output, ("a_TrimSIL.wav", 22050))
+        save_wav_mock.assert_called_once()
+
+    def test_trim_long_silences_uses_keyword_resample_args(self):
+        class _FakeVad:
+            def __init__(self, mode=3):
+                self.mode = mode
+
+            def is_speech(self, pcm, sample_rate=16000):
+                return True
+
+        wav_raw = np.ones(960, dtype=np.float32)
+        with patch.object(vad_utils.librosa.core, "load", return_value=(wav_raw, 22050)), \
+             patch.object(vad_utils.librosa, "resample", return_value=np.ones(960, dtype=np.float32)) as resample_mock, \
+             patch.object(vad_utils, "webrtcvad", SimpleNamespace(Vad=_FakeVad)), \
+             patch.object(vad_utils, "binary_dilation", side_effect=lambda x, y: x), \
+             patch.object(vad_utils, "resize", side_effect=lambda x, shape: np.ones(shape[0], dtype=np.float32)):
+            trimmed, audio_mask, sr = vad_utils.trim_long_silences("a.wav", norm=False)
+        self.assertEqual(sr, 22050)
+        self.assertEqual(trimmed.shape[0], wav_raw.shape[0])
+        self.assertEqual(audio_mask.shape[0], wav_raw.shape[0])
+        self.assertEqual(resample_mock.call_args.kwargs["orig_sr"], 22050)
+        self.assertEqual(resample_mock.call_args.kwargs["target_sr"], 16000)
+
+    def test_pitch_utils_coarse_to_f0_supports_numpy_inputs(self):
+        coarse = np.array([1, 64, 128, 255], dtype=np.int64)
+        modern = pitch_utils_modern.coarse_to_f0(coarse)
+        legacy = pitch_utils_legacy.coarse_to_f0(coarse)
+        self.assertEqual(modern.shape, coarse.shape)
+        self.assertEqual(legacy.shape, coarse.shape)
+        self.assertEqual(float(modern[0]), 0.0)
+        self.assertEqual(float(legacy[0]), 0.0)
+        self.assertTrue(np.all(modern[1:] > 0.0))
+        self.assertTrue(np.all(legacy[1:] > 0.0))
+
+    def test_global_style_trace_blend_zero_preserves_reference_summary(self):
+        model = _DummyStyleRuntimeModel()
+        global_style_summary = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+        style_trace = torch.tensor(
+            [
+                [[10.0, 20.0], [30.0, 40.0]],
+                [[50.0, 60.0], [70.0, 80.0]],
+            ],
+            dtype=torch.float32,
+        )
+        summary, source = _resolve_global_summary_runtime(
+            model,
+            global_style_summary,
+            style_trace,
+            None,
+            blend=0.0,
+            global_style_summary_source="reference_summary",
+        )
+        self.assertTrue(torch.equal(summary, global_style_summary))
+        self.assertEqual(source, "reference_summary")
+
+    def test_global_style_trace_blend_midpoint_fuses_reference_and_trace(self):
+        model = _DummyStyleRuntimeModel()
+        global_style_summary = torch.tensor([[2.0, 4.0]], dtype=torch.float32)
+        style_trace = torch.tensor([[[6.0, 10.0], [10.0, 14.0]]], dtype=torch.float32)
+        summary, source = _resolve_global_summary_runtime(
+            model,
+            global_style_summary,
+            style_trace,
+            None,
+            blend=0.5,
+            global_style_summary_source="reference_summary",
+        )
+        expected_trace_summary = style_trace.mean(dim=1)
+        expected = 0.5 * global_style_summary + 0.5 * expected_trace_summary
+        self.assertTrue(torch.allclose(summary, expected))
+        self.assertEqual(source, "style_trace_blended_with_reference")
+
+    def test_expand_anchor_sequence_rejects_incompatible_length(self):
+        anchor = torch.zeros((2, 3, 4), dtype=torch.float32)
+        with self.assertRaises(ValueError):
+            expand_anchor_sequence(anchor, 5)
+
+    def test_content_sync_timbre_fuser_exposes_gate_probability_alias(self):
+        fuser = ContentSynchronousTimbreFuser(hidden_size=4)
+        query = torch.randn(2, 3, 4)
+        global_anchor = torch.randn(2, 1, 4)
+        global_memory = torch.randn(2, 5, 4)
+        local_absolute = torch.randn(2, 3, 4)
+        payload = fuser(
+            query=query,
+            global_anchor=global_anchor,
+            global_memory=global_memory,
+            local_absolute=local_absolute,
+        )
+        self.assertIn("variation_gate_prob", payload)
+        self.assertTrue(torch.equal(payload["variation_gate_prob"], payload["variation_gate"]))
+        self.assertTrue(torch.equal(payload["variation_gate_prob"], payload["variation_gate_raw"]))
 
     def test_trainer_moves_batch_to_cuda_once_per_multi_optimizer_step(self):
         class FakeTask(nn.Module):

@@ -1,6 +1,10 @@
 import numpy as np
 import torch
-import pretty_midi
+
+try:
+    import pretty_midi
+except ImportError:  # optional unless MIDI helpers are used
+    pretty_midi = None
 
 def to_lf0(f0):
     f0[f0 < 1.0e-5] = 1.0e-6
@@ -33,7 +37,10 @@ def coarse_to_f0(f0_coarse, f0_bin=256, f0_max=900.0, f0_min=50.0):
     f0_mel_max = 1127 * np.log(1 + f0_max / 700)
     uv = f0_coarse == 1
     f0 = f0_mel_min + (f0_coarse - 1) * (f0_mel_max - f0_mel_min) / (f0_bin - 2)
-    f0 = ((f0 / 1127).exp() - 1) * 700
+    if isinstance(f0, torch.Tensor):
+        f0 = (torch.exp(f0 / 1127) - 1) * 700
+    else:
+        f0 = (np.exp(f0 / 1127) - 1) * 700
     f0[uv] = 0
     return f0
 
@@ -177,6 +184,8 @@ def validate_pitch_and_itv(notes, note_itv):
 def save_midi(notes, note_itv, midi_path):
     # notes [T]
     # note_itv [T, 2]
+    if pretty_midi is None:
+        raise ModuleNotFoundError("pretty_midi is required for save_midi")
     notes, note_itv = validate_pitch_and_itv(notes, note_itv)
     if notes.shape == (0,):
         return None
@@ -194,6 +203,8 @@ def save_midi(notes, note_itv, midi_path):
     return piano_chord
 
 def midi2NoteInterval(mid):
+    if pretty_midi is None:
+        raise ModuleNotFoundError("pretty_midi is required for midi2NoteInterval")
     assert type(mid) == pretty_midi.PrettyMIDI
     if len(mid.instruments) == 0 or len(mid.instruments[0].notes) == 0:
         return None
@@ -204,6 +215,8 @@ def midi2NoteInterval(mid):
     return ret
 
 def midi2NotePitch(mid):
+    if pretty_midi is None:
+        raise ModuleNotFoundError("pretty_midi is required for midi2NotePitch")
     assert type(mid) == pretty_midi.PrettyMIDI
     if len(mid.instruments) == 0 or len(mid.instruments[0].notes) == 0:
         return None
@@ -295,4 +308,3 @@ def melody_eval_pitch_and_itv(pitch_true, interval_true, pitch_pred, interval_pr
     oa = mir_eval.melody.overall_accuracy(ref_voicing, ref_cent, est_voicing, est_cent)
 
     return vr, vfa, rpa, rca, oa
-

@@ -8,6 +8,12 @@ A focused repository audit/update pass landed on 2026-04-04. Highlights:
 
 - multi-optimizer training no longer performs duplicate batch CUDA transfers
 - split-reference inference no longer recomputes identical reference mels within one request
+- reference mel tensors are now cached across requests inside one inference engine instance, reducing repeated wav->mel work on repeated prompts
+- mel filterbank construction is now cached in `librosa_wav2spec(...)`, reducing repeated CPU setup overhead on hot audio preprocessing paths
+- optional audio deps (`pyloudnorm`, `soundfile`) are now lazy-loaded and treated as truly optional unless the relevant path is used
+- VAD trimming now uses the `librosa 0.10.x`-compatible resample call signature
+- `global_style_trace_blend=0.0` now correctly preserves the reference summary instead of silently switching to pooled runtime trace
+- TVT anchor expansion now fails with a clear contract error on incompatible sequence lengths instead of a low-level `.expand(...)` shape crash
 - the NumPy indexed-dataset compatibility shim no longer relies on the deprecated `numpy.core` import path in normal cases
 - binary indexed datasets now write plain `int64` offset sidecars while keeping legacy dict-style `.idx` files readable
 - training datasets now build speaker/condition sampling buckets deterministically from `seed` and avoid extra tensor copies on hot data paths
@@ -44,10 +50,10 @@ This machine is still CPU-only, so that result should be read as **train-readine
 
 If you intend large-scale GPU training or Windows multi-GPU runs, there are still real blockers that are **not** caught by the current prep gate:
 
-- **Windows file ops:** `utils/os_utils.py` still shells out to `rm -rf`, `cp -r`, `mv`, `ln -s`. Those are used on the training/data hot path (checkpoint eviction, binarizer copy, hparams cleanup) and already caused a real failure during checkpoint cleanup.
 - **DDP backend on Windows:** canonical config still pins `ddp_backend: nccl`, which is not the safe default on Windows. There is no platform guard in `mainline_train_prep.py`, so prep can report ready even though multi-GPU launch will fail.
-- **AMP (if enabled):** AMP clipping currently runs on scaled gradients (no `GradScaler.unscale_()`), and schedulers advance even when an AMP step is skipped on overflow. Canonical configs keep `amp: false`, but if you turn AMP on this must be fixed first.
-- **Vocoder weight-norm compat regression:** the new `weight_norm_compat` path changes init semantics for HiFi-GAN (custom normal init does not take effect after wrapping), and `icl_portaspeech.py` is missing an import for `remove_weight_norm_compat`. Treat vocoder training/export as not yet fully safe without a follow-up fix.
+- **Inference config singleton pollution:** `inference/Conan.py` still writes the process-global `hparams` singleton during engine construction for legacy compatibility. Library-style multi-instance / concurrent inference is therefore still not isolation-safe.
+- **Streaming performance ceiling:** prefix-online inference still recomputes the full acoustic prefix per chunk and still performs per-chunk `Tensor -> CPU -> NumPy -> vocoder` transitions. Functional correctness is okay, but latency/throughput are still well below a truly incremental stack.
+- **Environment pin drift in non-canonical envs:** in the current base Python `3.13` shell, `mainline_train_prep.py` now finishes and emits structured JSON, but it still reports `MAINLINE_TRAIN_PREP_NOT_READY` because the runtime stack does not match the pinned training environment (`torch/torchaudio 2.5.1`, `nltk 3.8.1`, Python `3.10/3.11`-class runtime, plus working `g2p_en` resources).
 
 These are engineering blockers, not conceptual ones. Until they are addressed, treat large-scale GPU training as **not** green even if prep passes.
 

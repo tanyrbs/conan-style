@@ -13,6 +13,10 @@ def expand_anchor_sequence(anchor: torch.Tensor, length: int) -> torch.Tensor:
         anchor = anchor.unsqueeze(1)
     if anchor.size(1) == length:
         return anchor
+    if anchor.size(1) != 1:
+        raise ValueError(
+            f"expand_anchor_sequence expected anchor length 1 or {length}, got {anchor.size(1)}."
+        )
     return anchor.expand(anchor.size(0), length, anchor.size(-1))
 
 
@@ -121,10 +125,9 @@ class ContentSynchronousTimbreFuser(nn.Module):
         candidate_absolute = anchor_seq + candidate_delta
 
         variation_logit = self.variation_gate(torch.cat([query, candidate_absolute, anchor_seq, style_context], dim=-1))
-        variation_gate = torch.sigmoid(
+        variation_gate_prob = torch.sigmoid(
             variation_logit * float(gate_scale) + float(gate_bias) + float(self.variation_bias)
         )
-        candidate_delta = candidate_delta
 
         return {
             "attn": attn,
@@ -136,8 +139,9 @@ class ContentSynchronousTimbreFuser(nn.Module):
             "material_logit": material_logit,
             "material_router": material_router,
             "variation_logit": variation_logit,
-            "variation_gate_raw": variation_gate,
-            "variation_gate": variation_gate,
+            "variation_gate_raw": variation_gate_prob,
+            "variation_gate_prob": variation_gate_prob,
+            "variation_gate": variation_gate_prob,
         }
 
 

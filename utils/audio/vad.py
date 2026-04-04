@@ -4,16 +4,27 @@ from scipy.ndimage import binary_dilation
 import librosa
 import numpy as np
 import warnings
+import importlib
 
 try:
     import webrtcvad
 except ImportError:  # optional unless VAD trimming is requested
     webrtcvad = None
 
-try:
-    import pyloudnorm as pyln
-except ImportError:  # optional unless loudness normalization is requested
-    pyln = None
+pyln = None
+_pyln_import_error = None
+
+
+def _load_pyloudnorm():
+    global pyln, _pyln_import_error
+    if pyln is not None or _pyln_import_error is not None:
+        return pyln
+    try:
+        pyln = importlib.import_module("pyloudnorm")
+    except Exception as exc:  # optional dependency can fail with loader/runtime errors
+        _pyln_import_error = exc
+        pyln = None
+    return pyln
 
 warnings.filterwarnings("ignore", message="Possible clipped samples in output")
 
@@ -36,15 +47,24 @@ def trim_long_silences(path, sr=None, return_raw_wav=False, norm=True, vad_max_s
     wav_raw, sr = librosa.core.load(path, sr=sr)
 
     if norm:
-        if pyln is None:
-            raise ModuleNotFoundError("pyloudnorm is required when norm=True for trim_long_silences")
-        meter = pyln.Meter(sr)  # create BS.1770 meter
+        pyln_module = _load_pyloudnorm()
+        if pyln_module is None:
+            detail = "" if _pyln_import_error is None else f" (original import error: {_pyln_import_error!r})"
+            raise ModuleNotFoundError(
+                f"pyloudnorm is required when norm=True for trim_long_silences{detail}"
+            )
+        meter = pyln_module.Meter(sr)  # create BS.1770 meter
         loudness = meter.integrated_loudness(wav_raw)
-        wav_raw = pyln.normalize.loudness(wav_raw, loudness, -20.0)
+        wav_raw = pyln_module.normalize.loudness(wav_raw, loudness, -20.0)
         if np.abs(wav_raw).max() > 1.0:
             wav_raw = wav_raw / np.abs(wav_raw).max()
 
-    wav = librosa.resample(wav_raw, sr, sampling_rate, res_type='kaiser_best')
+    wav = librosa.resample(
+        wav_raw,
+        orig_sr=sr,
+        target_sr=sampling_rate,
+        res_type='kaiser_best',
+    )
 
     vad_window_length = 30  # In milliseconds
     # Number of frames to average together when performing the moving average smoothing.

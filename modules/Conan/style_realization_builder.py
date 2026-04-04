@@ -109,15 +109,19 @@ def _resolve_global_summary_runtime(
     blend=0.0,
     global_style_summary_source: str = "reference_summary",
 ):
-    blend = float(blend)
+    blend = max(0.0, min(float(blend), 1.0))
     style_trace_summary = _masked_mean(model, style_trace, style_trace_mask)
     if style_trace_summary is None:
         return global_style_summary, str(global_style_summary_source or "reference_summary")
     if isinstance(global_style_summary, torch.Tensor):
         base = global_style_summary[:, 0, :] if global_style_summary.dim() == 3 else global_style_summary
-        if blend > 0.0:
-            fused = base * (1.0 - blend) + style_trace_summary * blend
-            return model._normalize_style_embed(fused), "style_trace_blended_with_reference"
+        base = model._normalize_style_embed(base)
+        if blend <= 0.0:
+            return base, str(global_style_summary_source or "reference_summary")
+        if blend >= 1.0:
+            return model._normalize_style_embed(style_trace_summary), "style_trace_pooled"
+        fused = base * (1.0 - blend) + style_trace_summary * blend
+        return model._normalize_style_embed(fused), "style_trace_blended_with_reference"
     return model._normalize_style_embed(style_trace_summary), "style_trace_pooled"
 
 

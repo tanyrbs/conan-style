@@ -1,3 +1,4 @@
+from collections import OrderedDict
 import os
 import json
 import glob
@@ -108,6 +109,11 @@ class StreamingVoiceConversion:
         }
         self.streaming_latency_report = build_streaming_latency_report(resolved_hp)
         self.last_infer_metadata = {}
+        self.reference_mel_cache_max_entries = max(
+            0,
+            int(self.hparams.get("reference_mel_cache_max_entries", 8)),
+        )
+        self._reference_mel_cache = OrderedDict()
         print(
             f"| Conan vocoder_left_context_frames={self.vocoder_left_context_frames} "
             f"(source={self.vocoder_left_context_source})"
@@ -263,6 +269,39 @@ class StreamingVoiceConversion:
         )["mel"]
         return np.clip(mel, self.hparams["mel_vmin"], self.hparams["mel_vmax"])
 
+    def _reference_mel_cache_key(self, path: str):
+        abs_path = os.path.abspath(str(path))
+        try:
+            stat = os.stat(abs_path)
+            return abs_path, int(stat.st_mtime_ns), int(stat.st_size), str(self.device)
+        except OSError:
+            return abs_path, None, None, str(self.device)
+
+    def _cached_reference_mel_tensor(self, path: str) -> torch.Tensor:
+        max_entries = max(
+            0,
+            int(
+                self.hparams.get(
+                    "reference_mel_cache_max_entries",
+                    getattr(self, "reference_mel_cache_max_entries", 8),
+                )
+            ),
+        )
+        if not hasattr(self, "_reference_mel_cache") or self._reference_mel_cache is None:
+            self._reference_mel_cache = OrderedDict()
+        cache_key = self._reference_mel_cache_key(path)
+        if max_entries > 0:
+            cached = self._reference_mel_cache.pop(cache_key, None)
+            if cached is not None:
+                self._reference_mel_cache[cache_key] = cached
+                return cached
+        mel_tensor = torch.from_numpy(self._wav_to_mel(path)).float().unsqueeze(0).to(self.device)
+        if max_entries > 0:
+            self._reference_mel_cache[cache_key] = mel_tensor
+            while len(self._reference_mel_cache) > max_entries:
+                self._reference_mel_cache.popitem(last=False)
+        return mel_tensor
+
     def _load_reference_mels(self, inp: Dict):
         ref_wav = inp["ref_wav"]
         mel_cache = {}
@@ -271,7 +310,7 @@ class StreamingVoiceConversion:
             cache_key = os.path.abspath(str(path))
             cached = mel_cache.get(cache_key)
             if cached is None:
-                cached = torch.from_numpy(self._wav_to_mel(path)).float().unsqueeze(0).to(self.device)
+                cached = self._cached_reference_mel_tensor(path)
                 mel_cache[cache_key] = cached
             return cached
 

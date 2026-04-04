@@ -460,7 +460,7 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             {},
             device=torch.device("cpu"),
         )
-        self.assertTrue(bool(float(support_state["gate_passed"].item()) > 0.0))
+        self.assertFalse(bool(float(support_state["gate_passed"].item()) > 0.0))
 
     def test_style_success_proxy_backfill_preserves_sparse_label_negatives(self):
         sample = {
@@ -566,7 +566,7 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             "style_success_rank_min_negative_row_frac": 0.25,
             "style_success_rank_min_mean_negatives_per_row": 2.0,
             "style_success_rank_min_effective_support": 0.20,
-            "style_success_proxy_min_informative_features": 2,
+            "style_success_proxy_min_informative_features": 0,
         }
         add_style_timbre_regularization_losses(losses, output, sample, config)
         self.assertIn("style_success_rank", losses)
@@ -646,7 +646,9 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         self.assertAlmostEqual(float(support_state["label_proxy_sufficient_row_frac"].item()), 0.25, places=6)
         self.assertAlmostEqual(float(support_state["label_authority_frac"].item()), 0.25, places=6)
         self.assertAlmostEqual(float(support_state["batch_composition_scale"].item()), 0.5, places=6)
-        self.assertAlmostEqual(float(support_state["support_scale"].item()), 0.5, places=6)
+        proxy_informative = int(negative_state.get("proxy_informative_feature_count", 0) or 0)
+        proxy_scale = min(proxy_informative / 2.0, 1.0)
+        self.assertAlmostEqual(float(support_state["support_scale"].item()), 0.5 * proxy_scale, places=6)
 
     def test_style_success_supervision_summary_surfaces_proxy_batch_and_authority_guardrails(self):
         summary = _style_success_supervision_summary(

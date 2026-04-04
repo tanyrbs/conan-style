@@ -550,19 +550,22 @@ class ConanTask(ConanStyleBatchingMixin, ConanStyleControlMixin, AuxDecoderMIDIT
         nonpadding = (content != hparams.get('content_padding_idx', 101)).float()
         if hparams["f0_gen"] == "diff":
             losses["fdiff"] = output["fdiff"]
+            uv_denom = nonpadding.sum().clamp_min(1.0)
             losses['uv'] = (F.binary_cross_entropy_with_logits(
-                output["uv_pred"][:, :, 0], uv, reduction='none') * nonpadding).sum() / nonpadding.sum() * hparams['lambda_uv']
+                output["uv_pred"][:, :, 0], uv, reduction='none') * nonpadding).sum() / uv_denom * hparams['lambda_uv']
         elif hparams["f0_gen"] == "flow":
             losses["pflow"] = output["pflow"]
+            uv_denom = nonpadding.sum().clamp_min(1.0)
             losses['uv'] = (F.binary_cross_entropy_with_logits(
-                output["uv_pred"][:, :, 0], uv, reduction='none') * nonpadding).sum() / nonpadding.sum() * hparams['lambda_uv']
+                output["uv_pred"][:, :, 0], uv, reduction='none') * nonpadding).sum() / uv_denom * hparams['lambda_uv']
         elif hparams["f0_gen"] == "gmdiff":
             losses["gdiff"] = output["gdiff"]
             losses["mdiff"] = output["mdiff"]
         elif hparams["f0_gen"] == "orig":
             losses["fdiff"] = output["fdiff"]
+            uv_denom = nonpadding.sum().clamp_min(1.0)
             losses['uv'] = (F.binary_cross_entropy_with_logits(
-                output["uv_pred"][:, :, 0], uv, reduction='none') * nonpadding).sum() / nonpadding.sum() * hparams['lambda_uv']
+                output["uv_pred"][:, :, 0], uv, reduction='none') * nonpadding).sum() / uv_denom * hparams['lambda_uv']
 
             
     def _training_step(self, sample, batch_idx, optimizer_idx):

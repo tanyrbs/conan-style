@@ -7,7 +7,11 @@ import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
-from utils.commons.weight_norm_compat import apply_weight_norm as weight_norm, remove_weight_norm_compat as remove_weight_norm
+from utils.commons.weight_norm_compat import (
+    apply_weight_norm as weight_norm,
+    get_weight_param,
+    remove_weight_norm_compat as remove_weight_norm,
+)
 import numpy as np
 import copy
 import traceback # Used for printing detailed errors
@@ -23,7 +27,9 @@ LRELU_SLOPE = 0.1
 def init_weights(m, mean: float = 0.0, std: float = 0.01):
     """Initializes weights for Conv1d and ConvTranspose1d layers."""
     if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
-        nn.init.normal_(m.weight, mean, std)
+        weight = get_weight_param(m, "weight")
+        if weight is not None:
+            nn.init.normal_(weight, mean, std)
 
 # -----------------------------
 # Causal Convolution Blocks

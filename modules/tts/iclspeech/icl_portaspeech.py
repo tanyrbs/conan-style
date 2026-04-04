@@ -13,6 +13,7 @@ from modules.tts.iclspeech.positional_encoding import RelPositionalEncoding
 from modules.tts.iclspeech.attention.simple_attention import SimpleAttention, split_heads
 from modules.commons.transformer import SinusoidalPositionalEmbedding
 from utils.commons.meters import Timer
+from utils.commons.weight_norm_compat import remove_weight_norm_compat
 
 
 class ICLPortaSpeech(FastSpeech):

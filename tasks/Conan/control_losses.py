@@ -704,6 +704,12 @@ def _compute_style_success_control_loss(
                 row_scale.new_full(row_scale.shape, label_plus_proxy_backfill_scale),
                 row_scale,
             )
+        if isinstance(proxy_only_rows, torch.Tensor) and proxy_only_rows.any():
+            row_scale = torch.where(
+                proxy_only_rows,
+                row_scale.new_full(row_scale.shape, proxy_rank_scale),
+                row_scale,
+            )
 
     per_row_rank_loss = F.cross_entropy(
         logits[valid_rows],

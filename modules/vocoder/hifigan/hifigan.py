@@ -3,7 +3,11 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import spectral_norm
-from utils.commons.weight_norm_compat import apply_weight_norm as weight_norm, remove_weight_norm_compat as remove_weight_norm
+from utils.commons.weight_norm_compat import (
+    apply_weight_norm as weight_norm,
+    get_weight_param,
+    remove_weight_norm_compat as remove_weight_norm,
+)
 import numpy as np
 
 LRELU_SLOPE = 0.1
@@ -12,7 +16,9 @@ LRELU_SLOPE = 0.1
 def init_weights(m, mean=0.0, std=0.01):
     classname = m.__class__.__name__
     if classname.find("Conv") != -1:
-        m.weight.data.normal_(mean, std)
+        weight = get_weight_param(m, "weight")
+        if weight is not None:
+            weight.data.normal_(mean, std)
 
 
 def apply_weight_norm(m):

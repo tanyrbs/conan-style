@@ -28,6 +28,17 @@ def apply_weight_norm(module: Any, name: str = "weight", dim: int = 0):
 weight_norm = apply_weight_norm
 
 
+def get_weight_param(module: Any, name: str = "weight"):
+    """Return the underlying weight parameter (handles parametrized weight_norm)."""
+    if _parametrize is not None:
+        try:
+            if _parametrize.is_parametrized(module, name):
+                return getattr(module.parametrizations, name).original
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return getattr(module, name, None)
+
+
 def remove_weight_norm_compat(module: Any, name: str = "weight"):
     """Remove weight norm regardless of whether legacy or parametrized API was used."""
     if _parametrize is not None:
@@ -50,6 +61,7 @@ remove_weight_norm = remove_weight_norm_compat
 __all__ = [
     "apply_weight_norm",
     "weight_norm",
+    "get_weight_param",
     "remove_weight_norm",
     "remove_weight_norm_compat",
 ]

@@ -1562,6 +1562,16 @@ def _collect_runtime_dependency_checks(checks, args):
         _check_nltk_cmudict_for_g2p_en,
         expected="nltk cmudict available for g2p_en",
     )
+    ddp_backend = str(hparams.get("ddp_backend", "")).strip().lower()
+    num_gpus = int(hparams.get("num_gpus", hparams.get("gpus", 1)) or 1)
+    if os.name == "nt" and num_gpus > 1:
+        _check_true(
+            checks,
+            "runtime_ddp_backend_windows_safe",
+            ddp_backend != "nccl",
+            actual={"ddp_backend": ddp_backend, "num_gpus": num_gpus},
+            expected="ddp_backend != 'nccl' on Windows multi-GPU",
+        )
 
 
 def _collect_data_staging_checks(checks, prep_ctx):

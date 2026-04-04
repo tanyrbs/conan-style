@@ -406,6 +406,9 @@ class Trainer:
                 loss = output['loss']
                 if loss is None:
                     continue
+                if not torch.isfinite(loss).all():
+                    logging.warning(f"Non-finite loss at step {self.global_step}: {loss}")
+                    continue
                 progress_bar_metrics = output['progress_bar']
                 log_metrics = output['tb_log']
                 # accumulate loss
@@ -437,14 +440,22 @@ class Trainer:
 
             # gradient update with accumulated gradients
             if (self.global_step + 1) % self.accumulate_grad_batches == 0:
-                task_ref.on_before_optimization(opt_idx)
                 if self.amp:
-                    self.amp_scalar.step(optimizer)
+                    self.amp_scalar.unscale_(optimizer)
+                task_ref.on_before_optimization(opt_idx)
+                stepped = True
+                if self.amp:
+                    scale_before = float(self.amp_scalar.get_scale())
+                    step_result = self.amp_scalar.step(optimizer)
                     self.amp_scalar.update()
+                    scale_after = float(self.amp_scalar.get_scale())
+                    if (step_result is None) and (scale_after < scale_before):
+                        stepped = False
                 else:
                     optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
-                task_ref.on_after_optimization(self.current_epoch, batch_idx, optimizer, opt_idx)
+                if stepped:
+                    task_ref.on_after_optimization(self.current_epoch, batch_idx, optimizer, opt_idx)
 
         # collapse all metrics into one dict
         all_progress_bar_metrics = {k: v for d in all_progress_bar_metrics for k, v in d.items()}

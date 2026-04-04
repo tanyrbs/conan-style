@@ -541,6 +541,13 @@ def resolve_style_success_negative_masks(
                 proxy_negative_mask = None
                 proxy_valid_rows = None
                 proxy_backfill_rows = None
+        if proxy_disabled_reason == "active":
+            if int(proxy_state.get("feature_count", 0) or 0) <= 0:
+                proxy_disabled_reason = "proxy_features_unavailable"
+            elif proxy_negative_mask is None:
+                proxy_disabled_reason = "proxy_negative_mask_empty"
+            elif proxy_valid_rows is None:
+                proxy_disabled_reason = "proxy_valid_rows_empty"
     else:
         proxy_disabled_reason = "batch_size_below_proxy_min_batch"
 
@@ -704,7 +711,7 @@ def resolve_style_success_rank_support_state(
         1.0,
     )
     proxy_scale = one
-    if source == "proxy" and min_proxy_informative_features > 0:
+    if source in {"proxy", "label_plus_proxy_backfill"} and min_proxy_informative_features > 0:
         proxy_scale = torch.clamp(
             _scalar(proxy_informative_feature_count) / float(min_proxy_informative_features),
             0.0,
@@ -770,7 +777,10 @@ def resolve_style_success_rank_support_state(
         has_valid_rows
         and float(row_density.item()) >= min_row_frac
         and float(mean_negatives_per_valid_row.item()) >= min_mean_negatives
-        and (source != "proxy" or proxy_informative_feature_count >= min_proxy_informative_features)
+        and (
+            source not in {"proxy", "label_plus_proxy_backfill"}
+            or proxy_informative_feature_count >= min_proxy_informative_features
+        )
         and float(support_scale.item()) >= min_effective_support
     )
     if not has_valid_rows:
@@ -779,7 +789,7 @@ def resolve_style_success_rank_support_state(
         disabled_reason = "negative_row_density_below_floor"
     elif float(mean_negatives_per_valid_row.item()) < min_mean_negatives:
         disabled_reason = "mean_negatives_per_row_below_floor"
-    elif source == "proxy" and proxy_informative_feature_count < min_proxy_informative_features:
+    elif source in {"proxy", "label_plus_proxy_backfill"} and proxy_informative_feature_count < min_proxy_informative_features:
         disabled_reason = "proxy_informative_features_below_floor"
     elif source == "proxy" and float(proxy_batch_scale.item()) < 1.0 and float(support_scale.item()) < min_effective_support:
         disabled_reason = "proxy_batch_support_below_floor"

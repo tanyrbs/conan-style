@@ -2,6 +2,8 @@
 
 Updated: 2026-04-05
 
+AutoDL 云端训练交接文档：`docs/autodl_training_handover_20260405.md`
+
 ## Audit update (2026-04-04)
 
 A focused repository audit/update pass landed on 2026-04-04. Highlights:

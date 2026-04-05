@@ -23,6 +23,30 @@ def _run_kmeans2_points_init(sampled, n_embeddings):
         return None
 
 
+def _dist_is_ready():
+    return bool(dist.is_available() and dist.is_initialized())
+
+
+def _dist_world_size():
+    if not _dist_is_ready():
+        return 1
+    try:
+        return max(int(dist.get_world_size()), 1)
+    except Exception:
+        return 1
+
+
+def _reference_padding_mask(ref_mels, padding_value=0):
+    if not isinstance(ref_mels, torch.Tensor):
+        raise TypeError(f"ref_mels must be a torch.Tensor, got {type(ref_mels).__name__}.")
+    if ref_mels.dim() != 3:
+        raise ValueError(f"ref_mels must be rank-3 [B, T, C], got shape {tuple(ref_mels.shape)}.")
+    padding_value = float(padding_value)
+    if padding_value == 0.0:
+        return ref_mels.abs().sum(dim=-1).eq(0)
+    return ref_mels.eq(ref_mels.new_full((), padding_value)).all(dim=-1)
+
+
 class VQEmbeddingEMA(nn.Module):
     def __init__(self, n_embeddings, embedding_dim, commitment_cost=0.25, decay=0.999, epsilon=1e-5,
                  print_vq_prob=False):
@@ -55,12 +79,42 @@ class VQEmbeddingEMA(nn.Module):
         return x_flat, quantized, indices
 
     def _broadcast_initialized_buffers(self):
-        if not (dist.is_available() and dist.is_initialized()):
+        if not _dist_is_ready():
             return
         dist.broadcast(self.embedding, src=0)
         dist.broadcast(self.ema_count, src=0)
         dist.broadcast(self.ema_weight, src=0)
         dist.broadcast(self.data_initialized, src=0)
+
+    @staticmethod
+    def _current_rank():
+        if not _dist_is_ready():
+            return 0
+        try:
+            return int(dist.get_rank())
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _reduce_tensor_if_needed(tensor):
+        if _dist_world_size() <= 1:
+            return tensor
+        reduced = tensor.clone()
+        dist.all_reduce(reduced)
+        return reduced
+
+    def _reduce_codebook_stats(self, counts, weight):
+        return (
+            self._reduce_tensor_if_needed(counts),
+            self._reduce_tensor_if_needed(weight),
+        )
+
+    def _global_average_probs(self, encodings):
+        counts = encodings.sum(dim=0)
+        total = encodings.new_tensor([encodings.shape[0]], dtype=encodings.dtype)
+        counts = self._reduce_tensor_if_needed(counts)
+        total = self._reduce_tensor_if_needed(total)
+        return counts / total.clamp_min(1.0)
 
     def forward(self, x):
         """
@@ -77,24 +131,34 @@ class VQEmbeddingEMA(nn.Module):
             return x, zero, indices, zero
 
         if self.training and needs_init:
-            print('| running kmeans in VQVAE')  # data driven initialization for the embeddings
-            x_flat = x.detach().reshape(-1, D)
-            rp = torch.randperm(x_flat.size(0), device=x_flat.device)
-            sampled = x_flat[rp]
-            if sampled.size(0) <= 0:
-                raise ValueError("VQEmbeddingEMA received empty input during initialization.")
-            if sampled.size(0) < self.n_embeddings:
-                repeat = math.ceil(self.n_embeddings / sampled.size(0))
-                init_embed = sampled.repeat(repeat, 1)[:self.n_embeddings]
-            else:
-                init_embed = _run_kmeans2_points_init(sampled, self.n_embeddings)
-                if init_embed is None:
-                    init_embed = sampled[:self.n_embeddings]
-            self.embedding.copy_(init_embed)
+            if self._current_rank() == 0:
+                print('| running kmeans in VQVAE')  # data driven initialization for the embeddings
+                x_flat = x.detach().reshape(-1, D)
+                rp = torch.randperm(x_flat.size(0), device=x_flat.device)
+                sampled = x_flat[rp]
+                if sampled.size(0) <= 0:
+                    raise ValueError("VQEmbeddingEMA received empty input during initialization.")
+                if sampled.size(0) < self.n_embeddings:
+                    repeat = math.ceil(self.n_embeddings / sampled.size(0))
+                    init_embed = sampled.repeat(repeat, 1)[:self.n_embeddings]
+                else:
+                    init_embed = _run_kmeans2_points_init(sampled, self.n_embeddings)
+                    if init_embed is None:
+                        init_embed = sampled[:self.n_embeddings]
+                self.embedding.copy_(init_embed)
+                self.ema_count.zero_()
+                self.ema_weight.zero_()
+                self.data_initialized.fill_(1)
+            self._broadcast_initialized_buffers()
             x_flat, _, indices = self.encode(x)
             encodings = F.one_hot(indices, M).to(dtype=x_flat.dtype)
-            self.ema_weight.copy_(torch.matmul(encodings.t(), x_flat))
-            self.ema_count.copy_(torch.sum(encodings, dim=0))
+            global_count, global_weight = self._reduce_codebook_stats(
+                torch.sum(encodings, dim=0),
+                torch.matmul(encodings.t(), x_flat),
+            )
+            self.ema_weight.copy_(global_weight)
+            self.ema_count.copy_(global_count)
+            self.embedding.copy_(self.ema_weight / self.ema_count.unsqueeze(-1).clamp_min(self.epsilon))
             self.data_initialized.fill_(1)
             self._broadcast_initialized_buffers()
 
@@ -103,13 +167,16 @@ class VQEmbeddingEMA(nn.Module):
         indices = indices.reshape(B, T)
 
         if self.training and not needs_init:
-            updated_count = self.decay * self.ema_count + (1 - self.decay) * torch.sum(encodings, dim=0)
+            global_count, global_weight = self._reduce_codebook_stats(
+                torch.sum(encodings, dim=0),
+                torch.matmul(encodings.t(), x_flat),
+            )
+            updated_count = self.decay * self.ema_count + (1 - self.decay) * global_count
             n = torch.sum(updated_count)
             updated_count = (updated_count + self.epsilon) / (n + M * self.epsilon) * n
             self.ema_count.copy_(updated_count)
 
-            dw = torch.matmul(encodings.t(), x_flat)
-            self.ema_weight.mul_(self.decay).add_(dw, alpha=(1 - self.decay))
+            self.ema_weight.mul_(self.decay).add_(global_weight, alpha=(1 - self.decay))
             self.embedding.copy_(self.ema_weight / self.ema_count.unsqueeze(-1).clamp_min(self.epsilon))
 
         e_latent_loss = F.mse_loss(x, quantized.detach(), reduction='none')
@@ -119,7 +186,7 @@ class VQEmbeddingEMA(nn.Module):
 
         quantized = x + (quantized - x).detach()
 
-        avg_probs = torch.mean(encodings, dim=0)
+        avg_probs = self._global_average_probs(encodings)
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
         if self.print_vq_prob:
             print("| VQ code avg_probs: ", avg_probs)
@@ -264,7 +331,7 @@ class LocalStyleAdaptor(nn.Module):
         :param ref_mels: [B, T, 80]
         :return: [B, 1, H]
         """
-        padding_mask = ref_mels[:, :, 0].eq(self.padding_idx).data
+        padding_mask = _reference_padding_mask(ref_mels, self.padding_idx)
         ref_mels = self.wavenet(ref_mels.transpose(1, 2), nonpadding=(~padding_mask).unsqueeze(1).repeat([1, 80, 1])).transpose(1, 2)
         if mel2ph is not None:
             ref_ph, _ = group_hidden_by_segs(ref_mels, mel2ph, torch.max(mel2ph))
@@ -304,7 +371,7 @@ class LocalTimbreAdaptor(nn.Module):
             )
 
     def forward(self, ref_mels, mel2ph=None):
-        padding_mask = ref_mels[:, :, 0].eq(self.padding_idx).data
+        padding_mask = _reference_padding_mask(ref_mels, self.padding_idx)
         ref_mels = self.wavenet(
             ref_mels.transpose(1, 2),
             nonpadding=(~padding_mask).unsqueeze(1).repeat([1, 80, 1]),

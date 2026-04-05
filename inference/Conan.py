@@ -1,4 +1,5 @@
 from collections import OrderedDict
+import inspect
 import os
 import json
 import glob
@@ -59,6 +60,11 @@ def _resolve_bool_flag(value, *, default=False):
             return False
     return bool(value)
 
+
+def _default_legacy_global_hparams_bridge(vocoder_name) -> bool:
+    normalized = str(vocoder_name or "").strip()
+    return normalized not in {"HifiGAN", "HifiGAN_NSF"}
+
 class StreamingVoiceConversion:
     """
     Streaming-style inference front-end.
@@ -102,9 +108,12 @@ class StreamingVoiceConversion:
             resolved_hp
         )
         resolved_hp["vocoder_left_context_frames"] = int(vocoder_left_context_frames)
+        default_global_bridge = _default_legacy_global_hparams_bridge(
+            resolved_hp.get("vocoder", None)
+        )
         self.legacy_global_hparams_bridge = _resolve_bool_flag(
-            resolved_hp.get("legacy_global_hparams_bridge", True),
-            default=True,
+            resolved_hp.get("legacy_global_hparams_bridge", default_global_bridge),
+            default=default_global_bridge,
         )
         resolved_hp["legacy_global_hparams_bridge"] = bool(self.legacy_global_hparams_bridge)
         # Keep the global hparams bridge only when a legacy dependency still
@@ -205,11 +214,30 @@ class StreamingVoiceConversion:
         load_ckpt(m, self.hparams["work_dir"], strict=False)
         return m.to(self.device)
 
-    def _build_vocoder(self):
+    @staticmethod
+    def _resolve_vocoder_hparams_kwarg(vocoder_cls):
+        try:
+            signature = inspect.signature(vocoder_cls.__init__)
+        except (TypeError, ValueError):
+            return None
+        for candidate in ("runtime_hparams", "local_hparams", "hparams_override"):
+            if candidate in signature.parameters:
+                return candidate
+        return None
 
+    def _build_vocoder(self):
         vocoder_cls = get_vocoder_cls(self.hparams["vocoder"])
         if vocoder_cls is None:
             raise ValueError(f"Vocoder '{self.hparams['vocoder']}' is not registered. Check vocoder name and registration.")
+        hparams_kwarg = self._resolve_vocoder_hparams_kwarg(vocoder_cls)
+        if hparams_kwarg is not None:
+            return vocoder_cls(**{hparams_kwarg: self.hparams})
+        if not getattr(self, "legacy_global_hparams_bridge", True):
+            raise TypeError(
+                f"Vocoder '{self.hparams['vocoder']}' does not declare any recognized local-hparams "
+                "constructor kwarg (runtime_hparams / local_hparams / hparams_override) while "
+                "legacy_global_hparams_bridge is disabled."
+            )
         return vocoder_cls()
 
     def _build_emformer(self):
@@ -220,7 +248,8 @@ class StreamingVoiceConversion:
         return emformer.to(self.device)
 
     def _vocoder_warm_zero(self):
-        _ = self.vocoder.spec2wav(np.zeros((4, 80), dtype=np.float32))
+        num_mels = int(self.hparams.get("audio_num_mel_bins", 80))
+        _ = self.vocoder.spec2wav(np.zeros((4, num_mels), dtype=np.float32))
 
     def _load_condition_maps(self):
         return load_condition_id_maps(

@@ -1,3 +1,5 @@
+from collections.abc import Mapping
+
 import librosa
 from utils.audio import librosa_wav2spec
 from utils.commons.hparams import hparams
@@ -20,8 +22,31 @@ def get_vocoder_cls(vocoder_name):
 
 
 class BaseVocoder:
-    @staticmethod
-    def _ensure_mel_tensor(mel, device, *, num_mels=None):
+    def __init__(self, *, runtime_hparams=None, local_hparams=None, hparams_override=None):
+        resolved_local_hparams = None
+        for candidate in (runtime_hparams, local_hparams, hparams_override):
+            if isinstance(candidate, Mapping):
+                resolved_local_hparams = dict(candidate)
+                break
+        self.local_hparams = resolved_local_hparams
+
+    def _hp(self, key, default=None, *, required=False):
+        local_hparams = getattr(self, "local_hparams", None)
+        if isinstance(local_hparams, Mapping):
+            if key in local_hparams:
+                return local_hparams[key]
+            if required:
+                raise KeyError(
+                    f"Missing required hparam '{key}' for {self.__class__.__name__} local runtime config."
+                )
+            return default
+        if key in hparams:
+            return hparams[key]
+        if required:
+            raise KeyError(f"Missing required hparam '{key}' for {self.__class__.__name__}.")
+        return default
+
+    def _ensure_mel_tensor(self, mel, device, *, num_mels=None):
         if isinstance(mel, torch.Tensor):
             mel_tensor = mel.to(device=device, dtype=torch.float32)
         else:
@@ -31,7 +56,7 @@ class BaseVocoder:
         if mel_tensor.dim() != 3:
             raise ValueError(f"Expected mel with shape [T, M], [B, T, M], or [B, M, T], got {tuple(mel_tensor.shape)}.")
         resolved_num_mels = int(
-            hparams.get(
+            self._hp(
                 'audio_num_mel_bins',
                 mel_tensor.size(-1) if mel_tensor.size(-1) > 0 else mel_tensor.size(1),
             )

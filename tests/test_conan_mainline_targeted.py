@@ -25,14 +25,15 @@ from modules.Conan.control.style_success import (
     style_success_supervision_scale,
 )
 from modules.Conan.pitch_runtime import ConanPitchGenerationMixin
-from modules.Conan.prosody_util import ProsodyAligner
+from modules.Conan.prosody_util import LocalStyleAdaptor, LocalTimbreAdaptor, ProsodyAligner
 from modules.Conan.prosody_util import VQEmbeddingEMA
 from modules.Conan.pitch_canvas_utils import project_source_sequence_to_pitch_canvas
 from modules.Conan.reference_bundle import build_style_runtime_kwargs as build_reference_style_runtime_kwargs
 from modules.Conan.style_realization_builder import _resolve_global_summary_runtime
+import modules.Conan.style_conditioning as style_conditioning_module
 from modules.Conan.style_timbre_runtime import _resolve_style_owner_residual
 from modules.Conan.tvt_memory import ContentSynchronousTimbreFuser, expand_anchor_sequence
-from tasks.Conan.dataset import _align_framewise_sample
+from tasks.Conan.dataset import ConanDataset, _align_framewise_sample
 from tasks.Conan.control_schedule import resolve_control_regularization_config
 import tasks.Conan.style_control_mixin as style_control_mixin_module
 import tasks.Conan.mainline_train_prep as mainline_prep
@@ -42,6 +43,8 @@ from tasks.Conan.mainline_train_prep import (
     _check_binary_frame_alignment,
     _check_binary_sidecar_consistency,
     _classify_check_name,
+    _resolve_binary_frame_alignment_scan_limit,
+    _resolve_control_head_final_init_contract,
     _resolve_effective_ddp_backend,
     _resolve_torchaudio_python_range,
     _style_success_supervision_summary,
@@ -59,6 +62,10 @@ import utils.audio.pitch_utils as pitch_utils_legacy
 import utils.audio.vad as vad_utils
 import utils.commons.base_task as base_task_module
 import tasks.tts.vocoder_infer.hifigan as hifigan_module
+try:
+    import tasks.tts.vocoder_infer.hifigan_nsf as hifigan_nsf_module
+except Exception:  # pragma: no cover - optional import remains test-guarded
+    hifigan_nsf_module = None
 from utils.commons.hparams import hparams as global_hparams
 from utils.commons.hparams import set_hparams
 from utils.commons.weight_norm_compat import apply_weight_norm, remove_weight_norm_compat
@@ -137,6 +144,19 @@ class _DummyIdentityTask(ConanStyleControlMixin):
     def __init__(self):
         self.model = _DummyIdentityModel()
         self.speaker_verifier = None
+
+
+class _RecordingWN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.last_nonpadding = None
+
+    def forward(self, x, nonpadding=None, cond=None):
+        if isinstance(nonpadding, torch.Tensor):
+            self.last_nonpadding = nonpadding.detach().clone()
+        else:
+            self.last_nonpadding = nonpadding
+        return x
 
 
 class ConanMainlineTargetedTests(unittest.TestCase):
@@ -243,6 +263,51 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         self.assertEqual(tuple(aligned["uv"].shape), (4,))
         self.assertEqual(tuple(aligned["energy"].shape), (4,))
         self.assertTrue(torch.equal(aligned["mel_nonpadding"], aligned["mel"].abs().sum(-1) > 0))
+        self.assertTrue(aligned["frame_alignment_trimmed"])
+        self.assertEqual(aligned["frame_alignment_trimmed_frames"], 2)
+        self.assertAlmostEqual(aligned["frame_alignment_trimmed_ratio"], 2.0 / 6.0, places=6)
+        self.assertEqual(aligned["frame_alignment_lengths"]["mel"], 5)
+        self.assertEqual(aligned["frame_alignment_lengths"]["energy"], 6)
+
+    def test_align_framewise_sample_rejects_excessive_absolute_trim(self):
+        sample = {
+            "item_name": "trim_guard_abs",
+            "mel": torch.zeros(8, 2),
+            "content": torch.zeros(4, dtype=torch.long),
+            "f0": torch.zeros(8),
+        }
+        with self.assertRaisesRegex(ValueError, "dataset_max_frame_trim=2"):
+            _align_framewise_sample(sample, max_trim_frames=2)
+
+    def test_align_framewise_sample_rejects_excessive_ratio_trim(self):
+        sample = {
+            "item_name": "trim_guard_ratio",
+            "mel": torch.zeros(10, 2),
+            "content": torch.zeros(6, dtype=torch.long),
+            "uv": torch.zeros(10),
+        }
+        with self.assertRaisesRegex(ValueError, "dataset_max_frame_trim_ratio=0.200"):
+            _align_framewise_sample(sample, max_trim_ratio=0.2)
+
+    def test_conan_dataset_warn_on_frame_trim_emits_capped_warning(self):
+        dataset = ConanDataset.__new__(ConanDataset)
+        dataset.dataset_warn_on_frame_trim = True
+        dataset.dataset_warn_on_frame_trim_max_events = 1
+        dataset._frame_trim_warned_events = 0
+        sample = {
+            "item_name": "warn_trim_demo",
+            "frame_alignment_trimmed": True,
+            "frame_alignment_trimmed_frames": 3,
+            "frame_alignment_trimmed_ratio": 0.25,
+            "frame_alignment_lengths": {"mel": 12, "content": 9},
+        }
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            dataset._maybe_warn_about_frame_trim(sample)
+            dataset._maybe_warn_about_frame_trim(sample)
+        self.assertEqual(len(caught), 1)
+        self.assertIn("warn_trim_demo", str(caught[0].message))
+        self.assertEqual(dataset._frame_trim_warned_events, 1)
 
     def test_weight_norm_compat_applies_and_removes_without_futurewarning(self):
         conv = nn.Conv1d(4, 4, 3)
@@ -270,6 +335,31 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             )
         self.assertTrue(summary["code_contract_ready"])
         self.assertFalse(summary["train_ready_now"])
+
+    def test_run_prep_summary_surfaces_binary_alignment_scan_mode(self):
+        with TemporaryDirectory() as tmpdir:
+            sampled = run_prep(
+                SimpleNamespace(
+                    config="egs/conan_emformer.yaml",
+                    binary_data_dir=None,
+                    output_path=f"{tmpdir}/prep_sampled.json",
+                    full_binary_scan=False,
+                    binary_scan_items=32,
+                )
+            )
+            full = run_prep(
+                SimpleNamespace(
+                    config="egs/conan_emformer.yaml",
+                    binary_data_dir=None,
+                    output_path=f"{tmpdir}/prep_full.json",
+                    full_binary_scan=True,
+                    binary_scan_items=32,
+                )
+            )
+        self.assertEqual(sampled["binary_frame_alignment_scan_mode"], "sampled")
+        self.assertEqual(sampled["binary_frame_alignment_scan_limit"], 32)
+        self.assertEqual(full["binary_frame_alignment_scan_mode"], "full")
+        self.assertIsNone(full["binary_frame_alignment_scan_limit"])
 
     def test_numpy_pickle_compat_aliases_no_longer_trigger_numpy_core_deprecation(self):
         with warnings.catch_warnings(record=True) as caught:
@@ -1021,6 +1111,54 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(perplexity_train))
         self.assertEqual(int(vq.data_initialized.item()), 1)
 
+    def test_vq_embedding_ema_reduces_codebook_updates_across_distributed_ranks(self):
+        vq = VQEmbeddingEMA(n_embeddings=2, embedding_dim=2, decay=0.0)
+        vq.train()
+        vq.data_initialized.fill_(1)
+        vq.embedding.copy_(torch.tensor([[0.0, 0.0], [10.0, 10.0]], dtype=torch.float32))
+        vq.ema_weight.zero_()
+        vq.ema_count.zero_()
+        x = torch.zeros((1, 2, 2), dtype=torch.float32)
+        reduce_calls = []
+
+        def _fake_all_reduce(tensor, *args, **kwargs):
+            reduce_calls.append(tuple(tensor.shape))
+            tensor.mul_(2)
+
+        with patch("modules.Conan.prosody_util.dist.is_available", return_value=True), \
+             patch("modules.Conan.prosody_util.dist.is_initialized", return_value=True), \
+             patch("modules.Conan.prosody_util.dist.get_world_size", return_value=2), \
+             patch("modules.Conan.prosody_util.dist.all_reduce", side_effect=_fake_all_reduce):
+            quantized, loss, indices, perplexity = vq(x)
+
+        self.assertEqual(tuple(quantized.shape), tuple(x.shape))
+        self.assertEqual(tuple(indices.shape), (1, 2))
+        self.assertTrue(torch.equal(indices, torch.zeros((1, 2), dtype=torch.long)))
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(torch.isfinite(perplexity))
+        self.assertGreaterEqual(len(reduce_calls), 4)
+        self.assertAlmostEqual(float(vq.ema_count.sum()), 4.0, places=4)
+        self.assertGreater(float(vq.ema_count[0]), 3.999)
+
+    def test_local_reference_adaptors_only_mask_frames_when_all_mel_bins_are_padding(self):
+        ref_mels = torch.zeros((1, 2, 80), dtype=torch.float32)
+        ref_mels[0, 0, 0] = 0.0
+        ref_mels[0, 0, 1] = 1.0
+
+        style_adaptor = LocalStyleAdaptor(hidden_size=8, num_vq_codes=4, padding_idx=0)
+        style_adaptor.wavenet = _RecordingWN()
+        _ = style_adaptor(ref_mels, no_vq=True)
+        self.assertIsNotNone(style_adaptor.wavenet.last_nonpadding)
+        self.assertTrue(bool(style_adaptor.wavenet.last_nonpadding[0, :, 0].all().item()))
+        self.assertFalse(bool(style_adaptor.wavenet.last_nonpadding[0, :, 1].any().item()))
+
+        timbre_adaptor = LocalTimbreAdaptor(hidden_size=8, num_vq_codes=4, padding_idx=0, use_vq=False)
+        timbre_adaptor.wavenet = _RecordingWN()
+        _ = timbre_adaptor(ref_mels)
+        self.assertIsNotNone(timbre_adaptor.wavenet.last_nonpadding)
+        self.assertTrue(bool(timbre_adaptor.wavenet.last_nonpadding[0, :, 0].all().item()))
+        self.assertFalse(bool(timbre_adaptor.wavenet.last_nonpadding[0, :, 1].any().item()))
+
     def test_binary_frame_alignment_check_detects_misaligned_binary_item(self):
         with TemporaryDirectory() as tmpdir:
             ds_path = f"{tmpdir}/train"
@@ -1252,6 +1390,8 @@ class ConanMainlineTargetedTests(unittest.TestCase):
     def test_hifigan_wrapper_accepts_tensor_mel_input(self):
         vocoder = hifigan_module.HifiGAN.__new__(hifigan_module.HifiGAN)
         vocoder.device = torch.device("cpu")
+        vocoder.local_hparams = {"profile_infer": False, "audio_num_mel_bins": 80}
+        vocoder.config = {"audio_num_mel_bins": 80}
         captured = {}
 
         class _FakeModel:
@@ -1260,10 +1400,150 @@ class ConanMainlineTargetedTests(unittest.TestCase):
                 return torch.ones((1, 1, c.shape[-1]), dtype=torch.float32)
 
         vocoder.model = _FakeModel()
-        with patch.dict(hifigan_module.hparams, {"profile_infer": False, "audio_num_mel_bins": 80}, clear=False):
+        with patch.dict(hifigan_module.hparams, {}, clear=True):
             wav = vocoder.spec2wav(torch.zeros(4, 80))
         self.assertEqual(captured["shape"], (1, 80, 4))
         self.assertEqual(tuple(wav.shape), (4,))
+
+    def test_hifigan_constructor_accepts_runtime_hparams_without_global_bridge(self):
+        class _FakeGenerator:
+            def __init__(self):
+                self.eval_called = False
+                self.to_device = None
+
+            def to(self, device):
+                self.to_device = device
+                return self
+
+            def eval(self):
+                self.eval_called = True
+                return self
+
+        fake_model = _FakeGenerator()
+        runtime_hparams = {
+            "vocoder_ckpt": "dummy_ckpt_dir",
+            "profile_infer": True,
+            "audio_num_mel_bins": 64,
+        }
+        with patch.dict(global_hparams, {}, clear=True), \
+             patch.object(hifigan_module, "set_hparams", return_value={"audio_num_mel_bins": 80}) as set_hp_mock, \
+             patch.object(hifigan_module, "HifiGanGenerator", return_value=fake_model) as generator_mock, \
+             patch.object(hifigan_module, "load_ckpt") as load_ckpt_mock:
+            vocoder = hifigan_module.HifiGAN(runtime_hparams=runtime_hparams)
+        self.assertIs(vocoder.model, fake_model)
+        self.assertEqual(vocoder.local_hparams["audio_num_mel_bins"], 64)
+        self.assertTrue(vocoder._hp("profile_infer", False))
+        set_hp_mock.assert_called_once_with("dummy_ckpt_dir/config.yaml", global_hparams=False)
+        generator_mock.assert_called_once()
+        load_ckpt_mock.assert_called_once_with(fake_model, "dummy_ckpt_dir", "model_gen")
+        self.assertTrue(fake_model.eval_called)
+        self.assertIsNotNone(fake_model.to_device)
+
+    def test_hifigan_nsf_runtime_hparams_path_avoids_global_hparams_reads(self):
+        if hifigan_nsf_module is None:
+            self.skipTest("HifiGAN_NSF optional module unavailable in this environment.")
+        captured = {}
+
+        class _FakeNSFModel:
+            def __call__(self, c, f0=None):
+                captured["shape"] = tuple(c.shape)
+                captured["f0_shape"] = None if f0 is None else tuple(f0.shape)
+                return torch.ones((1, 1, c.shape[-1]), dtype=torch.float32)
+
+        with TemporaryDirectory() as tmpdir:
+            base_dir = Path(tmpdir).as_posix()
+            Path(tmpdir, "config.yaml").write_text("stub: true\n", encoding="utf-8")
+            runtime_hparams = {
+                "vocoder_ckpt": base_dir,
+                "audio_num_mel_bins": 96,
+                "use_nsf": True,
+                "vocoder_denoise_c": 0.2,
+                "fft_size": 2048,
+                "hop_size": 320,
+                "win_size": 1280,
+                "vocoder_left_context_frames": 12,
+            }
+            def _record_denoise(wav, **kwargs):
+                captured["denoise_kwargs"] = kwargs
+                return wav
+
+            with patch.dict(global_hparams, {}, clear=True), \
+                 patch.object(hifigan_nsf_module.glob, "glob", return_value=[f"{base_dir}/model_ckpt_steps_1.ckpt"]), \
+                 patch.object(
+                     hifigan_nsf_module,
+                     "load_model",
+                     return_value=(_FakeNSFModel(), {"audio_num_mel_bins": 80}, torch.device("cpu")),
+                 ), \
+                 patch.object(hifigan_nsf_module, "denoise", side_effect=_record_denoise):
+                vocoder = hifigan_nsf_module.HifiGAN(runtime_hparams=runtime_hparams)
+                wav = vocoder.spec2wav(torch.zeros(4, 96), f0=torch.ones(4))
+        self.assertEqual(vocoder.stream_context, 12)
+        self.assertEqual(tuple(vocoder.mel_buffer.shape), (12, 96))
+        self.assertEqual(captured["shape"], (1, 96, 4))
+        self.assertEqual(captured["f0_shape"], (1, 4))
+        self.assertEqual(captured["denoise_kwargs"]["fft_size"], 2048)
+        self.assertEqual(captured["denoise_kwargs"]["hop_size"], 320)
+        self.assertEqual(captured["denoise_kwargs"]["win_size"], 1280)
+        self.assertEqual(captured["denoise_kwargs"]["v"], 0.2)
+        self.assertEqual(tuple(wav.shape), (4,))
+
+    def test_build_vocoder_prefers_runtime_hparams_constructor_when_available(self):
+        engine = inference_conan.StreamingVoiceConversion.__new__(inference_conan.StreamingVoiceConversion)
+        engine.hparams = {"vocoder": "DummyVocoder", "audio_num_mel_bins": 64}
+        engine.legacy_global_hparams_bridge = False
+        captured = {}
+
+        class _DummyVocoder:
+            def __init__(self, runtime_hparams=None):
+                captured["runtime_hparams"] = runtime_hparams
+
+        with patch.object(inference_conan, "get_vocoder_cls", return_value=_DummyVocoder):
+            vocoder = engine._build_vocoder()
+        self.assertIsInstance(vocoder, _DummyVocoder)
+        self.assertIs(captured["runtime_hparams"], engine.hparams)
+
+    def test_build_vocoder_supports_local_hparams_constructor_alias(self):
+        engine = inference_conan.StreamingVoiceConversion.__new__(inference_conan.StreamingVoiceConversion)
+        engine.hparams = {"vocoder": "DummyVocoder", "audio_num_mel_bins": 64}
+        engine.legacy_global_hparams_bridge = False
+        captured = {}
+
+        class _DummyVocoder:
+            def __init__(self, *, local_hparams=None):
+                captured["local_hparams"] = local_hparams
+
+        with patch.object(inference_conan, "get_vocoder_cls", return_value=_DummyVocoder):
+            vocoder = engine._build_vocoder()
+        self.assertIsInstance(vocoder, _DummyVocoder)
+        self.assertIs(captured["local_hparams"], engine.hparams)
+
+    def test_build_vocoder_rejects_bridge_false_without_local_hparams_support(self):
+        engine = inference_conan.StreamingVoiceConversion.__new__(inference_conan.StreamingVoiceConversion)
+        engine.hparams = {"vocoder": "DummyVocoder"}
+        engine.legacy_global_hparams_bridge = False
+
+        class _DummyVocoder:
+            def __init__(self):
+                pass
+
+        with patch.object(inference_conan, "get_vocoder_cls", return_value=_DummyVocoder):
+            with self.assertRaisesRegex(TypeError, "recognized local-hparams constructor kwarg"):
+                engine._build_vocoder()
+
+    def test_vocoder_warm_zero_uses_configured_mel_bins(self):
+        engine = inference_conan.StreamingVoiceConversion.__new__(inference_conan.StreamingVoiceConversion)
+        engine.hparams = {"audio_num_mel_bins": 64}
+        captured = {}
+
+        def _record_warm_mel(mel):
+            captured["shape"] = tuple(mel.shape)
+            return np.zeros(1, dtype=np.float32)
+
+        engine.vocoder = SimpleNamespace(
+            spec2wav=_record_warm_mel
+        )
+        engine._vocoder_warm_zero()
+        self.assertEqual(captured["shape"], (4, 64))
 
     def test_librosa_wav2spec_reuses_cached_mel_basis(self):
         audio_utils._get_mel_basis.cache_clear()
@@ -1314,6 +1594,40 @@ class ConanMainlineTargetedTests(unittest.TestCase):
              patch.object(mainline_prep.torch.distributed, "is_nccl_available", return_value=True):
             self.assertEqual(_resolve_effective_ddp_backend("auto"), "nccl")
 
+    def test_binary_frame_alignment_scan_limit_helper_supports_full_scan(self):
+        self.assertEqual(
+            _resolve_binary_frame_alignment_scan_limit(
+                SimpleNamespace(full_binary_scan=False, binary_scan_items=32)
+            ),
+            32,
+        )
+        self.assertIsNone(
+            _resolve_binary_frame_alignment_scan_limit(
+                SimpleNamespace(full_binary_scan=True, binary_scan_items=32)
+            )
+        )
+        self.assertIsNone(
+            _resolve_binary_frame_alignment_scan_limit(
+                SimpleNamespace(full_binary_scan=False, binary_scan_items=0)
+            )
+        )
+
+    def test_control_head_final_init_contract_uses_shared_default_and_preserves_positive_contract(self):
+        original_hparams = dict(mainline_prep.hparams)
+        try:
+            mainline_prep.hparams.clear()
+            mainline_prep.hparams.update({"control_head_final_init_std": 1.0e-3})
+            resolved = _resolve_control_head_final_init_contract()
+            self.assertEqual(resolved["control_head_final_init_std"], 1.0e-3)
+            self.assertEqual(resolved["style_router_final_init_std"], 1.0e-3)
+            self.assertEqual(resolved["style_to_pitch_residual_final_init_std"], 1.0e-3)
+            self.assertGreater(resolved["decoder_style_adapter_gate_final_init_std"], 0.0)
+            self.assertGreater(resolved["tv_timbre_gate_final_init_std"], 0.0)
+            self.assertGreater(resolved["dynamic_timbre_material_router_final_init_std"], 0.0)
+        finally:
+            mainline_prep.hparams.clear()
+            mainline_prep.hparams.update(original_hparams)
+
     def test_streaming_voice_conversion_can_disable_legacy_global_hparams_bridge(self):
         fake_vocoder = SimpleNamespace(supports_native_streaming=lambda: False)
         with patch.object(inference_conan, "resolve_vocoder_left_context_frames", return_value=(0, "unit_test")), \
@@ -1335,6 +1649,76 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             )
             self.assertFalse(engine.legacy_global_hparams_bridge)
             self.assertEqual(dict(global_hparams), {"sentinel": 1})
+
+    def test_streaming_voice_conversion_defaults_bridge_off_for_builtin_vocoder(self):
+        fake_vocoder = SimpleNamespace(supports_native_streaming=lambda: False)
+        with patch.object(inference_conan, "resolve_vocoder_left_context_frames", return_value=(0, "unit_test")), \
+             patch.object(inference_conan, "resolve_streaming_layout", return_value={"chunk_frames": 4}), \
+             patch.object(inference_conan, "build_streaming_latency_report", return_value={"first_packet_algorithmic_latency_ms": 0.0}), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_validate_runtime_layout"), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_load_condition_maps", return_value={}), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_build_model", return_value=object()), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_build_vocoder", return_value=fake_vocoder), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_build_emformer", return_value=object()), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_vocoder_warm_zero"), \
+             patch.object(inference_conan.torch.cuda, "is_available", return_value=False), \
+             patch.dict(global_hparams, {"sentinel": 1}, clear=True):
+            engine = inference_conan.StreamingVoiceConversion(
+                {
+                    "vocoder": "HifiGAN",
+                    "reference_mel_cache_max_entries": 2,
+                }
+            )
+            self.assertFalse(engine.legacy_global_hparams_bridge)
+            self.assertEqual(dict(global_hparams), {"sentinel": 1})
+
+    def test_streaming_voice_conversion_builds_builtin_hifigan_without_global_bridge(self):
+        class _FakeGenerator:
+            def __init__(self):
+                self.eval_called = False
+                self.to_device = None
+
+            def to(self, device):
+                self.to_device = device
+                return self
+
+            def eval(self):
+                self.eval_called = True
+                return self
+
+        fake_model = _FakeGenerator()
+        captured = {}
+        with patch.object(inference_conan, "resolve_vocoder_left_context_frames", return_value=(0, "unit_test")), \
+             patch.object(inference_conan, "resolve_streaming_layout", return_value={"chunk_frames": 4}), \
+             patch.object(inference_conan, "build_streaming_latency_report", return_value={"first_packet_algorithmic_latency_ms": 0.0}), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_validate_runtime_layout"), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_load_condition_maps", return_value={}), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_build_model", return_value=object()), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_build_emformer", return_value=object()), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_vocoder_warm_zero"), \
+             patch.object(inference_conan.torch.cuda, "is_available", return_value=False), \
+             patch.dict(global_hparams, {"sentinel": 1}, clear=True), \
+             patch.object(hifigan_module, "set_hparams", return_value={"audio_num_mel_bins": 80}) as set_hp_mock, \
+             patch.object(hifigan_module, "HifiGanGenerator", return_value=fake_model) as generator_mock, \
+             patch.object(hifigan_module, "load_ckpt") as load_ckpt_mock:
+            engine = inference_conan.StreamingVoiceConversion(
+                {
+                    "vocoder": "HifiGAN",
+                    "vocoder_ckpt": "dummy_ckpt_dir",
+                    "work_dir": "dummy_work_dir",
+                    "emformer_ckpt": "dummy_emformer_ckpt",
+                }
+            )
+            captured["global_hparams"] = dict(global_hparams)
+        self.assertFalse(engine.legacy_global_hparams_bridge)
+        self.assertIsInstance(engine.vocoder, hifigan_module.HifiGAN)
+        self.assertEqual(engine.vocoder.local_hparams["vocoder_ckpt"], "dummy_ckpt_dir")
+        self.assertEqual(captured["global_hparams"], {"sentinel": 1})
+        set_hp_mock.assert_called_once_with("dummy_ckpt_dir/config.yaml", global_hparams=False)
+        generator_mock.assert_called_once()
+        load_ckpt_mock.assert_called_once_with(fake_model, "dummy_ckpt_dir", "model_gen")
+        self.assertTrue(fake_model.eval_called)
+        self.assertIsNotNone(fake_model.to_device)
 
     def test_request_helper_allows_budget_research_knobs_on_advanced_surface(self):
         request, ignored = build_mainline_request_input(
@@ -1548,6 +1932,67 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         expected = 0.5 * global_style_summary + 0.5 * expected_trace_summary
         self.assertTrue(torch.allclose(summary, expected))
         self.assertEqual(source, "style_trace_blended_with_reference")
+
+    def test_prepare_reference_cache_defaults_style_summary_fallback_to_disabled(self):
+        class _DummyConditioning(style_conditioning_module.ConanStyleConditioningMixin):
+            def __init__(self, hp=None):
+                self.hparams = dict(hp or {})
+                self.prosody_extractor = None
+                self.local_timbre_extractor = None
+
+            def encode_spk_embed(self, ref_timbre):
+                batch = ref_timbre.size(0)
+                hidden = 4
+                return torch.ones((batch, hidden, 1), dtype=ref_timbre.dtype, device=ref_timbre.device)
+
+            def _normalize_style_embed(self, value):
+                return value
+
+            def _encode_reference_prompt(self, *args, **kwargs):
+                return None
+
+            def _encode_global_style_summary(self, ref):
+                return None
+
+            def _resolve_global_style_summary_from_cache(self, cache):
+                return None, None
+
+        model = _DummyConditioning()
+        with self.assertRaisesRegex(ValueError, "fallback to global timbre anchor is disabled"):
+            model.prepare_reference_cache(
+                reference_bundle={"ref": torch.zeros((1, 2, 80), dtype=torch.float32)}
+            )
+
+    def test_prepare_reference_cache_can_explicitly_allow_timbre_fallback(self):
+        class _DummyConditioning(style_conditioning_module.ConanStyleConditioningMixin):
+            def __init__(self, hp=None):
+                self.hparams = dict(hp or {})
+                self.prosody_extractor = None
+                self.local_timbre_extractor = None
+
+            def encode_spk_embed(self, ref_timbre):
+                batch = ref_timbre.size(0)
+                hidden = 4
+                return torch.ones((batch, hidden, 1), dtype=ref_timbre.dtype, device=ref_timbre.device)
+
+            def _normalize_style_embed(self, value):
+                return value
+
+            def _encode_reference_prompt(self, *args, **kwargs):
+                return None
+
+            def _encode_global_style_summary(self, ref):
+                return None
+
+            def _resolve_global_style_summary_from_cache(self, cache):
+                return None, None
+
+        model = _DummyConditioning({"global_style_summary_fallback_to_timbre": True})
+        cache = model.prepare_reference_cache(
+            reference_bundle={"ref": torch.zeros((1, 2, 80), dtype=torch.float32)}
+        )
+        self.assertEqual(cache["global_style_summary_source"], "fallback_timbre_anchor")
+        self.assertTrue(cache["global_style_summary_is_fallback"])
 
     def test_expand_anchor_sequence_rejects_incompatible_length(self):
         anchor = torch.zeros((2, 3, 4), dtype=torch.float32)

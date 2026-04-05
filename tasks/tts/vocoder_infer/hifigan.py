@@ -10,8 +10,13 @@ total_time = 0
 
 @register_vocoder('HifiGAN')
 class HifiGAN(BaseVocoder):
-    def __init__(self):
-        base_dir = hparams['vocoder_ckpt']
+    def __init__(self, runtime_hparams=None, *, local_hparams=None, hparams_override=None):
+        super().__init__(
+            runtime_hparams=runtime_hparams,
+            local_hparams=local_hparams,
+            hparams_override=hparams_override,
+        )
+        base_dir = self._hp('vocoder_ckpt', required=True)
         config_path = f'{base_dir}/config.yaml'
         self.config = config = set_hparams(config_path, global_hparams=False)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,8 +39,12 @@ class HifiGAN(BaseVocoder):
     def spec2wav(self, mel, **kwargs):
         device = self.device
         with torch.no_grad():
-            c = self._ensure_mel_tensor(mel, device)
-            with Timer('hifigan', enable=hparams['profile_infer']):
+            c = self._ensure_mel_tensor(
+                mel,
+                device,
+                num_mels=int(self._hp('audio_num_mel_bins', self.config.get('audio_num_mel_bins', 80))),
+            )
+            with Timer('hifigan', enable=bool(self._hp('profile_infer', False))):
                 y = self.model(c).view(-1)
         wav_out = y.cpu().numpy()
         return wav_out

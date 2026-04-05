@@ -137,6 +137,55 @@ class DataPipelineRegressionTests(unittest.TestCase):
                 11,
             )
 
+    def test_split_train_test_fallback_groups_by_resolved_speaker_id_for_nested_paths(self):
+        original_hparams = dict(hparams)
+        try:
+            hparams.clear()
+            hparams.update(
+                {
+                    "processed_data_dir": ".",
+                    "binary_data_dir": ".",
+                    "binarization_args": {
+                        "shuffle": False,
+                        "train_range": [0, -1],
+                        "valid_range": [0, 0],
+                        "test_range": [0, 0],
+                    },
+                    "valid_prefixes": [],
+                    "test_prefixes": [],
+                    "fallback_valid_items_per_speaker": 1,
+                    "fallback_test_items_per_speaker": 1,
+                }
+            )
+            with TemporaryDirectory() as tmpdir:
+                VCBinarizer._spker_map_cache = None
+                VCBinarizer._spker_map_cache_key = None
+                with open(os.path.join(tmpdir, "spker_set.json"), "w", encoding="utf-8") as handle:
+                    json.dump({"p225": 11, "p226": 12}, handle)
+
+                binarizer = VCBinarizer(processed_data_dir=tmpdir)
+                item_names = [
+                    "vctk/p225/session1/001.wav",
+                    "vctk/p225/session1/002.wav",
+                    "vctk/p225/session1/003.wav",
+                    "vctk/p226/session1/001.wav",
+                    "vctk/p226/session1/002.wav",
+                    "vctk/p226/session1/003.wav",
+                ]
+
+                train_item_names, test_item_names, valid_item_names = binarizer.split_train_test_set(item_names)
+
+                self.assertEqual(len(train_item_names), 2)
+                self.assertEqual(len(test_item_names), 2)
+                self.assertEqual(len(valid_item_names), 2)
+                self.assertTrue(any("p225" in name for name in test_item_names))
+                self.assertTrue(any("p226" in name for name in test_item_names))
+                self.assertTrue(any("p225" in name for name in valid_item_names))
+                self.assertTrue(any("p226" in name for name in valid_item_names))
+        finally:
+            hparams.clear()
+            hparams.update(original_hparams)
+
     def test_base_speech_dataset_reuses_ref_timbre_alias_in_collate(self):
         original_hparams = dict(hparams)
         original_random_state = random.getstate()

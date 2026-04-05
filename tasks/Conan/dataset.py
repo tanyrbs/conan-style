@@ -1,13 +1,19 @@
 from tasks.tts.dataset_utils import FastSpeechDataset
 import torch
 import math
+import warnings
 from modules.Conan.reference_bundle import canonicalize_reference_bundle, normalize_reference_contract_mode
 from modules.Conan.style_mainline import sanitize_mainline_style_strength
 from modules.Conan.style_profiles import resolve_style_profile
 from utils.commons.dataset_utils import collate_1d_or_2d
 
 
-def _align_framewise_sample(sample):
+def _align_framewise_sample(
+    sample,
+    *,
+    max_trim_frames=None,
+    max_trim_ratio=None,
+):
     if not isinstance(sample, dict):
         return sample
     mel = sample.get("mel")
@@ -31,11 +37,30 @@ def _align_framewise_sample(sample):
             f"ConanDataset item '{item_name}' resolved a non-positive aligned frame length: {frame_lengths}"
         )
 
+    max_length = max(frame_lengths.values())
+    trimmed_frames = int(max_length - common_length)
+    trim_ratio = float(trimmed_frames) / float(max_length) if max_length > 0 else 0.0
+    item_name = sample.get("item_name", "<unknown>")
+    if max_trim_frames is not None and trimmed_frames > int(max_trim_frames):
+        raise ValueError(
+            f"ConanDataset item '{item_name}' would trim {trimmed_frames} frame(s), exceeding "
+            f"dataset_max_frame_trim={int(max_trim_frames)}. frame_lengths={frame_lengths}"
+        )
+    if max_trim_ratio is not None and trim_ratio > float(max_trim_ratio):
+        raise ValueError(
+            f"ConanDataset item '{item_name}' would trim {trim_ratio:.3f} of frames, exceeding "
+            f"dataset_max_frame_trim_ratio={float(max_trim_ratio):.3f}. frame_lengths={frame_lengths}"
+        )
+
     for key in ("mel", "content", "mel_nonpadding", "f0", "uv", "energy"):
         value = sample.get(key)
         if isinstance(value, torch.Tensor) and value.dim() > 0:
             sample[key] = value[:common_length]
     sample["mel_nonpadding"] = sample["mel"].abs().sum(-1) > 0
+    sample["frame_alignment_trimmed"] = bool(trimmed_frames > 0)
+    sample["frame_alignment_trimmed_frames"] = int(trimmed_frames)
+    sample["frame_alignment_trimmed_ratio"] = float(trim_ratio)
+    sample["frame_alignment_lengths"] = dict(frame_lengths)
     return sample
 
 
@@ -77,6 +102,14 @@ class ConanDataset(FastSpeechDataset):
         self.allow_item_style_strength_override = bool(
             self.hparams.get("allow_item_style_strength_override", False)
         )
+        self.dataset_warn_on_frame_trim = bool(
+            self.hparams.get("dataset_warn_on_frame_trim", False)
+        )
+        self.dataset_warn_on_frame_trim_max_events = max(
+            0,
+            int(self.hparams.get("dataset_warn_on_frame_trim_max_events", 8)),
+        )
+        self._frame_trim_warned_events = 0
 
     def _resolve_item_style_strength(self, item):
         style_strength_value = self.default_style_strength
@@ -108,7 +141,30 @@ class ConanDataset(FastSpeechDataset):
         )
         sample["emotion_strength"] = _scalar_float(item.get("emotion_strength", 1.0), default=1.0)
         sample["accent_strength"] = _scalar_float(item.get("accent_strength", 1.0), default=1.0)
-        return _align_framewise_sample(sample)
+        aligned = _align_framewise_sample(
+            sample,
+            max_trim_frames=self.hparams.get("dataset_max_frame_trim", None),
+            max_trim_ratio=self.hparams.get("dataset_max_frame_trim_ratio", None),
+        )
+        self._maybe_warn_about_frame_trim(aligned)
+        return aligned
+
+    def _maybe_warn_about_frame_trim(self, sample):
+        if not self.dataset_warn_on_frame_trim:
+            return
+        if not bool(sample.get("frame_alignment_trimmed", False)):
+            return
+        if self._frame_trim_warned_events >= self.dataset_warn_on_frame_trim_max_events:
+            return
+        self._frame_trim_warned_events += 1
+        warnings.warn(
+            "ConanDataset trimmed misaligned framewise features for "
+            f"item '{sample.get('item_name', '<unknown>')}' by "
+            f"{int(sample.get('frame_alignment_trimmed_frames', 0))} frame(s) "
+            f"({float(sample.get('frame_alignment_trimmed_ratio', 0.0)):.3f}). "
+            f"frame_lengths={sample.get('frame_alignment_lengths', {})}",
+            stacklevel=2,
+        )
 
     def collater(self, samples):
         if len(samples) == 0:

@@ -268,6 +268,17 @@ def parse_args():
         type=str,
         default="smoke_runs/mainline_train_prep.json",
     )
+    parser.add_argument(
+        "--binary_scan_items",
+        type=int,
+        default=64,
+        help="How many items per split to sample for binary frame-alignment checks. Use <=0 for full scan.",
+    )
+    parser.add_argument(
+        "--full_binary_scan",
+        action="store_true",
+        help="Exhaustively scan every item in train/valid/test for frame-alignment mismatches before training.",
+    )
     return parser.parse_args()
 
 
@@ -363,12 +374,27 @@ def _frame_length(value):
 
 def _sample_check_indices(num_items, max_items=64):
     num_items = int(num_items)
-    max_items = max(1, int(max_items))
     if num_items <= 0:
         return np.asarray([], dtype=np.int64)
+    if max_items is None:
+        return np.arange(num_items, dtype=np.int64)
+    max_items = max(1, int(max_items))
     if num_items <= max_items:
         return np.arange(num_items, dtype=np.int64)
     return np.unique(np.linspace(0, num_items - 1, num=max_items, dtype=np.int64))
+
+
+def _resolve_binary_frame_alignment_scan_limit(args):
+    if bool(getattr(args, "full_binary_scan", False)):
+        return None
+    raw_limit = getattr(args, "binary_scan_items", 64)
+    try:
+        resolved = int(raw_limit)
+    except (TypeError, ValueError):
+        resolved = 64
+    if resolved <= 0:
+        return None
+    return resolved
 
 
 def _check_binary_frame_alignment(checks, binary_data_dir, split, *, max_items=64):
@@ -1269,6 +1295,29 @@ def _build_mainline_train_prep_context(args):
     )
 
 
+def _resolve_control_head_final_init_contract():
+    try:
+        shared = float(hparams.get("control_head_final_init_std", 1.0e-3))
+    except (TypeError, ValueError):
+        shared = 1.0e-3
+    resolved = {}
+    for key in (
+        "control_head_final_init_std",
+        "style_router_final_init_std",
+        "style_to_pitch_residual_final_init_std",
+        "decoder_style_adapter_gate_final_init_std",
+        "tv_timbre_gate_final_init_std",
+        "dynamic_timbre_material_router_final_init_std",
+    ):
+        raw_value = hparams.get(key, shared if key != "control_head_final_init_std" else shared)
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            value = shared
+        resolved[key] = value
+    return resolved
+
+
 def _collect_config_surface_checks(checks, prep_ctx):
     _check_true(
         checks,
@@ -1304,6 +1353,23 @@ def _collect_mainline_decoder_contract_checks(checks, prep_ctx):
     _check_equal(checks, "style_to_pitch_residual_mode", controls.style_to_pitch_residual_mode, "auto")
     _check_equal(checks, "style_trace_mode", controls.style_trace_mode, "dual")
     _check_equal(checks, "style_router_enabled", bool(controls.style_router_enabled), True)
+    control_head_init = _resolve_control_head_final_init_contract()
+    for key, expected in (
+        ("control_head_final_init_std", "> 0 to avoid canonical closed-head dead-start"),
+        ("style_router_final_init_std", "> 0 to keep router upstream gradients alive"),
+        ("style_to_pitch_residual_final_init_std", "> 0 to keep pitch-residual upstream gradients alive"),
+        ("decoder_style_adapter_gate_final_init_std", "> 0 to keep decoder gate upstream gradients alive"),
+        ("tv_timbre_gate_final_init_std", "> 0 to keep timbre-gate upstream gradients alive"),
+        ("dynamic_timbre_material_router_final_init_std", "> 0 to keep TVT material-router upstream gradients alive"),
+    ):
+        value = control_head_init.get(key)
+        _check_true(
+            checks,
+            f"{key}_positive",
+            isinstance(value, (int, float)) and float(value) > 0.0,
+            actual=value,
+            expected=expected,
+        )
     _check_equal(checks, "style_memory_mode", controls.style_memory_mode, "slow")
     _check_equal(checks, "dynamic_timbre_memory_mode", controls.dynamic_timbre_memory_mode, "slow")
     _check_close(checks, "global_style_trace_blend", hparams.get("global_style_trace_blend", 0.0), 0.0)
@@ -1711,10 +1777,11 @@ def _resolve_effective_ddp_backend(ddp_backend):
     return backend
 
 
-def _collect_data_staging_checks(checks, prep_ctx):
+def _collect_data_staging_checks(checks, prep_ctx, args):
     _check_exists(checks, "binary_data_dir_exists", hparams.get("binary_data_dir"))
     _check_exists(checks, "processed_data_dir_exists", hparams.get("processed_data_dir"))
     binary_data_dir = hparams.get("binary_data_dir")
+    binary_scan_limit = _resolve_binary_frame_alignment_scan_limit(args)
     if binary_data_dir:
         for filename in (
             "train.data",
@@ -1745,7 +1812,12 @@ def _collect_data_staging_checks(checks, prep_ctx):
                 os.path.join(str(binary_data_dir), f"{split}_lengths.npy"),
             )
             _check_binary_sidecar_consistency(checks, binary_data_dir, split)
-            _check_binary_frame_alignment(checks, binary_data_dir, split)
+            _check_binary_frame_alignment(
+                checks,
+                binary_data_dir,
+                split,
+                max_items=binary_scan_limit,
+            )
     condition_artifact_dirs = [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")]
     prep_ctx.resolved_condition_maps = _check_condition_artifacts(
         checks,
@@ -2368,6 +2440,10 @@ def _assemble_prep_summary(args, prep_ctx, checks):
             for step in (0, 20000, 50000, 80000, 100000)
         ],
         "dynamic_timbre_boundary_preview": _jsonable(prep_ctx.boundary_preview),
+        "binary_frame_alignment_scan_mode": (
+            "full" if _resolve_binary_frame_alignment_scan_limit(args) is None else "sampled"
+        ),
+        "binary_frame_alignment_scan_limit": _resolve_binary_frame_alignment_scan_limit(args),
         "checks": _jsonable(checks),
         "failed_summary": failed_summary,
         "failed_checks_by_category": _jsonable(failed_summary.get("blocking_categories", {})),
@@ -2389,7 +2465,7 @@ def run_prep(args):
     _collect_config_surface_checks(checks, prep_ctx)
     _collect_mainline_contract_checks(checks, prep_ctx)
     _collect_runtime_dependency_checks(checks, args)
-    _collect_data_staging_checks(checks, prep_ctx)
+    _collect_data_staging_checks(checks, prep_ctx, args)
     _collect_control_preview_checks(checks, prep_ctx)
     _collect_schedule_alignment_checks(checks)
     _collect_loss_and_proxy_guardrail_checks(checks)

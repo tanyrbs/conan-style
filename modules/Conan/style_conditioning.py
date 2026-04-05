@@ -348,7 +348,7 @@ class ConanStyleConditioningMixin:
                 global_style_summary_source = "summary_source_prompt"
         if global_style_summary is None:
             allow_timbre_fallback = bool(
-                self._get_hparam("global_style_summary_fallback_to_timbre", True)
+                self._get_hparam("global_style_summary_fallback_to_timbre", False)
             )
             if allow_timbre_fallback:
                 global_style_summary = global_timbre_anchor

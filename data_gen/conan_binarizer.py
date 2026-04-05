@@ -247,12 +247,21 @@ def _fallback_holdout_by_speaker(
         valid_item_names=None,
         test_item_names=None,
         fallback_valid_items_per_speaker=2,
-        fallback_test_items_per_speaker=2):
+        fallback_test_items_per_speaker=2,
+        speaker_group_resolver=None):
     from collections import defaultdict
 
     per_speaker = defaultdict(list)
     for name in item_names:
-        per_speaker[_item_name_speaker_key(name)].append(name)
+        group_key = None
+        if speaker_group_resolver is not None:
+            try:
+                group_key = speaker_group_resolver(name)
+            except Exception:
+                group_key = None
+        if group_key in (None, ""):
+            group_key = _item_name_speaker_key(name)
+        per_speaker[str(group_key)].append(name)
 
     reserved_valid = set(valid_item_names or [])
     reserved_test = set(test_item_names or [])
@@ -549,12 +558,28 @@ class VCBinarizer(ConanBaseBinarizer):
 
         fallback_needed = len(valid_item_names) <= 0 or len(test_item_names) <= 0
         if fallback_needed:
+            resolved_speaker_map = None
+            try:
+                resolved_speaker_map = self._load_spker_map_from_dirs(
+                    processed_data_dir=self.processed_data_dir,
+                )
+            except Exception:
+                resolved_speaker_map = None
+
+            def _fallback_group_resolver(name):
+                if resolved_speaker_map is not None:
+                    for candidate in _speaker_key_candidates(name):
+                        if candidate in resolved_speaker_map:
+                            return f"spk_id:{int(resolved_speaker_map[candidate])}"
+                return _item_name_speaker_key(name)
+
             valid_item_names, test_item_names = _fallback_holdout_by_speaker(
                 deterministic_item_names,
                 valid_item_names=valid_item_names,
                 test_item_names=test_item_names,
                 fallback_valid_items_per_speaker=hparams.get('fallback_valid_items_per_speaker', 2),
                 fallback_test_items_per_speaker=hparams.get('fallback_test_items_per_speaker', 2),
+                speaker_group_resolver=_fallback_group_resolver,
             )
             log_fn = logging.warning if valid_prefixes or test_prefixes else logging.info
             log_fn(

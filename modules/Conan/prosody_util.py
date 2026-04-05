@@ -1,6 +1,7 @@
 from torch import nn
 import copy
 import torch
+import torch.distributed as dist
 from modules.commons.wavenet import WN
 import math
 
@@ -53,6 +54,14 @@ class VQEmbeddingEMA(nn.Module):
         quantized = quantized.view_as(x)
         return x_flat, quantized, indices
 
+    def _broadcast_initialized_buffers(self):
+        if not (dist.is_available() and dist.is_initialized()):
+            return
+        dist.broadcast(self.embedding, src=0)
+        dist.broadcast(self.ema_count, src=0)
+        dist.broadcast(self.ema_weight, src=0)
+        dist.broadcast(self.data_initialized, src=0)
+
     def forward(self, x):
         """
 
@@ -61,10 +70,16 @@ class VQEmbeddingEMA(nn.Module):
         """
         B, T, _ = x.shape
         M, D = self.embedding.size()
-        if self.training and self.data_initialized.item() == 0:
+        needs_init = bool(self.data_initialized.item() == 0)
+        if needs_init and not self.training:
+            zero = x.new_zeros(())
+            indices = torch.zeros(B, T, device=x.device, dtype=torch.long)
+            return x, zero, indices, zero
+
+        if self.training and needs_init:
             print('| running kmeans in VQVAE')  # data driven initialization for the embeddings
             x_flat = x.detach().reshape(-1, D)
-            rp = torch.randperm(x_flat.size(0))
+            rp = torch.randperm(x_flat.size(0), device=x_flat.device)
             sampled = x_flat[rp]
             if sampled.size(0) <= 0:
                 raise ValueError("VQEmbeddingEMA received empty input during initialization.")
@@ -76,26 +91,26 @@ class VQEmbeddingEMA(nn.Module):
                 if init_embed is None:
                     init_embed = sampled[:self.n_embeddings]
             self.embedding.copy_(init_embed)
-            x_flat, quantized, indices = self.encode(x)
-            encodings = F.one_hot(indices, M).float()
+            x_flat, _, indices = self.encode(x)
+            encodings = F.one_hot(indices, M).to(dtype=x_flat.dtype)
             self.ema_weight.copy_(torch.matmul(encodings.t(), x_flat))
             self.ema_count.copy_(torch.sum(encodings, dim=0))
+            self.data_initialized.fill_(1)
+            self._broadcast_initialized_buffers()
 
         x_flat, quantized, indices = self.encode(x)
-        encodings = F.one_hot(indices, M).float()
+        encodings = F.one_hot(indices, M).to(dtype=x_flat.dtype)
         indices = indices.reshape(B, T)
 
-        if self.training and self.data_initialized.item() != 0:
-            self.ema_count = self.decay * self.ema_count + (1 - self.decay) * torch.sum(encodings, dim=0)
-
-            n = torch.sum(self.ema_count)
-            self.ema_count = (self.ema_count + self.epsilon) / (n + M * self.epsilon) * n
+        if self.training and not needs_init:
+            updated_count = self.decay * self.ema_count + (1 - self.decay) * torch.sum(encodings, dim=0)
+            n = torch.sum(updated_count)
+            updated_count = (updated_count + self.epsilon) / (n + M * self.epsilon) * n
+            self.ema_count.copy_(updated_count)
 
             dw = torch.matmul(encodings.t(), x_flat)
-            self.ema_weight = self.decay * self.ema_weight + (1 - self.decay) * dw
-
-            self.embedding = self.ema_weight / self.ema_count.unsqueeze(-1)
-        self.data_initialized.fill_(1)
+            self.ema_weight.mul_(self.decay).add_(dw, alpha=(1 - self.decay))
+            self.embedding.copy_(self.ema_weight / self.ema_count.unsqueeze(-1).clamp_min(self.epsilon))
 
         e_latent_loss = F.mse_loss(x, quantized.detach(), reduction='none')
         nonpadding = (x.abs().sum(-1) > 0).float()

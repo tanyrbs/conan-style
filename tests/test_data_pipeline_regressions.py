@@ -1,3 +1,4 @@
+import json
 import os
 import pickle
 import unittest
@@ -5,6 +6,7 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
+from data_gen.conan_binarizer import VCBinarizer, _item_name_speaker_key, _match_by_speaker_prefix
 from tasks.tts.dataset_utils import BaseSpeechDataset
 from utils.commons.hparams import hparams
 from utils.commons.indexed_datasets import IndexedDataset, IndexedDatasetBuilder
@@ -88,6 +90,51 @@ class DataPipelineRegressionTests(unittest.TestCase):
         finally:
             hparams.clear()
             hparams.update(original_hparams)
+
+    def test_item_name_speaker_key_prefers_speaker_not_corpus_namespace(self):
+        self.assertEqual(_item_name_speaker_key("libritts/103_1240_000001_000001"), "103")
+        self.assertEqual(_item_name_speaker_key("vctk/p225_001"), "p225")
+        self.assertEqual(_item_name_speaker_key("corpus/p225/p225_001.wav"), "p225")
+        self.assertEqual(_item_name_speaker_key("speaker/0001.wav"), "speaker")
+
+    def test_match_by_speaker_prefix_accepts_namespaced_item_names(self):
+        matched = _match_by_speaker_prefix(
+            [
+                "libritts/103_1240_000001_000001",
+                "vctk/p225_001",
+                "libritts/104_1240_000001_000001",
+            ],
+            ["103", "p225"],
+        )
+        self.assertEqual(
+            matched,
+            [
+                "libritts/103_1240_000001_000001",
+                "vctk/p225_001",
+            ],
+        )
+
+    def test_resolve_speaker_id_accepts_namespaced_item_names(self):
+        with TemporaryDirectory() as tmpdir:
+            VCBinarizer._spker_map_cache = None
+            VCBinarizer._spker_map_cache_key = None
+            with open(os.path.join(tmpdir, "spker_set.json"), "w", encoding="utf-8") as handle:
+                json.dump({"103": 7, "p225": 11}, handle)
+
+            self.assertEqual(
+                VCBinarizer._resolve_speaker_id(
+                    "libritts/103_1240_000001_000001",
+                    ctx={"processed_data_dir": tmpdir},
+                ),
+                7,
+            )
+            self.assertEqual(
+                VCBinarizer._resolve_speaker_id(
+                    "vctk/p225_001",
+                    ctx={"processed_data_dir": tmpdir},
+                ),
+                11,
+            )
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ Training / inference stay locked to:
 - `decoder_style_condition_mode: mainline_full`
 - `style_trace_mode: dual`
 - `style_router_enabled: true`
+- `control_head_final_init_std: 1.0e-03` keeps canonical router/gate/residual heads nearly closed without hard-zeroing upstream gradients
 - `style_strength` stays inside the shipped mainline range `0.50 .. 1.80`
 - `allow_item_style_strength_override: false`, so training batches keep the resolved profile strength unless you explicitly opt into a research override
 - `dynamic_timbre_strength` is derived from `style_strength` on the canonical path, so these are partially coupled controls rather than fully independent free variables
@@ -59,6 +60,16 @@ This gates:
 - the bounded style-to-pitch residual range
 
 Inference always uses the fully opened ceiling.
+
+Canonical mainline also now initializes the final linear layers of the main control heads as **nearly closed** rather than exactly zero:
+
+- `style_router`
+- `style_to_pitch_residual_head`
+- decoder style-adapter gates
+- `timbre_gate`
+- TVT `material_router`
+
+The point is not to "open the branches early", but to avoid a silent two-stage optimization failure mode where only the last scalar layer learns first and upstream control features receive no gradient until much later. Setting `control_head_final_init_std: 1e-3` preserves a conservative starting behavior while allowing end-to-end training signal from the first curriculum-open step. For exact backward-compatible ablations, setting that std back to `0.0` still reproduces the old hard-zero behavior.
 
 Canonical control regularization keeps five nonzero-configured losses on the shipped path.
 Their effective strengths still follow the schedule, so this is the configured loss surface once the schedule opens, not a claim that all five are fully active from step 0:
@@ -152,6 +163,7 @@ Expected result:
 
 If your local checkout still has dependency pin drift or missing staged artifacts, the honest result is `MAINLINE_TRAIN_PREP_NOT_READY`; in that case, read the JSON summary fields `code_contract_ready` vs `ready` / `train_ready_now` rather than inferring readiness from this document alone.
 That summary is now split more explicitly into `code_contract_ready`, `environment_ready`, `data_ready`, and `data_dependent_preview_ready`, with `failed_checks_by_category` exposing which class of issue is still blocking the current checkout.
+Local constructor smoke checks such as `runtime_local_modules_Conan_Conan_init` are now intentionally classified as `runtime_dependencies`, so missing optional/runtime requirements do not get misreported as mainline code-contract failures.
 
 This prep gate now also checks that style-profile defaults really control mainline runtime strengths instead of silently falling back to neutral values.
 When the environment is incomplete, the JSON summary now separates `code_contract_ready` from the stricter `ready` / `train_ready_now` flags so mainline code-contract failures are not conflated with missing staged data or missing runtime libraries.

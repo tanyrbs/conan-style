@@ -32,10 +32,16 @@ from modules.Conan.reference_bundle import build_style_runtime_kwargs as build_r
 from modules.Conan.style_realization_builder import _resolve_global_summary_runtime
 from modules.Conan.style_timbre_runtime import _resolve_style_owner_residual
 from modules.Conan.tvt_memory import ContentSynchronousTimbreFuser, expand_anchor_sequence
+from tasks.Conan.dataset import _align_framewise_sample
+from tasks.Conan.control_schedule import resolve_control_regularization_config
+import tasks.Conan.style_control_mixin as style_control_mixin_module
 import tasks.Conan.mainline_train_prep as mainline_prep
 from tasks.Conan.control_losses import add_style_timbre_regularization_losses
+from tasks.Conan.style_control_mixin import ConanStyleControlMixin
 from tasks.Conan.mainline_train_prep import (
+    _check_binary_frame_alignment,
     _check_binary_sidecar_consistency,
+    _classify_check_name,
     _resolve_effective_ddp_backend,
     _resolve_torchaudio_python_range,
     _style_success_supervision_summary,
@@ -53,6 +59,7 @@ import utils.audio.pitch_utils as pitch_utils_legacy
 import utils.audio.vad as vad_utils
 import utils.commons.base_task as base_task_module
 from utils.commons.hparams import hparams as global_hparams
+from utils.commons.hparams import set_hparams
 from utils.commons.weight_norm_compat import apply_weight_norm, remove_weight_norm_compat
 import utils.commons.trainer as trainer_module
 from utils.commons.trainer import Trainer
@@ -102,7 +109,82 @@ class _DummyStyleRuntimeModel:
         return value
 
 
+class _RecordingIdentityModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = nn.Conv1d(80, 80, kernel_size=1)
+        self.training_states_seen = []
+
+    def forward(self, x):
+        self.training_states_seen.append(bool(self.training))
+        return self.proj(x)
+
+
+class _DummyIdentityModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.global_conv_in = _RecordingIdentityModule()
+        self.global_encoder = _RecordingIdentityModule()
+
+    def encode_spk_embed(self, x):
+        x = self.global_conv_in(x)
+        x = self.global_encoder(x)
+        return x.mean(dim=-1, keepdim=True)
+
+
+class _DummyIdentityTask(ConanStyleControlMixin):
+    def __init__(self):
+        self.model = _DummyIdentityModel()
+        self.speaker_verifier = None
+
+
 class ConanMainlineTargetedTests(unittest.TestCase):
+    @staticmethod
+    def _make_synthetic_mainline_batch(batch_size=2, steps=8, content_padding_idx=101):
+        content = torch.randint(0, max(1, content_padding_idx), (batch_size, steps))
+        mels = torch.randn(batch_size, steps, 80, dtype=torch.float32)
+        f0 = 120.0 + 40.0 * torch.rand(batch_size, steps, dtype=torch.float32)
+        uv = torch.zeros(batch_size, steps, dtype=torch.float32)
+        return {
+            "content": content,
+            "mels": mels,
+            "f0": f0,
+            "uv": uv,
+        }
+
+    @staticmethod
+    def _build_mainline_model_for_grad_test(seed: int = 1234):
+        torch.manual_seed(seed)
+        torch.set_num_threads(1)
+        hp = set_hparams(
+            config="egs/conan_emformer.yaml",
+            print_hparams=False,
+            global_hparams=False,
+        )
+        model = Conan(0, hp)
+        model.train()
+        batch = ConanMainlineTargetedTests._make_synthetic_mainline_batch(
+            batch_size=2,
+            steps=8,
+            content_padding_idx=int(hp.get("content_padding_idx", 101)),
+        )
+        output = model(
+            batch["content"],
+            target=batch["mels"],
+            ref=batch["mels"],
+            f0=batch["f0"],
+            uv=batch["uv"],
+            infer=False,
+            global_steps=100000,
+            forcing_schedule_state={
+                "mode": "unit_test_disabled",
+                "progress": 1.0,
+                "forcing_prob": 0.0,
+                "forcing_enabled": False,
+            },
+        )
+        return model, hp, batch, output
+
     @staticmethod
     def _run_isolated_python(code: str):
         repo_root = Path(__file__).resolve().parents[1]
@@ -112,6 +194,54 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_internal_identity_encoder_runs_in_eval_mode_when_frozen_for_loss(self):
+        original_hparams = dict(style_control_mixin_module.hparams)
+        try:
+            style_control_mixin_module.hparams.clear()
+            style_control_mixin_module.hparams.update({"freeze_internal_identity_encoder_for_loss": True})
+            task = _DummyIdentityTask()
+            task.model.train()
+            mel = torch.randn(2, 5, 80, requires_grad=True)
+            embed = task._encode_identity_embedding(mel, detach_input=False)
+            self.assertIsInstance(embed, torch.Tensor)
+            self.assertEqual(tuple(embed.shape), (2, 1, 80))
+            embed.sum().backward()
+            self.assertIsNotNone(mel.grad)
+            self.assertEqual(task.model.global_conv_in.training_states_seen, [False])
+            self.assertEqual(task.model.global_encoder.training_states_seen, [False])
+            self.assertTrue(task.model.global_conv_in.training)
+            self.assertTrue(task.model.global_encoder.training)
+        finally:
+            style_control_mixin_module.hparams.clear()
+            style_control_mixin_module.hparams.update(original_hparams)
+
+    def test_align_framewise_sample_trims_content_and_frame_features_to_common_length(self):
+        sample = {
+            "item_name": "misaligned_demo",
+            "mel": torch.tensor(
+                [
+                    [1.0, 0.0],
+                    [2.0, 0.0],
+                    [0.0, 0.0],
+                    [3.0, 0.0],
+                    [4.0, 0.0],
+                ],
+                dtype=torch.float32,
+            ),
+            "content": torch.tensor([10, 11, 12, 13], dtype=torch.long),
+            "mel_nonpadding": torch.tensor([True, True, False, True, True]),
+            "f0": torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.float32),
+            "uv": torch.tensor([0.0, 0.0, 1.0, 0.0, 0.0], dtype=torch.float32),
+            "energy": torch.tensor([0.5, 0.4, 0.3, 0.2, 0.1, 0.0], dtype=torch.float32),
+        }
+        aligned = _align_framewise_sample(sample)
+        self.assertEqual(tuple(aligned["mel"].shape), (4, 2))
+        self.assertEqual(tuple(aligned["content"].shape), (4,))
+        self.assertEqual(tuple(aligned["f0"].shape), (4,))
+        self.assertEqual(tuple(aligned["uv"].shape), (4,))
+        self.assertEqual(tuple(aligned["energy"].shape), (4,))
+        self.assertTrue(torch.equal(aligned["mel_nonpadding"], aligned["mel"].abs().sum(-1) > 0))
 
     def test_weight_norm_compat_applies_and_removes_without_futurewarning(self):
         conv = nn.Conv1d(4, 4, 3)
@@ -870,6 +1000,53 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss))
         self.assertTrue(torch.isfinite(perplexity))
 
+    def test_vq_eval_before_init_does_not_consume_training_initialization(self):
+        vq = VQEmbeddingEMA(n_embeddings=4, embedding_dim=3)
+        x = torch.randn(2, 4, 3)
+        vq.eval()
+        quantized_eval, loss_eval, indices_eval, perplexity_eval = vq(x)
+        self.assertTrue(torch.equal(quantized_eval, x))
+        self.assertEqual(float(loss_eval), 0.0)
+        self.assertEqual(float(perplexity_eval), 0.0)
+        self.assertEqual(tuple(indices_eval.shape), (2, 4))
+        self.assertEqual(int(vq.data_initialized.item()), 0)
+
+        vq.train()
+        with patch("modules.Conan.prosody_util._run_kmeans2_points_init", return_value=None):
+            quantized_train, loss_train, indices_train, perplexity_train = vq(x)
+        self.assertEqual(tuple(quantized_train.shape), tuple(x.shape))
+        self.assertEqual(tuple(indices_train.shape), (2, 4))
+        self.assertTrue(torch.isfinite(loss_train))
+        self.assertTrue(torch.isfinite(perplexity_train))
+        self.assertEqual(int(vq.data_initialized.item()), 1)
+
+    def test_binary_frame_alignment_check_detects_misaligned_binary_item(self):
+        with TemporaryDirectory() as tmpdir:
+            ds_path = f"{tmpdir}/train"
+            builder = IndexedDatasetBuilder(ds_path)
+            builder.add_item(
+                {
+                    "item_name": "misaligned_item",
+                    "mel": np.ones((5, 80), dtype=np.float32),
+                    "hubert": np.asarray([1, 2, 3, 4], dtype=np.int64),
+                    "f0": np.ones((5,), dtype=np.float32),
+                    "uv": np.zeros((5,), dtype=np.float32),
+                    "energy": np.ones((5,), dtype=np.float32),
+                    "len": 5,
+                    "spk_id": 0,
+                    "sec": 1.0,
+                }
+            )
+            builder.finalize()
+            np.save(f"{tmpdir}/train_lengths.npy", np.asarray([5], dtype=np.int32))
+
+            checks = []
+            _check_binary_frame_alignment(checks, tmpdir, "train")
+            self.assertEqual(len(checks), 1)
+            self.assertFalse(checks[0]["ok"])
+            self.assertEqual(checks[0]["name"], "binary_train_frame_alignment_consistent")
+            self.assertEqual(checks[0]["actual"]["mismatches"][0]["item_name"], "misaligned_item")
+
     def test_topk_farthest_negative_mask_backfills_rows_without_loop_regression(self):
         distance = torch.tensor(
             [
@@ -1293,6 +1470,36 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         self.assertIn("variation_gate_prob", payload)
         self.assertTrue(torch.equal(payload["variation_gate_prob"], payload["variation_gate"]))
         self.assertTrue(torch.equal(payload["variation_gate_prob"], payload["variation_gate_raw"]))
+
+    def test_prep_classifies_local_runtime_smoke_as_environment_dependency(self):
+        self.assertEqual(
+            _classify_check_name("runtime_local_modules_Conan_Conan_init"),
+            "runtime_dependencies",
+        )
+
+    def test_style_router_input_layer_receives_gradient_after_curriculum_opens(self):
+        model, _, _, output = self._build_mainline_model_for_grad_test(seed=1234)
+        self.assertEqual(output.get("style_owner_source"), "dual_router")
+        style_decoder_residual = output.get("style_decoder_residual")
+        self.assertIsInstance(style_decoder_residual, torch.Tensor)
+        loss = style_decoder_residual.square().mean()
+        model.zero_grad(set_to_none=True)
+        loss.backward()
+        router_grad = model.style_router[0].weight.grad
+        self.assertIsNotNone(router_grad)
+        self.assertGreater(float(router_grad.abs().sum().item()), 0.0)
+
+    def test_pitch_residual_safe_backprop_reaches_pitch_head_input_layer(self):
+        model, hp, batch, output = self._build_mainline_model_for_grad_test(seed=4321)
+        config = resolve_control_regularization_config(hp, 100000)
+        losses = {}
+        add_style_timbre_regularization_losses(losses, output, batch, config)
+        self.assertIn("pitch_residual_safe", losses)
+        model.zero_grad(set_to_none=True)
+        losses["pitch_residual_safe"].backward()
+        pitch_head_grad = model.style_to_pitch_residual_head[0].weight.grad
+        self.assertIsNotNone(pitch_head_grad)
+        self.assertGreater(float(pitch_head_grad.abs().sum().item()), 0.0)
 
     def test_trainer_moves_batch_to_cuda_once_per_multi_optimizer_step(self):
         class FakeTask(nn.Module):

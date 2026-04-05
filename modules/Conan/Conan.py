@@ -25,6 +25,7 @@ from modules.Conan.reference_cache import resolve_reference_cache
 from modules.Conan.decoder_style_adapter import ConanDecoderStyleAdapter
 from modules.Conan.pitch_runtime import ConanPitchGenerationMixin, ConanStylePitchRuntimeMixin
 from modules.Conan.tvt_memory import ContentSynchronousTimbreFuser, GlobalTimbreMemory
+from modules.Conan.init_utils import init_nearly_closed_linear, resolve_nearly_closed_init_std
 from modules.Conan.decoder_style_bundle import validate_decoder_style_bundle
 from modules.Conan.style_mainline import (
     build_style_mainline_memory_payload,
@@ -120,6 +121,33 @@ class Conan(
 
         self.padding_idx = 0
         self.max_source_positions = DEFAULT_MAX_SOURCE_POSITIONS
+        shared_control_head_init_std = resolve_nearly_closed_init_std(
+            hparams.get("control_head_final_init_std", 1.0e-3)
+        )
+        timbre_gate_final_init_std = resolve_nearly_closed_init_std(
+            hparams.get("tv_timbre_gate_final_init_std", shared_control_head_init_std)
+        )
+        style_router_final_init_std = resolve_nearly_closed_init_std(
+            hparams.get("style_router_final_init_std", shared_control_head_init_std)
+        )
+        style_to_pitch_residual_final_init_std = resolve_nearly_closed_init_std(
+            hparams.get(
+                "style_to_pitch_residual_final_init_std",
+                shared_control_head_init_std,
+            )
+        )
+        decoder_style_adapter_gate_final_init_std = resolve_nearly_closed_init_std(
+            hparams.get(
+                "decoder_style_adapter_gate_final_init_std",
+                shared_control_head_init_std,
+            )
+        )
+        dynamic_timbre_material_router_final_init_std = resolve_nearly_closed_init_std(
+            hparams.get(
+                "dynamic_timbre_material_router_final_init_std",
+                shared_control_head_init_std,
+            )
+        )
         if hparams["style"]:
             vae_dropout = float(hparams.get("vae_dropout", 0.0))
             commitment_cost = float(hparams.get("lambda_commit", 0.25))
@@ -167,10 +195,10 @@ class Conan(
                 nn.Linear(gate_hidden, 1),
                 nn.Sigmoid(),
             )
-            nn.init.zeros_(self.timbre_gate[2].weight)
-            nn.init.constant_(
-                self.timbre_gate[2].bias,
-                float(hparams.get("tv_timbre_gate_bias_init", -1.0)),
+            init_nearly_closed_linear(
+                self.timbre_gate[2],
+                bias=float(hparams.get("tv_timbre_gate_bias_init", -1.0)),
+                weight_std=timbre_gate_final_init_std,
             )
             self.dynamic_timbre_use_tvt = bool(hparams.get("dynamic_timbre_use_tvt", True))
             if self.dynamic_timbre_use_tvt:
@@ -185,6 +213,7 @@ class Conan(
                     mix_bias=hparams.get("dynamic_timbre_tvt_mix_bias", -0.25),
                     variation_bias=hparams.get("dynamic_timbre_tvt_variation_bias", -1.0),
                     material_bias=hparams.get("dynamic_timbre_material_router_bias", 1.0),
+                    material_router_final_init_std=dynamic_timbre_material_router_final_init_std,
                 )
             else:
                 self.global_timbre_memory = None
@@ -206,10 +235,10 @@ class Conan(
                 nn.ReLU(),
                 nn.Linear(style_router_hidden, 1),
             )
-            nn.init.zeros_(self.style_router[2].weight)
-            nn.init.constant_(
-                self.style_router[2].bias,
-                float(hparams.get("style_router_bias_init", -0.15)),
+            init_nearly_closed_linear(
+                self.style_router[2],
+                bias=float(hparams.get("style_router_bias_init", -0.15)),
+                weight_std=style_router_final_init_std,
             )
             pitch_residual_hidden = int(
                 hparams.get("style_to_pitch_residual_hidden", self.hidden_size)
@@ -219,8 +248,11 @@ class Conan(
                 nn.ReLU(),
                 nn.Linear(pitch_residual_hidden, 1),
             )
-            nn.init.zeros_(self.style_to_pitch_residual_head[2].weight)
-            nn.init.zeros_(self.style_to_pitch_residual_head[2].bias)
+            init_nearly_closed_linear(
+                self.style_to_pitch_residual_head[2],
+                bias=0.0,
+                weight_std=style_to_pitch_residual_final_init_std,
+            )
 
             # build attention layer
             self.embed_positions = SinusoidalPositionalEmbedding(
@@ -343,6 +375,7 @@ class Conan(
                     1e-8,
                 ),
                 gate_bias=hparams.get("decoder_style_adapter_gate_bias", -1.0),
+                gate_final_init_std=decoder_style_adapter_gate_final_init_std,
             )
         else:
             self.decoder_style_adapter = None

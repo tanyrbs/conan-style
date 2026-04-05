@@ -163,10 +163,57 @@ def _item_name_speaker_key(item_name):
     token = str(item_name).strip()
     if token == "":
         return token
-    for sep in ("/", "\\", "_"):
-        if sep in token:
-            return token.split(sep, 1)[0]
-    return token
+    normalized = token.replace("\\", "/")
+    path_parts = [part.strip() for part in normalized.split("/") if str(part).strip() != ""]
+    if len(path_parts) <= 0:
+        return token
+
+    basename = os.path.splitext(path_parts[-1])[0].strip()
+    basename_prefix = basename.split("_", 1)[0].strip() if "_" in basename else basename
+    if basename_prefix != "" and (basename_prefix != basename or len(path_parts) == 1):
+        return basename_prefix
+
+    if len(path_parts) >= 2:
+        parent = os.path.splitext(path_parts[-2])[0].strip()
+        parent_prefix = parent.split("_", 1)[0].strip() if "_" in parent else parent
+        if parent_prefix != "":
+            return parent_prefix
+
+    return basename or token
+
+
+def _speaker_key_candidates(item_name):
+    token = str(item_name).strip()
+    if token == "":
+        return []
+    normalized = token.replace("\\", "/")
+    path_parts = [part.strip() for part in normalized.split("/") if str(part).strip() != ""]
+    candidates = []
+
+    def _push(value):
+        value = str(value).strip()
+        if value != "" and value not in candidates:
+            candidates.append(value)
+
+    def _push_variants(value):
+        value = str(value).strip()
+        if value == "":
+            return
+        _push(value)
+        stem = os.path.splitext(value)[0].strip()
+        if stem != "":
+            _push(stem)
+            prefix = stem.split("_", 1)[0].strip() if "_" in stem else stem
+            if prefix != "":
+                _push(prefix)
+
+    _push_variants(token)
+    if normalized != token:
+        _push_variants(normalized)
+    _push_variants(_item_name_speaker_key(token))
+    for part in reversed(path_parts):
+        _push_variants(part)
+    return candidates
 
 
 def _stable_bucket_seed(value):
@@ -187,7 +234,11 @@ def _match_by_speaker_prefix(item_names, prefixes):
     prefix_set = set(_normalize_prefixes(prefixes))
     if len(prefix_set) <= 0:
         return []
-    return [name for name in item_names if _item_name_speaker_key(name) in prefix_set]
+    matched = []
+    for name in item_names:
+        if any(candidate in prefix_set for candidate in _speaker_key_candidates(name)):
+            matched.append(name)
+    return matched
 
 
 def _fallback_holdout_by_speaker(
@@ -361,12 +412,13 @@ class VCBinarizer(ConanBaseBinarizer):
         spker_map = cls._load_spker_map_from_dirs(
             processed_data_dir=ctx.get("processed_data_dir", hparams.get("processed_data_dir")),
         )
-        speaker_key = _item_name_speaker_key(item_name)
-        if speaker_key not in spker_map:
-            raise KeyError(
-                f"[{cls.__name__}] Speaker key '{speaker_key}' for {item_name} is missing from spker_set.json."
-            )
-        return int(spker_map[speaker_key])
+        candidate_keys = _speaker_key_candidates(item_name)
+        for speaker_key in candidate_keys:
+            if speaker_key in spker_map:
+                return int(spker_map[speaker_key])
+        raise KeyError(
+            f"[{cls.__name__}] Speaker key candidates {candidate_keys} for {item_name} are missing from spker_set.json."
+        )
 
     @staticmethod
     def _register_condition_label(field, label_to_id, id_to_label, label, idx):

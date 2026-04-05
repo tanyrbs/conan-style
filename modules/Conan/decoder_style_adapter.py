@@ -10,6 +10,7 @@ from modules.Conan.decoder_style_bundle import (
     ensure_decoder_style_bundle_respects_timing,
 )
 from modules.Conan.effective_signal import tensor_has_effective_signal
+from modules.Conan.init_utils import init_nearly_closed_linear
 
 
 def _is_sequence_tensor(value: Any) -> bool:
@@ -47,6 +48,7 @@ class ConanDecoderStyleAdapter(nn.Module):
         skip_global_style_when_local_style_present: bool = True,
         effective_signal_epsilon: float = 1e-8,
         gate_bias: float = -2.0,
+        gate_final_init_std: float = 1.0e-3,
     ) -> None:
         super().__init__()
         self.hidden_size = int(hidden_size)
@@ -85,26 +87,59 @@ class ConanDecoderStyleAdapter(nn.Module):
             nn.Linear(hidden_size, hidden_size, bias=False), nn.Tanh()
         )
 
-        self.global_timbre_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
-        self.global_style_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
-        self.slow_style_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
-        self.style_trace_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
-        self.dynamic_timbre_gate = self._build_gate(hidden_size * 2, gate_hidden, gate_bias)
+        self.global_timbre_gate = self._build_gate(
+            hidden_size * 2,
+            gate_hidden,
+            gate_bias,
+            gate_final_init_std,
+        )
+        self.global_style_gate = self._build_gate(
+            hidden_size * 2,
+            gate_hidden,
+            gate_bias,
+            gate_final_init_std,
+        )
+        self.slow_style_gate = self._build_gate(
+            hidden_size * 2,
+            gate_hidden,
+            gate_bias,
+            gate_final_init_std,
+        )
+        self.style_trace_gate = self._build_gate(
+            hidden_size * 2,
+            gate_hidden,
+            gate_bias,
+            gate_final_init_std,
+        )
+        self.dynamic_timbre_gate = self._build_gate(
+            hidden_size * 2,
+            gate_hidden,
+            gate_bias,
+            gate_final_init_std,
+        )
 
         self.stage_norm = nn.LayerNorm(hidden_size)
         self._gate_bias = float(gate_bias)
         self._gate_bias_version = 0
 
     @staticmethod
-    def _build_gate(in_dim: int, hidden_dim: int, bias: float):
+    def _build_gate(
+        in_dim: int,
+        hidden_dim: int,
+        bias: float,
+        final_init_std: float,
+    ):
         gate = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, in_dim // 2),
             nn.Sigmoid(),
         )
-        nn.init.zeros_(gate[2].weight)
-        nn.init.constant_(gate[2].bias, float(bias))
+        init_nearly_closed_linear(
+            gate[2],
+            bias=float(bias),
+            weight_std=final_init_std,
+        )
         return gate
 
     def set_gate_bias(self, bias: float):

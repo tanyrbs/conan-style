@@ -89,25 +89,38 @@ class ConanStyleControlMixin:
     @contextmanager
     def _freeze_internal_identity_encoder_params(self):
         params = []
-        seen = set()
+        seen_params = set()
+        modules = []
+        seen_modules = set()
         for module in self._internal_identity_encoder_modules():
+            if module is None:
+                continue
+            module_key = id(module)
+            if module_key not in seen_modules:
+                seen_modules.add(module_key)
+                modules.append(module)
             for param in module.parameters():
                 key = id(param)
-                if key in seen:
+                if key in seen_params:
                     continue
-                seen.add(key)
+                seen_params.add(key)
                 params.append(param)
-        if not params:
+        if not params and not modules:
             yield False
             return
         previous_requires_grad = [param.requires_grad for param in params]
+        previous_training = [bool(module.training) for module in modules]
         try:
             for param in params:
                 param.requires_grad_(False)
+            for module in modules:
+                module.eval()
             yield True
         finally:
             for param, requires_grad in zip(params, previous_requires_grad):
                 param.requires_grad_(requires_grad)
+            for module, was_training in zip(modules, previous_training):
+                module.train(was_training)
 
     @staticmethod
     def _normalize_identity_embedding(embedding, mel_btc=None):

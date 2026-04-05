@@ -109,6 +109,7 @@ def _classify_check_name(name):
     name = str(name or "").strip()
     if (
         name.startswith("runtime_import_")
+        or name.startswith("runtime_local_")
         or name.startswith("runtime_nltk_")
         or name == "runtime_python_version_compatible_with_pinned_torchaudio"
         or name.endswith("_matches_requirements_pin")
@@ -345,6 +346,122 @@ def _check_npy_count_positive(checks, name, path_value):
 def _load_1d_npy_array(path_value):
     array = np.load(str(path_value), mmap_mode='r')
     return np.asarray(array).reshape(-1)
+
+
+def _frame_length(value):
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        if value.dim() == 0:
+            return 1
+        return int(value.shape[0])
+    array = np.asarray(value)
+    if array.ndim == 0:
+        return 1
+    return int(array.shape[0])
+
+
+def _sample_check_indices(num_items, max_items=64):
+    num_items = int(num_items)
+    max_items = max(1, int(max_items))
+    if num_items <= 0:
+        return np.asarray([], dtype=np.int64)
+    if num_items <= max_items:
+        return np.arange(num_items, dtype=np.int64)
+    return np.unique(np.linspace(0, num_items - 1, num=max_items, dtype=np.int64))
+
+
+def _check_binary_frame_alignment(checks, binary_data_dir, split, *, max_items=64):
+    if not binary_data_dir:
+        return
+    split_path = os.path.join(str(binary_data_dir), split)
+    required_paths = {
+        "idx": f"{split_path}.idx",
+        "data": f"{split_path}.data",
+        "lengths": os.path.join(str(binary_data_dir), f"{split}_lengths.npy"),
+    }
+    missing = [name for name, path in required_paths.items() if not os.path.exists(path)]
+    if missing:
+        checks.append(
+            {
+                "name": f"binary_{split}_frame_alignment_consistent",
+                "ok": False,
+                "actual": {"missing": missing},
+                "expected": "indexed dataset plus *_lengths.npy present",
+            }
+        )
+        return
+
+    try:
+        from utils.commons.indexed_datasets import IndexedDataset
+
+        declared_lengths = _load_1d_npy_array(required_paths["lengths"]).astype(np.int64, copy=False)
+        sampled_indices = _sample_check_indices(declared_lengths.shape[0], max_items=max_items)
+        mismatches = []
+        with IndexedDataset(split_path) as ds:
+            for idx in sampled_indices:
+                item = ds[int(idx)]
+                frame_lengths = {}
+                for key in ("mel", "hubert", "f0", "energy", "uv"):
+                    if item.get(key) is None:
+                        continue
+                    length = _frame_length(item.get(key))
+                    if length is not None:
+                        frame_lengths[key] = int(length)
+                if "mel" not in frame_lengths or "hubert" not in frame_lengths:
+                    mismatches.append(
+                        {
+                            "index": int(idx),
+                            "item_name": item.get("item_name"),
+                            "reason": "missing_required_frame_fields",
+                            "available_fields": sorted(item.keys()),
+                        }
+                    )
+                    continue
+                aligned_min_length = min(frame_lengths.values())
+                declared_len = int(declared_lengths[int(idx)])
+                item_len = item.get("len", None)
+                item_len = int(item_len) if item_len is not None else None
+                if (
+                    any(int(length) != aligned_min_length for length in frame_lengths.values())
+                    or declared_len != aligned_min_length
+                    or (item_len is not None and item_len != aligned_min_length)
+                ):
+                    mismatches.append(
+                        {
+                            "index": int(idx),
+                            "item_name": item.get("item_name"),
+                            "frame_lengths": frame_lengths,
+                            "aligned_min_length": int(aligned_min_length),
+                            "declared_sidecar_len": declared_len,
+                            "item_len": item_len,
+                        }
+                    )
+                if len(mismatches) >= 8:
+                    break
+    except Exception as exc:
+        checks.append(
+            {
+                "name": f"binary_{split}_frame_alignment_consistent",
+                "ok": False,
+                "actual": f"{type(exc).__name__}: {exc}",
+                "expected": "sampled items load successfully and align",
+            }
+        )
+        return
+
+    checks.append(
+        {
+            "name": f"binary_{split}_frame_alignment_consistent",
+            "ok": len(mismatches) == 0,
+            "actual": {
+                "num_items": int(declared_lengths.shape[0]),
+                "sampled_items": int(sampled_indices.shape[0]),
+                "mismatches": mismatches,
+            },
+            "expected": "sampled items have mel/hubert and optional frame features aligned to a single frame count matching *_lengths.npy",
+        }
+    )
 
 
 def _check_binary_sidecar_consistency(checks, binary_data_dir, split):
@@ -1628,6 +1745,7 @@ def _collect_data_staging_checks(checks, prep_ctx):
                 os.path.join(str(binary_data_dir), f"{split}_lengths.npy"),
             )
             _check_binary_sidecar_consistency(checks, binary_data_dir, split)
+            _check_binary_frame_alignment(checks, binary_data_dir, split)
     condition_artifact_dirs = [hparams.get("binary_data_dir"), hparams.get("processed_data_dir")]
     prep_ctx.resolved_condition_maps = _check_condition_artifacts(
         checks,

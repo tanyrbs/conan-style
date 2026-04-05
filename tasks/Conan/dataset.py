@@ -7,6 +7,38 @@ from modules.Conan.style_profiles import resolve_style_profile
 from utils.commons.dataset_utils import collate_1d_or_2d
 
 
+def _align_framewise_sample(sample):
+    if not isinstance(sample, dict):
+        return sample
+    mel = sample.get("mel")
+    content = sample.get("content")
+    if not isinstance(mel, torch.Tensor) or not isinstance(content, torch.Tensor):
+        return sample
+
+    frame_lengths = {
+        "mel": int(mel.shape[0]),
+        "content": int(content.shape[0]),
+    }
+    for key in ("f0", "uv", "energy"):
+        value = sample.get(key)
+        if isinstance(value, torch.Tensor):
+            frame_lengths[key] = int(value.shape[0])
+
+    common_length = min(frame_lengths.values())
+    if common_length <= 0:
+        item_name = sample.get("item_name", "<unknown>")
+        raise ValueError(
+            f"ConanDataset item '{item_name}' resolved a non-positive aligned frame length: {frame_lengths}"
+        )
+
+    for key in ("mel", "content", "mel_nonpadding", "f0", "uv", "energy"):
+        value = sample.get(key)
+        if isinstance(value, torch.Tensor) and value.dim() > 0:
+            sample[key] = value[:common_length]
+    sample["mel_nonpadding"] = sample["mel"].abs().sum(-1) > 0
+    return sample
+
+
 def _scalar_long(value, default=-1):
     if value is None:
         value = default
@@ -59,24 +91,24 @@ class ConanDataset(FastSpeechDataset):
         sample = super(ConanDataset, self).__getitem__(index)
         item = self._get_item(index)
 
-        sample["content"] = torch.LongTensor(item["hubert"])
+        sample["content"] = torch.as_tensor(item["hubert"], dtype=torch.long).reshape(-1)
         sample["emotion_id"] = _scalar_long(item.get("emotion_id", -1), default=-1)
         sample["accent_id"] = _scalar_long(item.get("accent_id", -1), default=-1)
         sample["arousal"] = _scalar_float(item.get("arousal", 0.0), default=0.0)
         sample["valence"] = _scalar_float(item.get("valence", 0.0), default=0.0)
 
         if "energy" in item:
-            energy = torch.as_tensor(item["energy"], dtype=torch.float32)
+            energy = torch.as_tensor(item["energy"], dtype=torch.float32).reshape(-1)
         else:
             energy = sample["mel"].abs().mean(dim=-1)
-        sample["energy"] = energy[: sample["mel"].shape[0]]
+        sample["energy"] = energy
         sample["style_strength"] = _scalar_float(
             self._resolve_item_style_strength(item),
             default=self.default_style_strength,
         )
         sample["emotion_strength"] = _scalar_float(item.get("emotion_strength", 1.0), default=1.0)
         sample["accent_strength"] = _scalar_float(item.get("accent_strength", 1.0), default=1.0)
-        return sample
+        return _align_framewise_sample(sample)
 
     def collater(self, samples):
         if len(samples) == 0:

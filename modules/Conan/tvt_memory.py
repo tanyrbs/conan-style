@@ -7,6 +7,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from modules.Conan.init_utils import init_nearly_closed_linear
+
 
 def expand_anchor_sequence(anchor: torch.Tensor, length: int) -> torch.Tensor:
     if anchor.dim() == 2:
@@ -60,6 +62,7 @@ class ContentSynchronousTimbreFuser(nn.Module):
         mix_bias: float = -0.25,
         variation_bias: float = -1.0,
         material_bias: float = 1.0,
+        material_router_final_init_std: float = 1.0e-3,
     ):
         super().__init__()
         gate_hidden = int(hidden_size if gate_hidden is None else gate_hidden)
@@ -86,8 +89,11 @@ class ContentSynchronousTimbreFuser(nn.Module):
             nn.ReLU(),
             nn.Linear(gate_hidden, self.hidden_size),
         )
-        nn.init.zeros_(self.material_router[2].weight)
-        nn.init.constant_(self.material_router[2].bias, self.material_bias)
+        init_nearly_closed_linear(
+            self.material_router[2],
+            bias=self.material_bias,
+            weight_std=material_router_final_init_std,
+        )
 
     def forward(
         self,

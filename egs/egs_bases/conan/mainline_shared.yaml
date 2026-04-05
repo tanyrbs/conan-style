@@ -84,6 +84,7 @@ slow_style_strength_scale: 1.2
 style_router_enabled: true
 style_router_hidden: 256
 style_router_bias_init: -0.15
+control_head_final_init_std: 1.0e-03
 global_style_trace_blend: 0.0
 style_query_global_summary_scale: 0.0
 global_timbre_to_pitch: false

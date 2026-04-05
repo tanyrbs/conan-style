@@ -7,6 +7,7 @@ Updated: 2026-04-05
 A focused repository audit/update pass landed on 2026-04-04. Highlights:
 
 - multi-optimizer training no longer performs duplicate batch CUDA transfers
+- control heads that should start "almost closed" no longer hard-zero their final weights; canonical mainline now uses tiny nonzero final-layer init (`control_head_final_init_std: 1e-3`) so style-router / pitch-residual / decoder-gate / TVT-material branches can receive end-to-end gradients from the first day instead of learning in a delayed two-stage fashion
 - split-reference inference no longer recomputes identical reference mels within one request
 - reference mel tensors are now cached across requests inside one inference engine instance, reducing repeated wav->mel work on repeated prompts
 - mel filterbank construction is now cached in `librosa_wav2spec(...)`, reducing repeated CPU setup overhead on hot audio preprocessing paths
@@ -20,6 +21,7 @@ A focused repository audit/update pass landed on 2026-04-04. Highlights:
 - inference hot paths now run under `torch.inference_mode()` for lower autograd overhead
 - main training/data entrypoints now share one early `single_thread_env` helper that uses `setdefault(...)` instead of hard-overwriting host thread caps
 - optional deps on the mainline path (`g2p_en`, `nltk`, `textgrid`, `tensorboard`, `resemblyzer`) are now gated much closer to their real call sites instead of failing at import time
+- `mainline_train_prep.py` now classifies `runtime_local_*` local-construction smoke failures as environment/runtime dependency failures instead of incorrectly downgrading `code_contract_ready`
 
 **Repository note:** this repo is our Conan-based modified implementation, not an official Conan upstream repository or the authoritative "official implementation". This README only describes the shipped contract in this codebase.
 
@@ -67,6 +69,7 @@ Both are aligned to the same shipped surface:
 
 - `reference_contract_mode: collapsed_reference`
 - `style_profile: strong_style`
+- `control_head_final_init_std: 1.0e-03` keeps shipped control branches nearly closed while avoiding zero-gradient upstream dead-start on router/gate/residual heads
 - `style_strength` is clamped to the shipped mainline range `0.50 .. 1.80`
 - `allow_item_style_strength_override: false` keeps the profile authoritative during training batches
 - `dynamic_timbre_strength` is intentionally derived from `style_strength` on the canonical path, so the two are not treated as orthogonal free knobs
@@ -164,6 +167,7 @@ This repo encodes the intended canonical mainline contract, but universal verifi
 Treat `tasks/Conan/mainline_train_prep.py` and a short real-data smoke run as the source of truth for train-readiness.
 That prep gate validates the shipped canonical config; optional research regularizers such as `lambda_style_timbre_runtime_overlap` remain opt-in ablations, not part of the default prep pass. It also now checks exact `requirements.txt` pins for `torch` / `torchaudio` / `torchdyn` / `textgrid` / `g2p_en` / `nltk`, plus Python-vs-pinned-`torchaudio` compatibility. That compatibility gate is now updated to the currently published wheel boundary: `torchaudio 2.3.x .. 2.5.x` are treated as Python `3.8 .. 3.11`, while `2.6.x` extends to Python `3.13`; out-of-range runtimes are no longer silently waved through just because some local import happens to succeed. The runtime gate now explicitly covers `g2p_en` importability, the NLTK tagger + `cmudict` resources that `g2p_en` needs, `tasks.Conan.Conan` importability, and a **local** `Conan(0, hparams)` construction path using `set_hparams(..., global_hparams=False)` so hidden singleton-config dependencies are surfaced instead of being masked by global state. On the data side, prep now also verifies that `*_lengths.npy`, `*_ref_indices.npy`, and `*_spk_ids.npy` stay mutually aligned and that each reference index still points to a same-speaker sample, so stale binary sidecars are less likely to false-pass. So `code_contract_ready: true` no longer implies `train_ready_now: true`.
 Prep readiness is now also split explicitly into `code_contract_ready`, `environment_ready`, `data_ready`, and `data_dependent_preview_ready`, with `failed_checks_by_category` exposing which category still blocks the current checkout.
+`runtime_local_*` smoke checks are now categorized under `runtime_dependencies`, so a missing local constructor dependency no longer falsely looks like a mainline code-contract break.
 
 Key audited properties in the checked-in code:
 

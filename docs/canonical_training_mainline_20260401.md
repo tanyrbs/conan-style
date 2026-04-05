@@ -232,7 +232,7 @@ Single-reference demo:
 python inference/run_voice_conversion.py   --pair_config inference/conan_single_reference_demo.example.json
 ```
 
-Research/ablation-only runtime overrides remain opt-in: pass `--allow_advanced_controls` on the CLI or set `allow_advanced_controls: true` in the request manifest before expecting explicit `dynamic_timbre_strength`, `allow_mainline_profile_research_overrides`, or advanced dynamic-timbre budget knobs to survive request normalization.
+Research/ablation-only runtime overrides remain opt-in: pass `--allow_advanced_controls` on the CLI or set `allow_advanced_controls: true` in the request manifest before expecting explicit `dynamic_timbre_strength`, `allow_mainline_profile_research_overrides`, or advanced dynamic-timbre budget knobs to survive request normalization. The shared request helper also canonicalizes a few repo-local alias names such as `style_mainline_mode`, `global_style_anchor_to_pitch`, `pitch_residual_mode`, and `dynamic_timbre_reference_memory_mode`.
 
 Style-profile sweep:
 

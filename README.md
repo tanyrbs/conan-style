@@ -336,7 +336,7 @@ Because `slow_style_trace` now really enters the decoder runtime bundle, old che
 python inference/run_voice_conversion.py --pair_config inference/conan_single_reference_demo.example.json
 ```
 
-For research/ablation-only runtime overrides, opt in with `--allow_advanced_controls` or `allow_advanced_controls: true` in the JSON manifest. That advanced path now forwards explicit `dynamic_timbre_strength`, `allow_mainline_profile_research_overrides`, and the runtime dynamic-timbre budget knobs, but the shipped mainline description should still stay conservative: strong style-driven contour control, not explicit timing/planner rewriting.
+For research/ablation-only runtime overrides, opt in with `--allow_advanced_controls` or `allow_advanced_controls: true` in the JSON manifest. That advanced path now forwards explicit `dynamic_timbre_strength`, `allow_mainline_profile_research_overrides`, and the runtime dynamic-timbre budget knobs; the shared request helper also normalizes a few runtime aliases used elsewhere in the repo (for example `style_mainline_mode`, `global_style_anchor_to_pitch`, `pitch_residual_mode`, `dynamic_timbre_reference_memory_mode`) back to the canonical request keys. The shipped mainline description should still stay conservative: strong style-driven contour control, not explicit timing/planner rewriting.
 
 ## Primary docs
 

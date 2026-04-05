@@ -1,5 +1,6 @@
-﻿{
+{
   "output_dir": "infer_out_mainline/demo_single_reference",
+  "allow_advanced_controls": false,
   "conversion_pairs": [
     {
       "output_name": "demo_strong_style.wav",

@@ -1,4 +1,4 @@
-﻿{
+{
   "output_dir": "infer_out_profiles/conan_mainline_demo",
   "profiles": [
     "strong_style",
@@ -6,7 +6,8 @@
   ],
   "save_mel_npy": true,
   "defaults": {
-    "style_strength": 1.0
+    "style_strength": 1.0,
+    "allow_advanced_controls": false
   },
   "cases": [
     {

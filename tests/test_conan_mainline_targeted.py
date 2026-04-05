@@ -1083,6 +1083,51 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             ],
         )
 
+    def test_request_helper_normalizes_runtime_aliases_to_canonical_keys(self):
+        request, ignored = build_mainline_request_input(
+            {
+                "ref_wav": "ref.wav",
+                "src_wav": "src.wav",
+                "style_strengths": 1.15,
+                "style_mainline_mode": "global_only",
+                "global_style_anchor_to_pitch": True,
+                "pitch_residual_mode": "post_rhythm",
+                "global_timbre_strength": 0.85,
+                "dynamic_timbre_reference_memory_mode": "fast",
+            },
+            allow_advanced_controls=True,
+        )
+        self.assertEqual(request["style_strength"], 1.15)
+        self.assertEqual(request["decoder_style_condition_mode"], "global_only")
+        self.assertTrue(request["global_timbre_to_pitch"])
+        self.assertEqual(request["style_to_pitch_residual_mode"], "post_rhythm")
+        self.assertEqual(request["global_style_anchor_strength"], 0.85)
+        self.assertEqual(request["dynamic_timbre_memory_mode"], "fast")
+        self.assertEqual(ignored, [])
+
+    def test_request_helper_marks_runtime_aliases_ignored_when_advanced_disabled(self):
+        request, ignored = build_mainline_request_input(
+            {
+                "ref_wav": "ref.wav",
+                "src_wav": "src.wav",
+                "style_mainline_mode": "global_only",
+                "global_style_anchor_to_pitch": True,
+                "pitch_residual_mode": "post_rhythm",
+                "dynamic_timbre_reference_memory_mode": "fast",
+            },
+            allow_advanced_controls=False,
+        )
+        self.assertEqual(request, {"ref_wav": "ref.wav", "src_wav": "src.wav"})
+        self.assertCountEqual(
+            ignored,
+            [
+                "style_mainline_mode",
+                "global_style_anchor_to_pitch",
+                "pitch_residual_mode",
+                "dynamic_timbre_reference_memory_mode",
+            ],
+        )
+
     def test_reference_bundle_runtime_kwargs_forward_budget_research_knobs(self):
         runtime_kwargs = build_reference_style_runtime_kwargs(
             {

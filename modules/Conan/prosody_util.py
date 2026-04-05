@@ -9,8 +9,17 @@ import torch.nn.functional as F
 from utils.nn.seq_utils import group_hidden_by_segs
 from modules.commons.rel_transformer import sequence_mask
 
-from scipy.cluster.vq import kmeans2
 from torch.nn import functional as F
+
+
+def _run_kmeans2_points_init(sampled, n_embeddings):
+    try:
+        from scipy.cluster.vq import kmeans2 as scipy_kmeans2
+
+        kd = scipy_kmeans2(sampled.data.cpu().numpy(), n_embeddings, minit='points')
+        return torch.from_numpy(kd[0]).to(device=sampled.device, dtype=sampled.dtype)
+    except Exception:
+        return None
 
 
 class VQEmbeddingEMA(nn.Module):
@@ -63,10 +72,8 @@ class VQEmbeddingEMA(nn.Module):
                 repeat = math.ceil(self.n_embeddings / sampled.size(0))
                 init_embed = sampled.repeat(repeat, 1)[:self.n_embeddings]
             else:
-                try:
-                    kd = kmeans2(sampled.data.cpu().numpy(), self.n_embeddings, minit='points')
-                    init_embed = torch.from_numpy(kd[0]).to(device=sampled.device, dtype=sampled.dtype)
-                except Exception:
+                init_embed = _run_kmeans2_points_init(sampled, self.n_embeddings)
+                if init_embed is None:
                     init_embed = sampled[:self.n_embeddings]
             self.embedding.copy_(init_embed)
             x_flat, quantized, indices = self.encode(x)

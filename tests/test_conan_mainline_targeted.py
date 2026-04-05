@@ -859,6 +859,17 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         self.assertEqual(tuple(indices.shape), (2, 5))
         self.assertTrue(torch.isfinite(perplexity))
 
+    def test_vq_embedding_ema_falls_back_when_kmeans_init_unavailable(self):
+        vq = VQEmbeddingEMA(n_embeddings=4, embedding_dim=3)
+        vq.train()
+        x = torch.randn(2, 4, 3)
+        with patch("modules.Conan.prosody_util._run_kmeans2_points_init", return_value=None):
+            quantized, loss, indices, perplexity = vq(x)
+        self.assertEqual(tuple(quantized.shape), tuple(x.shape))
+        self.assertEqual(tuple(indices.shape), (2, 4))
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(torch.isfinite(perplexity))
+
     def test_topk_farthest_negative_mask_backfills_rows_without_loop_regression(self):
         distance = torch.tensor(
             [

@@ -19,7 +19,7 @@ A focused repository audit/update pass landed on 2026-04-04. Highlights:
 - VAD trimming now uses the `librosa 0.10.x`-compatible resample call signature
 - `global_style_trace_blend=0.0` now correctly preserves the reference summary instead of silently switching to pooled runtime trace
 - TVT anchor expansion now fails with a clear contract error on incompatible sequence lengths instead of a low-level `.expand(...)` shape crash
-- the NumPy indexed-dataset compatibility shim no longer relies on the deprecated `numpy.core` import path in normal cases
+- the NumPy indexed-dataset compatibility shim now fail-opens on modern NumPy instead of force-aliasing `numpy.core -> numpy._core`, avoiding recursive SciPy / `tasks.Conan.Conan` import failures and misleading prep false negatives on modern hosts
 - binary indexed datasets now write plain `int64` offset sidecars while keeping legacy dict-style `.idx` files readable
 - training datasets now build speaker/condition sampling buckets deterministically from `seed` and avoid extra tensor copies on hot data paths
 - collapsed-reference dataset collation now reuses `ref_mels` for `ref_timbre_mels` when they are the same tensor instead of cloning/collating the same content twice
@@ -212,7 +212,8 @@ Key audited properties in the checked-in code:
 - that maintainability layer does not add new public controls; it only reduces drift and duplicated glue logic
 - streaming inference tail trimming now matches offline length exactly
 - `utils/extract_f0_rmvpe.py` now boots cleanly from the repo root, accepts raw RMVPE state-dict checkpoints, and can batch even when metadata lacks explicit duration fields
-- task-side `load_ckpt` warm starts are now non-strict by default, so older Conan checkpoints can still be used for compatible fine-tune / smoke runs after mainline refactors
+- task-side `load_ckpt` warm starts should stay `load_ckpt_strict=False`; treat them as partial loads rather than exact resumes
+- use `resume_from_checkpoint` for true resume semantics instead of trying to force `load_ckpt_strict=true`
 
 New control diagnostics from this closure pass include:
 
@@ -311,6 +312,7 @@ Expected result after the processed/binary datasets are staged correctly:
 - `MAINLINE_TRAIN_PREP_OK`
 
 If the current local environment still has dependency pin drift or missing staged artifacts, the honest result is `MAINLINE_TRAIN_PREP_NOT_READY`; in that case, treat the JSON summary fields `code_contract_ready` vs `ready` / `train_ready_now` as the source of truth rather than assuming the repo text implies train-readiness.
+The prep JSON now also records `warm_start` plus `binary_frame_alignment_scan_mode` / `binary_frame_alignment_scan_limit`, so later reviews can distinguish partial-load training intent from exact resume semantics and can tell whether the data audit was sampled or exhaustive.
 
 ### 4) Real training
 
@@ -338,7 +340,7 @@ python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAud
 Short warm-start audit smoke from the shipped Conan checkpoint (`<= 50` updates):
 
 ```bash
-python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmoke8 --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=8,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=1,lambda_style_timbre_runtime_overlap=0.005"
+python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmoke8 --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,load_ckpt_strict=False,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=8,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=1,lambda_style_timbre_runtime_overlap=0.005"
 ```
 
 Because `slow_style_trace` now really enters the decoder runtime bundle, old checkpoints should be A/B checked if you are comparing exact forward behavior before vs. after this closure patch. For new training or resumed fine-tuning on the canonical path, this is the intended corrected behavior.

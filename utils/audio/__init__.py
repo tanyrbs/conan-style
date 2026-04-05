@@ -1,4 +1,3 @@
-import librosa
 import numpy as np
 import wave
 from functools import lru_cache
@@ -12,10 +11,48 @@ def _optional_import(module_name):
         return None, exc
 
 
+def _ensure_numpy_legacy_aliases():
+    """Keep older librosa releases importable on newer NumPy versions."""
+    if not hasattr(np, "complex"):
+        np.complex = np.complex128  # type: ignore[attr-defined]
+    if not hasattr(np, "float"):
+        np.float = float  # type: ignore[attr-defined]
+    if not hasattr(np, "int"):
+        np.int = int  # type: ignore[attr-defined]
+
+
+_LIBROSA_MODULE = None
+_librosa_import_error = None
+
+
+class _LazyLibrosaProxy:
+    def __getattr__(self, name):
+        return getattr(require_librosa(), name)
+
+
+librosa = _LazyLibrosaProxy()
+
 pyln = None
 sf = None
 _pyln_import_error = None
 _soundfile_import_error = None
+
+
+def _load_librosa():
+    global _LIBROSA_MODULE, _librosa_import_error
+    if _LIBROSA_MODULE is not None or _librosa_import_error is not None:
+        return _LIBROSA_MODULE
+    _ensure_numpy_legacy_aliases()
+    _LIBROSA_MODULE, _librosa_import_error = _optional_import("librosa")
+    return _LIBROSA_MODULE
+
+
+def require_librosa():
+    librosa_module = _load_librosa()
+    if librosa_module is None:
+        detail = "" if _librosa_import_error is None else f" (original import error: {_librosa_import_error!r})"
+        raise ModuleNotFoundError(f"librosa is required for audio feature extraction{detail}")
+    return librosa_module
 
 
 def _load_pyloudnorm():
@@ -36,7 +73,8 @@ def _load_soundfile():
 
 @lru_cache(maxsize=32)
 def _get_mel_basis(sample_rate, fft_size, num_mels, fmin, fmax):
-    basis = librosa.filters.mel(
+    librosa_module = require_librosa()
+    basis = librosa_module.filters.mel(
         sr=sample_rate,
         n_fft=fft_size,
         n_mels=num_mels,
@@ -87,12 +125,13 @@ def librosa_wav2spec(wav_path,
                      sample_rate=22050,
                      loud_norm=False,
                      trim_long_sil=False):
+    librosa_module = require_librosa()
     if isinstance(wav_path, str):
         if trim_long_sil:
             from utils.audio.vad import trim_long_silences
             wav, _, _ = trim_long_silences(wav_path, sample_rate)
         else:
-            wav, _ = librosa.core.load(wav_path, sr=sample_rate)
+            wav, _ = librosa_module.core.load(wav_path, sr=sample_rate)
     else:
         wav = wav_path
     wav_orig = np.asarray(wav)
@@ -109,8 +148,8 @@ def librosa_wav2spec(wav_path,
             wav = wav / np.abs(wav).max()
 
     # get amplitude spectrogram
-    x_stft = librosa.stft(wav, n_fft=fft_size, hop_length=hop_size,
-                          win_length=win_length, window=window, pad_mode="constant")
+    x_stft = librosa_module.stft(wav, n_fft=fft_size, hop_length=hop_size,
+                                 win_length=win_length, window=window, pad_mode="constant")
     linear_spc = np.abs(x_stft)  # (n_bins, T)
 
     # get mel basis
@@ -132,6 +171,7 @@ def librosa_wav2spec(wav_path,
 
 
 def get_wav_num_frames(path, sr=None):
+    librosa_module = require_librosa()
     try:
         with wave.open(path, 'rb') as f:
             sr_ = f.getframerate()
@@ -145,10 +185,10 @@ def get_wav_num_frames(path, sr=None):
             if sr is None:
                 sr = sr_
             return int(len(wav_file) / (sr_ / sr))
-        wav_file, sr_ = librosa.core.load(path, sr=sr)
+        wav_file, sr_ = librosa_module.core.load(path, sr=sr)
         return len(wav_file)
-    except:
-        wav_file, sr_ = librosa.core.load(path, sr=sr)
+    except Exception:
+        wav_file, sr_ = librosa_module.core.load(path, sr=sr)
         return len(wav_file)
 
 
@@ -165,11 +205,11 @@ def pad_frames(frames, hop_size, n_samples, n_expect):
 
 
 def get_zcr_librosa(wav_data, length, hparams):
-    import librosa.feature
+    librosa_module = require_librosa()
     hop_size = hparams['hop_size']
     win_size = hparams['win_size']
 
-    zcr = librosa.feature.zero_crossing_rate(wav_data, frame_length=win_size, hop_length=hop_size)[0]
+    zcr = librosa_module.feature.zero_crossing_rate(wav_data, frame_length=win_size, hop_length=hop_size)[0]
     zcr = pad_frames(zcr, hop_size, wav_data.shape[0], length)
     return zcr
 
@@ -182,11 +222,11 @@ def get_energy_librosa(wav_data, length, hparams):
     :param hparams:
     :return: energy
     """
-    import librosa.feature
+    librosa_module = require_librosa()
     hop_size = hparams['hop_size']
     win_size = hparams['win_size']
 
-    energy = librosa.feature.rms(y=wav_data, frame_length=win_size, hop_length=hop_size)[0]
+    energy = librosa_module.feature.rms(y=wav_data, frame_length=win_size, hop_length=hop_size)[0]
     energy = pad_frames(energy, hop_size, wav_data.shape[0], length)
     return energy
 

@@ -12,6 +12,9 @@ num_sanity_val_steps: 0
 val_check_interval: 5000
 valid_infer_interval: 5000
 max_updates: 200000
+# Canonical Conan checkpoint seeding is a warm-start / partial-load path, not an exact
+# architectural resume. Keep this false and use resume_from_checkpoint for true resume.
+load_ckpt_strict: false
 allow_item_style_strength_override: false
 freeze_internal_identity_encoder_for_loss: true
 lambda_ph_dur: 1.0

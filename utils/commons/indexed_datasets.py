@@ -11,35 +11,38 @@ def _install_numpy_pickle_compat_aliases():
 
     Some existing binary dataset artifacts were produced in environments where
     NumPy pickled module references under ``numpy._core``. Older NumPy releases
-    (for example 1.24.x) only expose ``numpy.core``. Registering a few aliases
-    keeps ``np.load(..., allow_pickle=True)`` and ``pickle.loads(...)`` working
-    without forcing an immediate dataset rebuild.
+    (for example 1.24.x) only expose ``numpy.core``. Register only the missing
+    legacy-compat names instead of rewriting modern NumPy's canonical import
+    path; otherwise ``numpy.core`` can be forced to point at ``numpy._core``
+    early enough to confuse NumPy/SciPy lazy loaders and trigger recursive
+    imports in unrelated downstream modules.
     """
 
-    numpy_core = None
-    selected_base = None
-    for module_name in ("numpy._core", "numpy.core"):
-        try:
-            numpy_core = importlib.import_module(module_name)
-            selected_base = module_name
-            break
-        except Exception:
-            continue
-    if numpy_core is None or selected_base is None:
+    try:
+        importlib.import_module("numpy._core")
+        # Modern NumPy already exposes the canonical module path. Do not alias
+        # ``numpy.core`` here: NumPy owns that compatibility surface and may
+        # resolve it lazily.
+        return
+    except ModuleNotFoundError as exc:
+        if getattr(exc, "name", None) != "numpy._core":
+            return
+    except Exception:
+        return
+
+    try:
+        numpy_core = importlib.import_module("numpy.core")
+    except Exception:
         return
 
     aliases = {"numpy._core": numpy_core}
-    if selected_base == "numpy._core":
-        aliases.setdefault("numpy.core", numpy_core)
     for submodule in ("multiarray", "numeric", "_multiarray_umath", "umath"):
         try:
-            target = importlib.import_module(f"{selected_base}.{submodule}")
+            target = importlib.import_module(f"numpy.core.{submodule}")
         except Exception:
             target = None
         if target is not None:
-            aliases[f"numpy._core.{submodule}"] = target
-            if selected_base == "numpy._core":
-                aliases.setdefault(f"numpy.core.{submodule}", target)
+            aliases.setdefault(f"numpy._core.{submodule}", target)
     for name, module in aliases.items():
         sys.modules.setdefault(name, module)
 

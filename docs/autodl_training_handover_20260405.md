@@ -11,7 +11,7 @@
 当前主线代码已经满足“**可以进入正式训练前的 AutoDL 预检阶段**”这个条件，但要分清两件事：
 
 1. **代码/数据契约层面**：当前仓库主线是健康的。  
-   - `pytest`：`95 passed, 1 skipped`
+   - `pytest`：`103 passed, 1 skipped`
    - `compileall`：通过
    - 本地 1-step 训练 smoke：通过
    - full binary scan：`code_contract_ready=true`、`data_ready=true`
@@ -110,7 +110,7 @@ python -m compileall -q modules tasks inference utils data_gen tests
 
 结果：
 
-- `pytest`：`95 passed, 1 skipped`
+- `pytest`：`103 passed, 1 skipped`
 - `compileall`：通过
 
 ### 3.2 full binary prep 结果
@@ -641,3 +641,46 @@ tensorboard --logdir checkpoints/ConanMainlineAutoDL/tb_logs --host 0.0.0.0 --po
 - 再长训
 
 不要把“程序能启动”误判成“已经可以放心训 20 万步”。
+
+
+---
+
+## 2026-04-05 recheck supplement / ?????
+
+Latest local recheck on 2026-04-05 after the import-safe, warm-start, and NumPy-compat guardrail fixes:
+
+- `python -m pytest -q` -> `103 passed, 1 skipped`
+- `python -m compileall -q modules tasks inference utils data_gen tests` -> passed
+- `python tasks/Conan/mainline_train_prep.py --config egs/conan_emformer.yaml --full_binary_scan ...` -> structured summary emitted successfully
+
+Important interpretation:
+
+- `code_contract_ready=true`
+- `data_ready=true`
+- `data_dependent_preview_ready=true`
+- `environment_ready=false`
+- `ready=false`
+
+So the remaining blocker is still the **local runtime environment**, not the Conan mainline code contract.
+
+Current prep false-negative traps that are now explicitly closed:
+
+- indexed-dataset NumPy pickle compat alias no longer force-maps `numpy.core -> numpy._core` on modern NumPy
+- importing `utils.commons.indexed_datasets` no longer causes recursive downstream imports in `scipy.io.wavfile` or `tasks.Conan.Conan`
+- prep/runtime checks now resolve correctly:
+  - `runtime_import_tasks_Conan_Conan = true`
+  - `runtime_local_modules_Conan_Conan_init = true`
+
+Current local prep still fails only on environment/runtime pins:
+
+- Python `3.13` vs pinned `torchaudio 2.5.1` compatibility window
+- `torch==2.7.0+cpu` vs expected `2.5.1`
+- `torchaudio==2.7.0+cpu` vs expected `2.5.1`
+- `nltk==3.9.1` vs expected `3.8.1`
+- missing NLTK resource for `g2p_en`: `averaged_perceptron_tagger_eng`
+
+AutoDL handover implication:
+
+- **Do not** treat `ready=false` from this local base-shell recheck as a Conan code regression
+- **Do** recreate the canonical training env first, then rerun full prep on AutoDL
+- keep using `load_ckpt_strict=False` for warm-start partial loads; use `resume_from_checkpoint` for exact resume

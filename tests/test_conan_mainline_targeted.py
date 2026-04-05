@@ -42,6 +42,7 @@ from tasks.Conan.style_control_mixin import ConanStyleControlMixin
 from tasks.Conan.mainline_train_prep import (
     _check_binary_frame_alignment,
     _check_binary_sidecar_consistency,
+    _collect_warm_start_contract_checks,
     _classify_check_name,
     _resolve_binary_frame_alignment_scan_limit,
     _resolve_control_head_final_init_contract,
@@ -61,6 +62,7 @@ import utils.audio.pitch.utils as pitch_utils_modern
 import utils.audio.pitch_utils as pitch_utils_legacy
 import utils.audio.vad as vad_utils
 import utils.commons.base_task as base_task_module
+import utils.commons.ckpt_utils as ckpt_utils_module
 import tasks.tts.vocoder_infer.hifigan as hifigan_module
 try:
     import tasks.tts.vocoder_infer.hifigan_nsf as hifigan_nsf_module
@@ -361,17 +363,66 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         self.assertEqual(full["binary_frame_alignment_scan_mode"], "full")
         self.assertIsNone(full["binary_frame_alignment_scan_limit"])
 
-    def test_numpy_pickle_compat_aliases_no_longer_trigger_numpy_core_deprecation(self):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _install_numpy_pickle_compat_aliases()
-        self.assertTrue(any(name.startswith("numpy._core") for name in sys.modules))
-        self.assertFalse(
-            any(
+    def test_numpy_pickle_compat_aliases_do_not_force_numpy_core_on_modern_numpy(self):
+        code = textwrap.dedent(
+            """
+            import importlib
+            import sys
+            import warnings
+            sys.path.insert(0, ".")
+            try:
+                importlib.import_module("numpy._core")
+            except Exception:
+                print("legacy_numpy_skip")
+                raise SystemExit(0)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                from utils.commons.indexed_datasets import _install_numpy_pickle_compat_aliases
+                _install_numpy_pickle_compat_aliases()
+            assert "numpy._core" in sys.modules
+            assert "numpy.core" not in sys.modules, sys.modules.get("numpy.core")
+            assert not any(
                 issubclass(w.category, DeprecationWarning)
                 and "numpy.core is deprecated" in str(w.message)
                 for w in caught
-            )
+            ), [str(w.message) for w in caught]
+            print("ok")
+            """
+        )
+        result = self._run_isolated_python(code)
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+    def test_numpy_pickle_compat_aliases_do_not_break_scipy_or_mainline_imports(self):
+        code = textwrap.dedent(
+            """
+            import importlib
+            import sys
+            sys.path.insert(0, ".")
+            try:
+                importlib.import_module("numpy._core")
+            except Exception:
+                print("legacy_numpy_skip")
+                raise SystemExit(0)
+
+            import utils.commons.indexed_datasets  # noqa: F401
+            import scipy.io.wavfile  # noqa: F401
+            from tasks.Conan.mainline_train_prep import _check_importable
+
+            checks = []
+            _check_importable(checks, "runtime_import_tasks_Conan_Conan", "tasks.Conan.Conan")
+            assert checks and checks[0]["ok"] is True, checks
+            print(checks[0]["actual"])
+            """
+        )
+        result = self._run_isolated_python(code)
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
 
     def test_indexed_dataset_offsets_loader_accepts_legacy_dict_and_new_array_formats(self):
@@ -487,6 +538,75 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
 
+    def test_tasks_conan_import_survives_broken_librosa(self):
+        code = textwrap.dedent(
+            """
+            import builtins
+            import sys
+            _orig_import = builtins.__import__
+            def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == "librosa" or name.startswith("librosa."):
+                    raise ImportError(f"blocked optional dependency: {name}")
+                return _orig_import(name, globals, locals, fromlist, level)
+            builtins.__import__ = _blocked_import
+            sys.path.insert(0, ".")
+            import tasks.Conan.Conan  # noqa: F401
+            print("ok")
+            """
+        )
+        result = self._run_isolated_python(code)
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+    def test_modules_conan_import_survives_broken_librosa(self):
+        code = textwrap.dedent(
+            """
+            import builtins
+            import sys
+            _orig_import = builtins.__import__
+            def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == "librosa" or name.startswith("librosa."):
+                    raise ImportError(f"blocked optional dependency: {name}")
+                return _orig_import(name, globals, locals, fromlist, level)
+            builtins.__import__ = _blocked_import
+            sys.path.insert(0, ".")
+            import modules.Conan.Conan  # noqa: F401
+            print("ok")
+            """
+        )
+        result = self._run_isolated_python(code)
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+    def test_builtin_hifigan_import_survives_broken_librosa(self):
+        code = textwrap.dedent(
+            """
+            import builtins
+            import sys
+            _orig_import = builtins.__import__
+            def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == "librosa" or name.startswith("librosa."):
+                    raise ImportError(f"blocked optional dependency: {name}")
+                return _orig_import(name, globals, locals, fromlist, level)
+            builtins.__import__ = _blocked_import
+            sys.path.insert(0, ".")
+            import tasks.tts.vocoder_infer.hifigan  # noqa: F401
+            print("ok")
+            """
+        )
+        result = self._run_isolated_python(code)
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
     def test_binarizer_imports_survive_missing_optional_resemblyzer(self):
         code = textwrap.dedent(
             """
@@ -502,6 +622,77 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             import data_gen.tts.base_binarizer  # noqa: F401
             import data_gen.conan_binarizer  # noqa: F401
             print("ok")
+            """
+        )
+        result = self._run_isolated_python(code)
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+    def test_binarizer_imports_survive_missing_optional_resemblyzer_and_broken_librosa(self):
+        code = textwrap.dedent(
+            """
+            import builtins
+            import sys
+            _orig_import = builtins.__import__
+            def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+                blocked = (
+                    name == "resemblyzer"
+                    or name.startswith("resemblyzer.")
+                    or name == "librosa"
+                    or name.startswith("librosa.")
+                )
+                if blocked:
+                    raise ImportError(f"blocked optional dependency: {name}")
+                return _orig_import(name, globals, locals, fromlist, level)
+            builtins.__import__ = _blocked_import
+            sys.path.insert(0, ".")
+            import data_gen.tts.base_binarizer  # noqa: F401
+            import data_gen.conan_binarizer  # noqa: F401
+            print("ok")
+            """
+        )
+        result = self._run_isolated_python(code)
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+    def test_mainline_train_prep_returns_structured_summary_when_librosa_import_is_blocked(self):
+        code = textwrap.dedent(
+            """
+            import builtins
+            import sys
+            from tempfile import TemporaryDirectory
+            from types import SimpleNamespace
+
+            _orig_import = builtins.__import__
+            def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == "librosa" or name.startswith("librosa."):
+                    raise ImportError(f"blocked optional dependency: {name}")
+                return _orig_import(name, globals, locals, fromlist, level)
+            builtins.__import__ = _blocked_import
+            sys.path.insert(0, ".")
+
+            from tasks.Conan.mainline_train_prep import run_prep
+
+            with TemporaryDirectory() as tmpdir:
+                summary = run_prep(
+                    SimpleNamespace(
+                        config="egs/conan_emformer.yaml",
+                        binary_data_dir=None,
+                        output_path=f"{tmpdir}/prep.json",
+                        full_binary_scan=False,
+                        binary_scan_items=1,
+                    )
+                )
+            assert isinstance(summary, dict), type(summary)
+            assert "failed_summary" in summary, summary.keys()
+            assert "code_contract_ready" in summary, summary.keys()
+            print(summary["code_contract_ready"], summary["environment_ready"])
             """
         )
         result = self._run_isolated_python(code)
@@ -1627,6 +1818,54 @@ class ConanMainlineTargetedTests(unittest.TestCase):
         finally:
             mainline_prep.hparams.clear()
             mainline_prep.hparams.update(original_hparams)
+
+    def test_warm_start_contract_requires_non_strict_partial_load(self):
+        original_hparams = dict(mainline_prep.hparams)
+        try:
+            mainline_prep.hparams.clear()
+            mainline_prep.hparams.update(
+                {
+                    "load_ckpt": "checkpoints/Conan/model_ckpt_steps_200000.ckpt",
+                    "load_ckpt_strict": True,
+                }
+            )
+            checks = []
+            _collect_warm_start_contract_checks(checks)
+            self.assertEqual(len(checks), 1)
+            self.assertFalse(checks[0]["ok"])
+            self.assertTrue(checks[0]["actual"]["active"])
+            self.assertTrue(checks[0]["actual"]["load_ckpt_strict"])
+
+            mainline_prep.hparams["load_ckpt_strict"] = False
+            checks = []
+            _collect_warm_start_contract_checks(checks)
+            self.assertTrue(checks[0]["ok"])
+        finally:
+            mainline_prep.hparams.clear()
+            mainline_prep.hparams.update(original_hparams)
+
+    def test_load_ckpt_reports_missing_and_unexpected_keys_when_non_strict(self):
+        model = nn.Linear(2, 2)
+        with TemporaryDirectory() as tmpdir:
+            ckpt_path = Path(tmpdir) / "warm_start.ckpt"
+            torch.save(
+                {
+                    "state_dict": {
+                        "model.weight": torch.ones(2, 2),
+                        "model.unused": torch.ones(1),
+                    }
+                },
+                ckpt_path,
+            )
+            with patch("builtins.print") as mock_print:
+                ckpt_utils_module.load_ckpt(model, str(ckpt_path), strict=False)
+            printed = "\n".join(
+                " ".join(str(arg) for arg in call.args) for call in mock_print.call_args_list
+            )
+            self.assertIn("Missing keys (1)", printed)
+            self.assertIn("Unexpected keys (1)", printed)
+            self.assertIn("bias", printed)
+            self.assertIn("unused", printed)
 
     def test_streaming_voice_conversion_can_disable_legacy_global_hparams_bridge(self):
         fake_vocoder = SimpleNamespace(supports_native_streaming=lambda: False)

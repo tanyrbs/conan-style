@@ -5,21 +5,22 @@ from utils.commons.ckpt_utils import load_ckpt
 from utils.commons.hparams import set_hparams, hparams
 from utils.commons.meters import Timer
 import numpy as np
-import librosa
+from utils.audio import require_librosa
 import json
 import glob
 import re
 import os
 
 def denoise(wav, *, fft_size, hop_size, win_size, v=0.1):
-    spec = librosa.stft(y=wav, n_fft=fft_size, hop_length=hop_size,
-                        win_length=win_size, pad_mode='constant')
+    librosa_module = require_librosa()
+    spec = librosa_module.stft(y=wav, n_fft=fft_size, hop_length=hop_size,
+                               win_length=win_size, pad_mode='constant')
     spec_m = np.abs(spec)
     spec_m = np.clip(spec_m - v, a_min=0, a_max=None)
     spec_a = np.angle(spec)
 
-    return librosa.istft(spec_m * np.exp(1j * spec_a), hop_length=hop_size,
-                         win_length=win_size)
+    return librosa_module.istft(spec_m * np.exp(1j * spec_a), hop_length=hop_size,
+                                win_length=win_size)
 
 def load_model(config_path, checkpoint_path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

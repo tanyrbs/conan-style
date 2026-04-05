@@ -29,6 +29,24 @@ def _raise_or_log_missing_ckpt(base_dir: str, *, force: bool):
     print(e_msg)
 
 
+def _format_key_preview(keys, *, limit: int = 8) -> str:
+    keys = [str(key) for key in (keys or [])]
+    if len(keys) <= limit:
+        return ", ".join(keys)
+    shown = keys[:limit]
+    shown.append(f"... (+{len(keys) - limit} more)")
+    return ", ".join(shown)
+
+
+def _log_non_strict_load_result(load_result):
+    missing_keys = list(getattr(load_result, "missing_keys", []) or [])
+    unexpected_keys = list(getattr(load_result, "unexpected_keys", []) or [])
+    if missing_keys:
+        print(f"| Missing keys ({len(missing_keys)}): {_format_key_preview(missing_keys)}")
+    if unexpected_keys:
+        print(f"| Unexpected keys ({len(unexpected_keys)}): {_format_key_preview(unexpected_keys)}")
+
+
 def get_last_checkpoint(work_dir, steps=None):
     checkpoint = None
     last_ckpt_path = None
@@ -89,7 +107,9 @@ def load_ckpt(cur_model, ckpt_base_dir, model_name="model", force=True, strict=T
                         print("| Unmatched keys: ", key, new_param.shape, param.shape)
             for key in unmatched_keys:
                 del state_dict[key]
-        cur_model.load_state_dict(state_dict, strict=strict)
+        load_result = cur_model.load_state_dict(state_dict, strict=strict)
+        if not strict:
+            _log_non_strict_load_result(load_result)
         print(f"| load '{model_name}' from '{ckpt_path}'.")
     else:
         _raise_or_log_missing_ckpt(base_dir, force=force)
@@ -116,7 +136,9 @@ def load_ckpt_emformer(cur_model, ckpt_base_dir, model_name="model", force=True,
                         print("| Unmatched keys: ", key, new_param.shape, param.shape)
             for key in unmatched_keys:
                 del state_dict[key]
-        cur_model.load_state_dict(state_dict, strict=strict)
+        load_result = cur_model.load_state_dict(state_dict, strict=strict)
+        if not strict:
+            _log_non_strict_load_result(load_result)
         print(f"| load '{model_name}' from '{ckpt_path}'.")
     else:
         _raise_or_log_missing_ckpt(base_dir, force=force)

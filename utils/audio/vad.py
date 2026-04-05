@@ -1,7 +1,7 @@
 from skimage.transform import resize
 import struct
 from scipy.ndimage import binary_dilation
-import librosa
+from utils.audio import librosa
 import numpy as np
 import warnings
 import importlib

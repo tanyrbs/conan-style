@@ -1,7 +1,6 @@
 from collections.abc import Mapping
 
-import librosa
-from utils.audio import librosa_wav2spec
+from utils.audio import librosa_wav2spec, require_librosa
 from utils.commons.hparams import hparams
 import numpy as np
 import torch
@@ -112,15 +111,16 @@ class BaseVocoder:
 
     @staticmethod
     def wav2mfcc(wav_fn):
+        librosa_module = require_librosa()
         fft_size = hparams['fft_size']
         hop_size = hparams['hop_size']
         win_length = hparams['win_size']
         sample_rate = hparams['audio_sample_rate']
-        wav, _ = librosa.core.load(wav_fn, sr=sample_rate)
-        mfcc = librosa.feature.mfcc(y=wav, sr=sample_rate, n_mfcc=13,
-                                    n_fft=fft_size, hop_length=hop_size,
-                                    win_length=win_length, pad_mode="constant", power=1.0)
-        mfcc_delta = librosa.feature.delta(mfcc, order=1)
-        mfcc_delta_delta = librosa.feature.delta(mfcc, order=2)
+        wav, _ = librosa_module.core.load(wav_fn, sr=sample_rate)
+        mfcc = librosa_module.feature.mfcc(y=wav, sr=sample_rate, n_mfcc=13,
+                                           n_fft=fft_size, hop_length=hop_size,
+                                           win_length=win_length, pad_mode="constant", power=1.0)
+        mfcc_delta = librosa_module.feature.delta(mfcc, order=1)
+        mfcc_delta_delta = librosa_module.feature.delta(mfcc, order=2)
         mfcc = np.concatenate([mfcc, mfcc_delta, mfcc_delta_delta]).T
         return mfcc

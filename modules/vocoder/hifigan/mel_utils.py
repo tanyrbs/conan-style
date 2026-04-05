@@ -1,10 +1,14 @@
 import numpy as np
 import torch
 import torch.utils.data
-from librosa.filters import mel as librosa_mel_fn
+from utils.audio import require_librosa
 from scipy.io.wavfile import read
 
 MAX_WAV_VALUE = 32768.0
+
+
+def _librosa_mel_fn(*args, **kwargs):
+    return require_librosa().filters.mel(*args, **kwargs)
 
 
 def load_wav(full_path):
@@ -59,7 +63,7 @@ def mel_spectrogram(y, hparams, center=False, complex=False, for_loss=False):
     y = y.clamp(min=-1., max=1.)
     global mel_basis, hann_window
     if fmax not in mel_basis:
-        mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
+        mel = _librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
         mel_basis[str(fmax) + "_" + str(y.device)] = (
             torch.from_numpy(mel).float().to(y.device)
         )
@@ -99,7 +103,7 @@ def cal_mel_spec(y, n_fft, num_mels , sampling_rate, hop_size, win_size, fmin, f
     y = y.clamp(min=-1., max=1.)
     global mel_basis, hann_window
     if fmax not in mel_basis:
-        mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
+        mel = _librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
         mel_basis[str(fmax) + '_' + str(y.device)] = torch.from_numpy(mel).float().to(y.device)
         hann_window[str(y.device)] = torch.hann_window(win_size).to(y.device)
 

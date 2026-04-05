@@ -183,6 +183,7 @@ Expected result:
 
 If your local checkout still has dependency pin drift or missing staged artifacts, the honest result is `MAINLINE_TRAIN_PREP_NOT_READY`; in that case, read the JSON summary fields `code_contract_ready` vs `ready` / `train_ready_now` rather than inferring readiness from this document alone.
 That summary is now split more explicitly into `code_contract_ready`, `environment_ready`, `data_ready`, and `data_dependent_preview_ready`, with `failed_checks_by_category` exposing which class of issue is still blocking the current checkout.
+It also records `warm_start`, `binary_frame_alignment_scan_mode`, and `binary_frame_alignment_scan_limit`, so you can tell whether a run was configured as partial-load warm start vs. exact resume and whether the binary audit was sampled or exhaustive.
 Local constructor smoke checks such as `runtime_local_modules_Conan_Conan_init` are now intentionally classified as `runtime_dependencies`, so missing optional/runtime requirements do not get misreported as mainline code-contract failures.
 
 This prep gate now also checks that style-profile defaults really control mainline runtime strengths instead of silently falling back to neutral values.
@@ -203,6 +204,7 @@ It also samples real training data to make sure dynamic-timbre boundary suppress
 It also checks that binary train / valid / test splits exist and are non-empty.
 
 Existing binary indexed datasets created under NumPy 2.x are also kept readable in the shipped NumPy 1.x conda env, so prep does not fail spuriously on `numpy._core` pickle references.
+The indexed-dataset compatibility shim is now also careful not to poison modern NumPy import state: on NumPy 2.x it leaves `numpy.core` alone instead of force-aliasing it to `numpy._core`, which avoids recursive `scipy.io.wavfile` / `tasks.Conan.Conan` import failures and prevents misleading prep false negatives on modern hosts.
 
 Verified local result on 2026-04-04:
 
@@ -245,7 +247,7 @@ python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAud
 Short warm-start audit smoke from the shipped Conan checkpoint (`<= 50` updates):
 
 ```bash
-python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmoke8 --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=8,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=1,lambda_style_timbre_runtime_overlap=0.005"
+python tasks/run.py --config egs/conan_emformer.yaml --exp_name ConanMainlineAuditSmoke8 --hparams "load_ckpt=checkpoints/Conan/model_ckpt_steps_200000.ckpt,load_ckpt_strict=False,ds_workers=0,max_sentences=1,max_tokens=3000,val_check_interval=1000000,num_sanity_val_steps=0,max_updates=8,eval_max_batches=1,num_ckpt_keep=1,save_best=False,save_codes=[],dataloader_persistent_workers=False,dataloader_pin_memory=False,tb_log_interval=1,lambda_style_timbre_runtime_overlap=0.005"
 ```
 
 Notes:
@@ -253,7 +255,8 @@ Notes:
 - keep shipped inference checkpoint entry `Conan` untouched
 - use a fresh experiment name for real training output
 - `max_updates` now stops exactly at the requested batch budget instead of overshooting by one step
-- task-side `load_ckpt` warm starts now default to non-strict loading, so older compatible Conan checkpoints can still seed current mainline smoke/fine-tune runs
+- task-side `load_ckpt` warm starts should stay `load_ckpt_strict=False`; treat them as partial loads rather than exact resumes
+- use `resume_from_checkpoint` for true resume semantics instead of trying to force `load_ckpt_strict=true`
 - because `slow_style_trace` now really participates in decoder runtime fusion, old checkpoints should be A/B checked if you care about exact pre/post-closure forward parity
 
 ## 8. Mainline inference / evaluation after training

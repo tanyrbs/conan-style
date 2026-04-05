@@ -20,6 +20,7 @@ from utils.audio.pitch_extractors import extract_pitch_simple
 from utils.commons.base_task import BaseTask
 from utils.commons.ckpt_utils import load_ckpt
 from utils.commons.dataset_utils import (
+    _resolve_bool_flag,
     BaseConcatDataset,
     data_loader,
     partition_batches_for_ddp,
@@ -155,7 +156,7 @@ class SpeechBaseTask(BaseTask):
             load_ckpt(
                 self.model,
                 hparams['load_ckpt'],
-                strict=bool(hparams.get('load_ckpt_strict', False)),
+                strict=_resolve_bool_flag(hparams.get('load_ckpt_strict', False), default=False),
             )
         print_arch(self.model)
         return self.model

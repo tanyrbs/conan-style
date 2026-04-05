@@ -32,7 +32,6 @@ from modules.Conan.control.style_success import (
     resolve_style_success_rank_support_state,
 )
 from modules.Conan.dynamic_timbre_control import build_dynamic_timbre_boundary_mask
-from tasks.Conan.dataset import ConanDataset
 from tasks.Conan.control_schedule import (
     MAINLINE_MINIMAL_CONTROL_LAMBDAS,
     resolve_control_regularization_config,
@@ -41,6 +40,11 @@ from tasks.Conan.reference_curriculum import resolve_reference_curriculum
 from tasks.Conan.forcing_schedule import resolve_forcing_schedule
 from utils.commons.condition_labels import CONDITION_FIELDS, load_condition_id_maps, resolve_condition_label_id
 from utils.commons.hparams import hparams, set_hparams
+
+
+def _load_conan_dataset_class():
+    from tasks.Conan.dataset import ConanDataset
+    return ConanDataset
 
 
 REQUIRED_ZERO_KEYS = (
@@ -101,6 +105,18 @@ def _is_boollike_value(value):
     if isinstance(value, str):
         return value.strip().lower() in {"1", "0", "true", "false", "yes", "no", "y", "n", "on", "off"}
     return False
+
+
+def _resolve_bool_flag(value, *, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
 
 TOP_LEVEL_KEY_PATTERN = re.compile(r"^([A-Za-z0-9_]+):")
 
@@ -1132,6 +1148,7 @@ def _build_dataset_preview_state():
     }
     boundary_preview = []
     try:
+        ConanDataset = _load_conan_dataset_class()
         train_dataset = ConanDataset(prefix="train", shuffle=False)
         if len(train_dataset) > 0:
             sample = train_dataset[0]
@@ -1316,6 +1333,28 @@ def _resolve_control_head_final_init_contract():
             value = shared
         resolved[key] = value
     return resolved
+
+
+def _resolve_warm_start_contract():
+    load_ckpt = str(hparams.get("load_ckpt", "") or "").strip()
+    load_ckpt_strict = _resolve_bool_flag(hparams.get("load_ckpt_strict", False), default=False)
+    return {
+        "active": bool(load_ckpt),
+        "load_ckpt": load_ckpt,
+        "load_ckpt_strict": bool(load_ckpt_strict),
+        "recommended_mode": "partial_load_non_strict",
+    }
+
+
+def _collect_warm_start_contract_checks(checks):
+    warm_start = _resolve_warm_start_contract()
+    _check_true(
+        checks,
+        "warm_start_partial_load_mode",
+        not warm_start["load_ckpt_strict"],
+        actual=warm_start,
+        expected="load_ckpt_strict=false; use resume_from_checkpoint for exact resume",
+    )
 
 
 def _collect_config_surface_checks(checks, prep_ctx):
@@ -1691,6 +1730,7 @@ def _collect_identity_and_schedule_contract_checks(checks, prep_ctx):
 
 
 def _collect_mainline_contract_checks(checks, prep_ctx):
+    _collect_warm_start_contract_checks(checks)
     _collect_mainline_decoder_contract_checks(checks, prep_ctx)
     _collect_style_profile_contract_checks(checks, prep_ctx)
     _collect_upper_bound_and_runtime_timbre_contract_checks(checks, prep_ctx)
@@ -2444,6 +2484,7 @@ def _assemble_prep_summary(args, prep_ctx, checks):
             "full" if _resolve_binary_frame_alignment_scan_limit(args) is None else "sampled"
         ),
         "binary_frame_alignment_scan_limit": _resolve_binary_frame_alignment_scan_limit(args),
+        "warm_start": _jsonable(_resolve_warm_start_contract()),
         "checks": _jsonable(checks),
         "failed_summary": failed_summary,
         "failed_checks_by_category": _jsonable(failed_summary.get("blocking_categories", {})),

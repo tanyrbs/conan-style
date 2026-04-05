@@ -15,6 +15,7 @@ from tasks.Conan.style_batching_mixin import ConanStyleBatchingMixin
 from tasks.Conan.reference_curriculum import sample_training_reference_source
 from tasks.Conan.forcing_schedule import sample_forcing_flag
 from modules.Conan.reference_bundle import build_reference_bundle_from_inputs
+from utils.commons.dataset_utils import _resolve_bool_flag
 
 
 class ConanEmbTask(AuxDecoderMIDITask):
@@ -814,7 +815,7 @@ class VCPostnetTask(ConanTask):
             self.pretrain,
             hparams['fs2_ckpt_dir'],
             'model',
-            strict=bool(hparams.get('postnet_pretrain_strict_load', False)),
+            strict=_resolve_bool_flag(hparams.get('postnet_pretrain_strict_load', False), default=False),
         )
         for k, v in self.pretrain.named_parameters():
             v.requires_grad = False    

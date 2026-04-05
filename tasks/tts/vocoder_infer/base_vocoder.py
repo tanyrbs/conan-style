@@ -2,6 +2,7 @@ import librosa
 from utils.audio import librosa_wav2spec
 from utils.commons.hparams import hparams
 import numpy as np
+import torch
 
 REGISTERED_VOCODERS = {}
 
@@ -19,6 +20,32 @@ def get_vocoder_cls(vocoder_name):
 
 
 class BaseVocoder:
+    @staticmethod
+    def _ensure_mel_tensor(mel, device, *, num_mels=None):
+        if isinstance(mel, torch.Tensor):
+            mel_tensor = mel.to(device=device, dtype=torch.float32)
+        else:
+            mel_tensor = torch.as_tensor(mel, dtype=torch.float32, device=device)
+        if mel_tensor.dim() == 2:
+            mel_tensor = mel_tensor.unsqueeze(0)
+        if mel_tensor.dim() != 3:
+            raise ValueError(f"Expected mel with shape [T, M], [B, T, M], or [B, M, T], got {tuple(mel_tensor.shape)}.")
+        resolved_num_mels = int(
+            hparams.get(
+                'audio_num_mel_bins',
+                mel_tensor.size(-1) if mel_tensor.size(-1) > 0 else mel_tensor.size(1),
+            )
+            if num_mels is None
+            else num_mels
+        )
+        if mel_tensor.size(-1) == resolved_num_mels:
+            mel_tensor = mel_tensor.transpose(1, 2)
+        elif mel_tensor.size(1) != resolved_num_mels:
+            raise ValueError(
+                f"Could not infer mel axis for tensor shape {tuple(mel_tensor.shape)} with num_mels={resolved_num_mels}."
+            )
+        return mel_tensor.contiguous()
+
     def supports_native_streaming(self):
         return False
 

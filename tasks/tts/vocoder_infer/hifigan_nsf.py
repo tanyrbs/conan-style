@@ -96,10 +96,15 @@ class HifiGAN(BaseVocoder):
     def spec2wav(self, mel, **kwargs):
         device = self.device
         with torch.no_grad():
-            c = torch.FloatTensor(mel).unsqueeze(0).transpose(2, 1).to(device)
+            c = self._ensure_mel_tensor(mel, device)
             f0 = kwargs.get('f0')
             if f0 is not None and hparams.get('use_nsf'):
-                f0 = torch.FloatTensor(f0[None, :]).to(device)
+                if not isinstance(f0, torch.Tensor):
+                    f0 = torch.as_tensor(f0, dtype=torch.float32, device=device)
+                else:
+                    f0 = f0.to(device=device, dtype=torch.float32)
+                if f0.dim() == 1:
+                    f0 = f0.unsqueeze(0)
                 y = self.model(c, f0).view(-1)
             else:
                 y = self.model(c).view(-1)

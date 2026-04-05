@@ -306,7 +306,7 @@ class BaseSpeechDataset(BaseDataset):
             'mel': spec,
             'mel_nonpadding': spec.abs().sum(-1) > 0,
             'ref_mel': ref_spec,
-            'ref_timbre_mel': ref_spec.clone(),
+            'ref_timbre_mel': ref_spec,
         }
 
         # Optional speaker embedding
@@ -366,7 +366,10 @@ class BaseSpeechDataset(BaseDataset):
             'ref_mel_lengths': ref_lens,
         }
         if all('ref_timbre_mel' in s for s in samples):
-            batch['ref_timbre_mels'] = collate_1d_or_2d([s['ref_timbre_mel'] for s in samples], 0.0)
+            if all(s['ref_timbre_mel'] is s['ref_mel'] for s in samples):
+                batch['ref_timbre_mels'] = ref_mels
+            else:
+                batch['ref_timbre_mels'] = collate_1d_or_2d([s['ref_timbre_mel'] for s in samples], 0.0)
 
         if hparams.get('use_spk_embed', False):
             batch['spk_embed'] = torch.stack([s['spk_embed'] for s in samples])

@@ -93,10 +93,18 @@ Even when `mainline_train_prep.py` reports ready, **large-scale GPU training on 
 
 - **DDP backend:** canonical training YAML now uses `ddp_backend: auto`, and runtime resolves that to `gloo` on Windows and to `nccl` only on CUDA-capable non-Windows runs. `mainline_train_prep.py` also reports this through `runtime_ddp_backend_windows_safe`. Explicit `ddp_backend: nccl` overrides and older copied configs are still unsafe/misleading on Windows.
 - **Inference/runtime singleton bridge:** the inference engine now exposes an opt-out (`legacy_global_hparams_bridge: false`) for the process-global `hparams` bridge, but it still defaults to enabled for legacy compatibility. One local CLI process is fine; concurrent multi-instance library use still needs explicit opt-out plus validation that all downstream modules are local-hparams-safe.
-- **Streaming latency ceiling:** the current streaming path is still prefix-recompute based. Each chunk re-runs the acoustic model on the whole prefix and still round-trips mel chunks through CPU/NumPy before the vocoder, so production-grade low-latency throughput still needs a real incremental path.
+- **Streaming latency ceiling:** the current streaming path is still prefix-recompute based. Each chunk re-runs the acoustic model on the whole prefix; the built-in vocoder path no longer does the needless `Tensor -> CPU/NumPy -> GPU Tensor` bounce, but the stack still recomputes overlap windows and still lacks a native incremental acoustic/vocoder contract, so production-grade low-latency throughput still needs a real incremental path.
 - **Non-canonical environment drift:** the current base Python `3.13` shell now reaches a structured `MAINLINE_TRAIN_PREP_NOT_READY` result instead of crashing on optional audio imports, but it still fails the canonical environment contract because the pinned training stack remains `torch/torchaudio 2.5.1`, `nltk 3.8.1`, and a compatible Python `3.10/3.11`-class runtime with working `g2p_en` resources.
 
 These are engineering bugs, not conceptual constraints. Resolve them before any long multi-GPU run.
+
+The 2026-04-05 local performance pass improves that ceiling without overstating it:
+
+- repeated inference requests that reuse the same reference bundle now also reuse the prepared `reference_cache`, not just the raw reference mel tensor
+- built-in HifiGAN wrappers now accept tensor mel input directly, so the shipped inference path no longer performs an unnecessary `Tensor -> CPU/NumPy -> GPU Tensor` conversion before vocoder inference
+- collapsed-reference training batches now reuse `ref_mels` as `ref_timbre_mels` when they are identical, avoiding one extra per-sample clone and one extra batch collation of the same data
+
+These changes reduce avoidable overhead, but they do **not** change the larger architectural fact that streaming acoustic inference is still prefix-recompute based.
 
 When `use_external_speaker_verifier: false`, the identity loss is evaluated through the model's own speaker encoder,
 but the canonical config now freezes that internal encoder during the auxiliary identity-loss pass so the loss behaves like a fixed reference space rather than a moving target.

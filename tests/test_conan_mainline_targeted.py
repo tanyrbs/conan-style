@@ -58,6 +58,7 @@ import utils.audio.pitch.utils as pitch_utils_modern
 import utils.audio.pitch_utils as pitch_utils_legacy
 import utils.audio.vad as vad_utils
 import utils.commons.base_task as base_task_module
+import tasks.tts.vocoder_infer.hifigan as hifigan_module
 from utils.commons.hparams import hparams as global_hparams
 from utils.commons.hparams import set_hparams
 from utils.commons.weight_norm_compat import apply_weight_norm, remove_weight_norm_compat
@@ -1165,6 +1166,104 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             engine._load_reference_mels(request)
             engine._load_reference_mels(request)
         self.assertEqual(calls, ["ref.wav"])
+
+    def test_prepare_inference_runtime_reuses_cached_reference_runtime_state(self):
+        engine = inference_conan.StreamingVoiceConversion.__new__(inference_conan.StreamingVoiceConversion)
+        engine.hparams = {
+            "allow_split_reference_inputs": False,
+            "prompt_ref_fallback_to_style": True,
+            "reference_contract_mode": "collapsed_reference",
+            "reference_runtime_cache_max_entries": 2,
+        }
+        engine.device = "cpu"
+        engine.streaming_impl = "unit_test_streaming"
+        engine.streaming_capabilities = {
+            "frontend_stateful_streaming": True,
+            "acoustic_native_streaming": False,
+            "acoustic_prefix_recompute": True,
+            "vocoder_native_streaming": False,
+        }
+        engine.streaming_latency_report = {"first_packet_algorithmic_latency_ms": 0.0}
+        engine.vocoder_left_context_frames = 0
+        engine.vocoder_left_context_source = "unit_test"
+        engine.reference_runtime_cache_max_entries = 2
+        engine._reference_runtime_cache = inference_conan.OrderedDict()
+        engine._reference_mel_cache = inference_conan.OrderedDict()
+        prepare_calls = []
+
+        def fake_prepare_reference_cache(**kwargs):
+            prepare_calls.append(kwargs)
+            return {
+                "global_timbre_anchor": torch.zeros(1, 1, 4),
+                "global_style_summary": torch.zeros(1, 1, 4),
+            }
+
+        engine.model = SimpleNamespace(prepare_reference_cache=fake_prepare_reference_cache)
+        engine._resolve_style_profile = lambda inp: {
+            "style_profile": "strong_style",
+            "style_profile_track": "mainline",
+            "style_strength": 1.0,
+            "dynamic_timbre_strength": 1.0,
+            "dynamic_timbre_strength_source": "derived_from_style_strength",
+        }
+        engine._build_model_control_kwargs = lambda inp, resolved_style_profile=None: {}
+        engine._build_style_runtime_kwargs = lambda inp, resolved_style_profile=None: {}
+        engine._normalize_spk_embed = lambda spk_emb: spk_emb
+        engine._load_reference_mels = lambda inp: (
+            {"ref": torch.zeros(1, 4, 80)},
+            {
+                "split_reference_inputs": False,
+                "has_distinct_split_refs": False,
+                "collapsed_split_refs": False,
+                "cache_reference_paths": {"ref": inp["ref_wav"]},
+            },
+        )
+
+        request = {"ref_wav": "ref.wav", "src_wav": "src.wav"}
+        runtime_a = engine._prepare_inference_runtime(request)
+        runtime_b = engine._prepare_inference_runtime(request)
+        self.assertEqual(len(prepare_calls), 1)
+        self.assertIs(runtime_a["reference_cache"], runtime_b["reference_cache"])
+
+    def test_offline_infer_passes_tensor_mels_directly_to_vocoder(self):
+        engine = inference_conan.StreamingVoiceConversion.__new__(inference_conan.StreamingVoiceConversion)
+        captured = {}
+
+        def fake_spec2wav(mel):
+            captured["is_tensor"] = isinstance(mel, torch.Tensor)
+            return np.asarray([float(mel.shape[0]), float(mel.shape[1])], dtype=np.float32)
+
+        engine.vocoder = SimpleNamespace(
+            reset_stream=lambda: None,
+            spec2wav=fake_spec2wav,
+        )
+        engine._extract_offline_content_codes = lambda src_mel: torch.ones((1, 3), dtype=torch.long)
+        engine._run_model_from_content_codes = lambda content_codes, runtime: {
+            "mel_out": torch.zeros(1, 5, 80),
+        }
+        runtime = {}
+        src_mel = torch.zeros(1, 7, 80)
+        wav_pred, mel_pred, out, offline_meta = engine._infer_offline_from_mel(src_mel, runtime)
+        self.assertTrue(captured["is_tensor"])
+        self.assertTrue(np.array_equal(wav_pred, np.asarray([5.0, 80.0], dtype=np.float32)))
+        self.assertEqual(tuple(mel_pred.shape), (5, 80))
+        self.assertEqual(offline_meta["mel_frames"], 5)
+
+    def test_hifigan_wrapper_accepts_tensor_mel_input(self):
+        vocoder = hifigan_module.HifiGAN.__new__(hifigan_module.HifiGAN)
+        vocoder.device = torch.device("cpu")
+        captured = {}
+
+        class _FakeModel:
+            def __call__(self, c):
+                captured["shape"] = tuple(c.shape)
+                return torch.ones((1, 1, c.shape[-1]), dtype=torch.float32)
+
+        vocoder.model = _FakeModel()
+        with patch.dict(hifigan_module.hparams, {"profile_infer": False, "audio_num_mel_bins": 80}, clear=False):
+            wav = vocoder.spec2wav(torch.zeros(4, 80))
+        self.assertEqual(captured["shape"], (1, 80, 4))
+        self.assertEqual(tuple(wav.shape), (4,))
 
     def test_librosa_wav2spec_reuses_cached_mel_basis(self):
         audio_utils._get_mel_basis.cache_clear()

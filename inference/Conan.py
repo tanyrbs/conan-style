@@ -28,6 +28,7 @@ from modules.Conan.reference_bundle import (
     build_control_kwargs,
     build_reference_bundle_from_inputs,
     build_style_runtime_kwargs as build_reference_style_runtime_kwargs,
+    normalize_reference_contract_mode,
     reference_bundle_to_model_kwargs,
 )
 from modules.Conan.reference_cache import reference_cache_to_model_kwargs
@@ -132,6 +133,16 @@ class StreamingVoiceConversion:
             int(self.hparams.get("reference_mel_cache_max_entries", 8)),
         )
         self._reference_mel_cache = OrderedDict()
+        self.reference_runtime_cache_max_entries = max(
+            0,
+            int(
+                self.hparams.get(
+                    "reference_runtime_cache_max_entries",
+                    self.reference_mel_cache_max_entries,
+                )
+            ),
+        )
+        self._reference_runtime_cache = OrderedDict()
         print(
             f"| Conan vocoder_left_context_frames={self.vocoder_left_context_frames} "
             f"(source={self.vocoder_left_context_source})"
@@ -352,6 +363,14 @@ class StreamingVoiceConversion:
             ref_dynamic_timbre_wav = inp.get("ref_dynamic_timbre_wav", ref_style_wav)
             ref_emotion_wav = inp.get("ref_emotion_wav", ref_style_wav)
             ref_accent_wav = inp.get("ref_accent_wav", ref_style_wav)
+            cache_reference_paths = {
+                "ref": ref_wav,
+                "ref_timbre": ref_timbre_wav,
+                "ref_style": ref_style_wav,
+                "ref_dynamic_timbre": ref_dynamic_timbre_wav,
+                "ref_emotion": ref_emotion_wav,
+                "ref_accent": ref_accent_wav,
+            }
             bundle = build_reference_bundle_from_inputs(
                 ref=ref_mel,
                 ref_timbre=load_mel_tensor(ref_timbre_wav),
@@ -372,6 +391,7 @@ class StreamingVoiceConversion:
                 allow_split_reference_inputs=split_reference_inputs,
             )
         else:
+            cache_reference_paths = {"ref": ref_wav}
             bundle = build_reference_bundle_from_inputs(
                 ref=ref_mel,
                 prompt_fallback_to_style=bool(
@@ -390,7 +410,87 @@ class StreamingVoiceConversion:
             "split_reference_inputs": bool(split_reference_inputs),
             "has_distinct_split_refs": bool(has_distinct_split_refs),
             "collapsed_split_refs": bool(has_distinct_split_refs and not split_reference_inputs),
+            "cache_reference_paths": dict(cache_reference_paths),
         }
+
+    def _reference_runtime_cache_key(
+        self,
+        inp: Dict,
+        *,
+        reference_meta: Optional[Dict] = None,
+        spk_embed: Optional[torch.Tensor] = None,
+    ):
+        max_entries = max(
+            0,
+            int(
+                self.hparams.get(
+                    "reference_runtime_cache_max_entries",
+                    getattr(self, "reference_runtime_cache_max_entries", 0),
+                )
+            ),
+        )
+        if max_entries <= 0 or spk_embed is not None:
+            return None
+        reference_meta = reference_meta or {}
+        cache_reference_paths = reference_meta.get("cache_reference_paths", {})
+        if not isinstance(cache_reference_paths, dict) or len(cache_reference_paths) <= 0:
+            return None
+        normalized_paths = tuple(
+            (
+                str(name),
+                self._reference_mel_cache_key(path),
+            )
+            for name, path in sorted(cache_reference_paths.items())
+            if path is not None
+        )
+        if len(normalized_paths) <= 0:
+            return None
+        return (
+            normalized_paths,
+            bool(reference_meta.get("split_reference_inputs", False)),
+            normalize_reference_contract_mode(
+                inp.get(
+                    "reference_contract_mode",
+                    self.hparams.get("reference_contract_mode", "collapsed_reference"),
+                )
+            ),
+            bool(
+                inp.get(
+                    "prompt_ref_fallback_to_style",
+                    self.hparams.get("prompt_ref_fallback_to_style", True),
+                )
+            ),
+        )
+
+    def _lookup_reference_runtime_cache(self, cache_key):
+        if cache_key is None:
+            return None
+        if not hasattr(self, "_reference_runtime_cache") or self._reference_runtime_cache is None:
+            self._reference_runtime_cache = OrderedDict()
+        cached = self._reference_runtime_cache.pop(cache_key, None)
+        if cached is not None:
+            self._reference_runtime_cache[cache_key] = cached
+        return cached
+
+    def _store_reference_runtime_cache(self, cache_key, reference_cache):
+        if cache_key is None or reference_cache is None:
+            return
+        max_entries = max(
+            0,
+            int(
+                self.hparams.get(
+                    "reference_runtime_cache_max_entries",
+                    getattr(self, "reference_runtime_cache_max_entries", 0),
+                )
+            ),
+        )
+        if max_entries <= 0:
+            return
+        if not hasattr(self, "_reference_runtime_cache") or self._reference_runtime_cache is None:
+            self._reference_runtime_cache = OrderedDict()
+        self._reference_runtime_cache[cache_key] = reference_cache
+        while len(self._reference_runtime_cache) > max_entries:
+            self._reference_runtime_cache.popitem(last=False)
 
     def _build_model_control_kwargs(self, inp: Dict, *, resolved_style_profile: Optional[Dict] = None):
         style_profile = resolved_style_profile or self._resolve_style_profile(inp)
@@ -453,6 +553,11 @@ class StreamingVoiceConversion:
         except (TypeError, ValueError):
             requested_style_strength = float(resolved_profile.get("style_strength", 1.0))
         spk_embed = self._normalize_spk_embed(spk_emb)
+        reference_cache_key = self._reference_runtime_cache_key(
+            inp,
+            reference_meta=reference_meta,
+            spk_embed=spk_embed,
+        )
         latency_report = dict(self.streaming_latency_report)
         metadata = {
             "legacy_global_hparams_bridge": bool(
@@ -512,13 +617,16 @@ class StreamingVoiceConversion:
             "vocoder_left_context_source": str(self.vocoder_left_context_source),
             "spk_embed_override": bool(spk_embed is not None),
         }
-        with torch.inference_mode():
-            reference_cache = self.model.prepare_reference_cache(
-                reference_bundle=ref_mels,
-                spk_embed=spk_embed,
-                infer=True,
-                global_steps=200000,
-            )
+        reference_cache = self._lookup_reference_runtime_cache(reference_cache_key)
+        if reference_cache is None:
+            with torch.inference_mode():
+                reference_cache = self.model.prepare_reference_cache(
+                    reference_bundle=ref_mels,
+                    spk_embed=spk_embed,
+                    infer=True,
+                    global_steps=200000,
+                )
+            self._store_reference_runtime_cache(reference_cache_key, reference_cache)
         return {
             "reference_bundle": ref_mels,
             "reference_cache": reference_cache,
@@ -622,7 +730,7 @@ class StreamingVoiceConversion:
                 continue
             mel_new_frames = int(mel_new.size(0))
             mel_window, vocoder_context_frames = mel_chunks.append(mel_new)
-            wav_chunk_vocoder = self.vocoder.spec2wav(mel_window.cpu().numpy())
+            wav_chunk_vocoder = self.vocoder.spec2wav(mel_window)
             hop = self.hparams["hop_size"]
             start_sample = vocoder_context_frames * hop
             end_sample = min(len(wav_chunk_vocoder), start_sample + mel_new_frames * hop)
@@ -637,7 +745,7 @@ class StreamingVoiceConversion:
         wav_pred = (
             np.concatenate(wav_chunks, axis=0)
             if len(wav_chunks) > 0
-            else self.vocoder.spec2wav(mel_pred.cpu().numpy())
+            else self.vocoder.spec2wav(mel_pred)
         )
         estimated_runtime = build_streaming_latency_report(self.hparams, total_frames=int(total_frames))
         stream_meta = {
@@ -659,7 +767,7 @@ class StreamingVoiceConversion:
         out = self._run_model_from_content_codes(content_codes, runtime)
         mel_pred = out["mel_out"][0]
         self.vocoder.reset_stream()
-        wav_pred = self.vocoder.spec2wav(mel_pred.cpu().numpy())
+        wav_pred = self.vocoder.spec2wav(mel_pred)
         offline_meta = {
             "num_chunks": 1,
             "tokens_per_chunk": int(content_codes.size(1)),

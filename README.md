@@ -10,6 +10,8 @@ A focused repository audit/update pass landed on 2026-04-04. Highlights:
 - control heads that should start "almost closed" no longer hard-zero their final weights; canonical mainline now uses tiny nonzero final-layer init (`control_head_final_init_std: 1e-3`) so style-router / pitch-residual / decoder-gate / TVT-material branches can receive end-to-end gradients from the first day instead of learning in a delayed two-stage fashion
 - split-reference inference no longer recomputes identical reference mels within one request
 - reference mel tensors are now cached across requests inside one inference engine instance, reducing repeated wav->mel work on repeated prompts
+- inference now also caches the prepared reference runtime state (`prepare_reference_cache(...)`) across repeated requests that reuse the same reference bundle, avoiding repeated style/timbre prompt encoding on hot prompt loops
+- built-in HifiGAN vocoder wrappers now accept mel tensors directly, so the main inference path no longer does a needless `Tensor -> CPU NumPy -> GPU Tensor` round-trip before vocoder inference
 - mel filterbank construction is now cached in `librosa_wav2spec(...)`, reducing repeated CPU setup overhead on hot audio preprocessing paths
 - optional audio deps (`pyloudnorm`, `soundfile`) are now lazy-loaded and treated as truly optional unless the relevant path is used
 - VAD trimming now uses the `librosa 0.10.x`-compatible resample call signature
@@ -18,6 +20,7 @@ A focused repository audit/update pass landed on 2026-04-04. Highlights:
 - the NumPy indexed-dataset compatibility shim no longer relies on the deprecated `numpy.core` import path in normal cases
 - binary indexed datasets now write plain `int64` offset sidecars while keeping legacy dict-style `.idx` files readable
 - training datasets now build speaker/condition sampling buckets deterministically from `seed` and avoid extra tensor copies on hot data paths
+- collapsed-reference dataset collation now reuses `ref_mels` for `ref_timbre_mels` when they are the same tensor instead of cloning/collating the same content twice
 - inference hot paths now run under `torch.inference_mode()` for lower autograd overhead
 - main training/data entrypoints now share one early `single_thread_env` helper that uses `setdefault(...)` instead of hard-overwriting host thread caps
 - optional deps on the mainline path (`g2p_en`, `nltk`, `textgrid`, `tensorboard`, `resemblyzer`) are now gated much closer to their real call sites instead of failing at import time
@@ -54,7 +57,7 @@ If you intend large-scale GPU training or Windows multi-GPU runs, there are stil
 
 - **DDP backend on Windows:** canonical training config now uses `ddp_backend: auto`, and `Trainer` resolves that to a platform-safe backend (`gloo` on Windows, `nccl` only on CUDA-capable non-Windows runs). `mainline_train_prep.py` also surfaces this through `runtime_ddp_backend_windows_safe`. Older copied configs and explicit `ddp_backend: nccl` overrides can still be misleading on Windows.
 - **Inference config singleton pollution:** `inference/Conan.py` now makes the global `hparams` bridge optional via `legacy_global_hparams_bridge`, but it still defaults to enabled for legacy compatibility. Library-style multi-instance / concurrent inference is therefore still not isolation-safe unless that bridge is disabled and downstream dependencies are known to be local-hparams-safe.
-- **Streaming performance ceiling:** prefix-online inference still recomputes the full acoustic prefix per chunk and still performs per-chunk `Tensor -> CPU -> NumPy -> vocoder` transitions. Functional correctness is okay, but latency/throughput are still well below a truly incremental stack.
+- **Streaming performance ceiling:** prefix-online inference still recomputes the full acoustic prefix per chunk, and although the built-in vocoder path no longer does the needless `Tensor -> CPU -> NumPy -> GPU Tensor` bounce, it still recomputes overlap windows and lacks a native incremental acoustic/vocoder contract. Functional correctness is okay, but latency/throughput are still well below a truly incremental stack.
 - **Environment pin drift in non-canonical envs:** in the current base Python `3.13` shell, `mainline_train_prep.py` now finishes and emits structured JSON, but it still reports `MAINLINE_TRAIN_PREP_NOT_READY` because the runtime stack does not match the pinned training environment (`torch/torchaudio 2.5.1`, `nltk 3.8.1`, Python `3.10/3.11`-class runtime, plus working `g2p_en` resources).
 
 These are engineering blockers, not conceptual ones. Until they are addressed, treat large-scale GPU training as **not** green even if prep passes.

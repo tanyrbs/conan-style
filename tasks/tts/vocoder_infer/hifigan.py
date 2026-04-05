@@ -34,8 +34,7 @@ class HifiGAN(BaseVocoder):
     def spec2wav(self, mel, **kwargs):
         device = self.device
         with torch.no_grad():
-            c = torch.FloatTensor(mel).unsqueeze(0).to(device)
-            c = c.transpose(2, 1)
+            c = self._ensure_mel_tensor(mel, device)
             with Timer('hifigan', enable=hparams['profile_infer']):
                 y = self.model(c).view(-1)
         wav_out = y.cpu().numpy()

@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import random
 import unittest
 from tempfile import TemporaryDirectory
 
@@ -135,6 +136,42 @@ class DataPipelineRegressionTests(unittest.TestCase):
                 ),
                 11,
             )
+
+    def test_base_speech_dataset_reuses_ref_timbre_alias_in_collate(self):
+        original_hparams = dict(hparams)
+        original_random_state = random.getstate()
+        try:
+            hparams.clear()
+            hparams.update(
+                {
+                    "binary_data_dir": ".",
+                    "sort_by_len": False,
+                    "test_ids": [],
+                    "min_frames": 0,
+                    "max_samples_per_spk": 8,
+                    "max_frames": 16,
+                    "frames_multiple": 1,
+                    "use_fixed_timbre_reference": False,
+                    "use_spk_embed": False,
+                    "use_spk_id": False,
+                }
+            )
+            random.seed(1234)
+            items = [
+                {"item_name": "a", "spk_id": 1, "mel": np.ones((4, 3), dtype=np.float32)},
+                {"item_name": "b", "spk_id": 1, "mel": np.ones((5, 3), dtype=np.float32) * 2},
+            ]
+            dataset = BaseSpeechDataset("train", items=items)
+            samples = [dataset[0], dataset[1]]
+            self.assertIs(samples[0]["ref_timbre_mel"], samples[0]["ref_mel"])
+            self.assertIs(samples[1]["ref_timbre_mel"], samples[1]["ref_mel"])
+
+            batch = dataset.collater(samples)
+            self.assertIs(batch["ref_timbre_mels"], batch["ref_mels"])
+        finally:
+            random.setstate(original_random_state)
+            hparams.clear()
+            hparams.update(original_hparams)
 
 
 if __name__ == "__main__":

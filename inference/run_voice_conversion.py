@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument(
         "--allow_advanced_controls",
         action="store_true",
-        help="Opt-in passthrough for research/ablation-only condition controls plus advanced style/runtime overrides such as explicit dynamic-timbre strength and pitch/style runtime knobs. Internal hparam-owned safety knobs still remain unavailable.",
+        help="Opt-in passthrough for research/ablation-only condition controls plus advanced style/runtime overrides such as explicit dynamic-timbre strength, pitch/style runtime knobs, and the two research budget stabilizers. Most internal hparam-owned safety knobs still remain unavailable.",
     )
     return parser.parse_args()
 
@@ -168,7 +168,7 @@ class VoiceConversionRunner:
             warnings.warn(
                 "Ignoring unsupported or non-mainline control keys in run_voice_conversion.py: "
                 f"{ignored_advanced_keys}. Use allow_advanced_controls=true only for explicit "
-                "research/ablation runs; internal hparam-owned knobs remain unavailable from the request surface.",
+                "research/ablation runs; most internal hparam-owned knobs still remain unavailable from the request surface.",
                 stacklevel=2,
             )
             self._advanced_control_warning_emitted = True

@@ -46,6 +46,18 @@ from utils.commons.condition_labels import load_condition_id_maps, resolve_condi
 from modules.Emformer.emformer import EmformerDistillModel
 __all__ = ["StreamingVoiceConversion"]
 
+
+def _resolve_bool_flag(value, *, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
+
 class StreamingVoiceConversion:
     """
     Streaming-style inference front-end.
@@ -89,10 +101,16 @@ class StreamingVoiceConversion:
             resolved_hp
         )
         resolved_hp["vocoder_left_context_frames"] = int(vocoder_left_context_frames)
-        # Keep the global hparams bridge for legacy modules (notably the vocoder),
-        # but make the front-end itself read from an instance-local resolved copy.
-        hparams.clear()
-        hparams.update(resolved_hp)
+        self.legacy_global_hparams_bridge = _resolve_bool_flag(
+            resolved_hp.get("legacy_global_hparams_bridge", True),
+            default=True,
+        )
+        resolved_hp["legacy_global_hparams_bridge"] = bool(self.legacy_global_hparams_bridge)
+        # Keep the global hparams bridge only when a legacy dependency still
+        # requires it; otherwise avoid polluting concurrent inference instances.
+        if self.legacy_global_hparams_bridge:
+            hparams.clear()
+            hparams.update(resolved_hp)
         self.hparams = resolved_hp
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.streaming_impl = "emformer_stateful_prefix_recompute"
@@ -437,6 +455,9 @@ class StreamingVoiceConversion:
         spk_embed = self._normalize_spk_embed(spk_emb)
         latency_report = dict(self.streaming_latency_report)
         metadata = {
+            "legacy_global_hparams_bridge": bool(
+                getattr(self, "legacy_global_hparams_bridge", True)
+            ),
             "streaming_impl": self.streaming_impl,
             "streaming_capabilities": dict(self.streaming_capabilities),
             "streaming_latency_report": latency_report,
@@ -686,6 +707,8 @@ class StreamingVoiceConversion:
             "expressive_upper_bound_progress",
             "runtime_dynamic_timbre_style_budget_ratio",
             "runtime_dynamic_timbre_style_budget_margin",
+            "runtime_dynamic_timbre_style_budget_slow_style_weight",
+            "runtime_dynamic_timbre_style_budget_epsilon",
         )
         bool_fields = (
             "style_to_pitch_residual_include_timbre",

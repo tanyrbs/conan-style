@@ -571,7 +571,20 @@ class Trainer:
         root_node = self.resolve_root_node_address(root_node)
         os.environ['MASTER_ADDR'] = root_node
         os.environ.setdefault('MASTER_PORT', str(hparams.get('ddp_master_port', 23456)))
-        dist.init_process_group(hparams.get('ddp_backend', 'nccl'), rank=proc_rank, world_size=world_size)
+        dist.init_process_group(self._resolve_ddp_backend(), rank=proc_rank, world_size=world_size)
+
+    def _resolve_ddp_backend(self):
+        backend = str(hparams.get('ddp_backend', 'auto') or 'auto').strip().lower()
+        if backend in {'', 'auto'}:
+            if os.name == 'nt':
+                return 'gloo'
+            if torch.cuda.is_available() and getattr(dist, 'is_nccl_available', lambda: False)():
+                return 'nccl'
+            return 'gloo'
+        if os.name == 'nt' and backend == 'nccl':
+            logging.warning('ddp_backend=nccl is unsupported on Windows; falling back to gloo.')
+            return 'gloo'
+        return backend
 
     def resolve_root_node_address(self, root_node):
         if '[' in root_node:

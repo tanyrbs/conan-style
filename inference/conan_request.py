@@ -11,6 +11,10 @@ PUBLIC_CONTROL_KEYS = (
     "style_strength",
 )
 
+PUBLIC_CONTROL_ALIASES = {
+    "style_strength": ("style_strengths",),
+}
+
 ADVANCED_CONDITION_CONTROL_KEYS = (
     "emotion",
     "emotion_id",
@@ -63,6 +67,8 @@ ADVANCED_STYLE_RUNTIME_KEYS = (
     "runtime_dynamic_timbre_style_budget_enabled",
     "runtime_dynamic_timbre_style_budget_ratio",
     "runtime_dynamic_timbre_style_budget_margin",
+    "runtime_dynamic_timbre_style_budget_slow_style_weight",
+    "runtime_dynamic_timbre_style_budget_epsilon",
 )
 
 ADVANCED_CONTROL_KEYS = (
@@ -74,8 +80,6 @@ ADVANCED_CONTROL_KEYS = (
 UNSUPPORTED_INTERNAL_REQUEST_KEYS = (
     "style_condition_strength",
     "enforce_decoder_no_timing_writeback",
-    "runtime_dynamic_timbre_style_budget_slow_style_weight",
-    "runtime_dynamic_timbre_style_budget_epsilon",
     "style_to_pitch_residual_apply_during_teacher_forcing",
     "upper_bound_curriculum_enabled",
     "expressive_upper_bound_curriculum_enabled",
@@ -86,9 +90,13 @@ UNSUPPORTED_INTERNAL_REQUEST_KEYS = (
 )
 
 ADVANCED_CONTROL_ALIASES = {
-    "decoder_style_condition_mode": ("style_condition_mode",),
+    "dynamic_timbre_strength": ("dynamic_timbre_strengths",),
+    "decoder_style_condition_mode": ("style_condition_mode", "style_mainline_mode"),
+    "global_timbre_to_pitch": ("global_style_anchor_to_pitch", "style_anchor_to_pitch"),
+    "style_to_pitch_residual_mode": ("pitch_residual_mode",),
     "style_memory_mode": ("style_reference_memory_mode",),
-    "global_style_anchor_strength": ("style_anchor_strength",),
+    "dynamic_timbre_memory_mode": ("dynamic_timbre_reference_memory_mode",),
+    "global_style_anchor_strength": ("global_timbre_strength", "style_anchor_strength"),
     "style_to_pitch_residual": ("use_style_to_pitch_residual",),
     "fast_style_strength_scale": ("fast_style_scale",),
     "slow_style_strength_scale": ("slow_style_scale",),
@@ -123,6 +131,13 @@ def build_mainline_request_input(
     }
     for key in PUBLIC_CONTROL_KEYS:
         value = source.get(key)
+        alias_keys = PUBLIC_CONTROL_ALIASES.get(key, ())
+        if value is None:
+            for alias_key in alias_keys:
+                alias_value = source.get(alias_key)
+                if alias_value is not None:
+                    value = alias_value
+                    break
         if value is not None:
             request[key] = value
 
@@ -168,6 +183,7 @@ __all__ = [
     "ADVANCED_MODEL_CONTROL_KEYS",
     "ADVANCED_STYLE_RUNTIME_KEYS",
     "CONDITION_FIELDS",
+    "PUBLIC_CONTROL_ALIASES",
     "PUBLIC_CONTROL_KEYS",
     "SPLIT_REFERENCE_KEYS",
     "UNSUPPORTED_INTERNAL_REQUEST_KEYS",

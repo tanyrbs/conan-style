@@ -1562,16 +1562,36 @@ def _collect_runtime_dependency_checks(checks, args):
         _check_nltk_cmudict_for_g2p_en,
         expected="nltk cmudict available for g2p_en",
     )
-    ddp_backend = str(hparams.get("ddp_backend", "")).strip().lower()
+    requested_ddp_backend = str(hparams.get("ddp_backend", "")).strip().lower()
+    effective_ddp_backend = _resolve_effective_ddp_backend(requested_ddp_backend)
     num_gpus = int(hparams.get("num_gpus", hparams.get("gpus", 1)) or 1)
     if os.name == "nt" and num_gpus > 1:
         _check_true(
             checks,
             "runtime_ddp_backend_windows_safe",
-            ddp_backend != "nccl",
-            actual={"ddp_backend": ddp_backend, "num_gpus": num_gpus},
-            expected="ddp_backend != 'nccl' on Windows multi-GPU",
+            effective_ddp_backend != "nccl",
+            actual={
+                "requested_ddp_backend": requested_ddp_backend,
+                "effective_ddp_backend": effective_ddp_backend,
+                "num_gpus": num_gpus,
+            },
+            expected="effective ddp backend != 'nccl' on Windows multi-GPU",
         )
+
+
+def _resolve_effective_ddp_backend(ddp_backend):
+    backend = str(ddp_backend or "auto").strip().lower()
+    if backend in {"", "auto"}:
+        if os.name == "nt":
+            return "gloo"
+        if bool(torch.cuda.is_available()) and bool(
+            getattr(torch.distributed, "is_nccl_available", lambda: False)()
+        ):
+            return "nccl"
+        return "gloo"
+    if os.name == "nt" and backend == "nccl":
+        return "gloo"
+    return backend
 
 
 def _collect_data_staging_checks(checks, prep_ctx):

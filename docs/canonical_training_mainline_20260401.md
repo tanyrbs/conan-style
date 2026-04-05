@@ -1,6 +1,6 @@
 # Conan canonical training mainline
 
-Updated: 2026-04-04
+Updated: 2026-04-05
 
 ## 1. Scope
 
@@ -38,10 +38,12 @@ Training / inference stay locked to:
 - `style_strength` stays inside the shipped mainline range `0.50 .. 1.80`
 - `allow_item_style_strength_override: false`, so training batches keep the resolved profile strength unless you explicitly opt into a research override
 - `dynamic_timbre_strength` is derived from `style_strength` on the canonical path, so these are partially coupled controls rather than fully independent free variables
+- shipped mainline should be described as **owner-first expressive VC** with strong prosodic variation / style-driven contour control, not as an explicit timing/planner rewrite system
 - `style_to_pitch_residual: true`
 - `style_to_pitch_residual_include_timbre: false`
 - `global_timbre_to_pitch: false`
-- post-rhythm pitch-canvas projection is still best-effort in the shipped path; if no rhythm frame-index canvas is emitted, runtime falls back to source-aligned residual application and reports the realized canvas/fallback reason
+- decoder style runtime keeps timing/planner writeback closed (`planner_writeback_allowed: false`, `timing_writeback_allowed: false`)
+- post-rhythm pitch-canvas projection is still best-effort in the shipped path; in practice the shipped mainline usually remains source-aligned unless runtime actually emits rhythm frame-index canvases, and runtime reports the realized canvas/fallback reason
 - `allow_split_reference_inputs: false`
 
 Canonical training also keeps the aggressive upper-bound modules behind one shared curriculum:
@@ -78,8 +80,8 @@ Separately, the codebase now exposes an optional runtime-separation regularizer,
 
 Even when `mainline_train_prep.py` reports ready, **large-scale GPU training on Windows is not yet green** without the following fixes:
 
-- **DDP backend:** canonical config still uses `ddp_backend: nccl`. There is no platform guard in prep, so Windows multi-GPU launch can fail even if prep passes. A Windows-safe default (e.g., `gloo`) must be enforced.
-- **Inference/runtime singleton bridge:** the inference engine still updates the process-global `hparams` singleton for legacy compatibility. This is acceptable for one local CLI process but is still unsafe for concurrent multi-instance library use.
+- **DDP backend:** canonical training YAML now uses `ddp_backend: auto`, and runtime resolves that to `gloo` on Windows and to `nccl` only on CUDA-capable non-Windows runs. `mainline_train_prep.py` also reports this through `runtime_ddp_backend_windows_safe`. Explicit `ddp_backend: nccl` overrides and older copied configs are still unsafe/misleading on Windows.
+- **Inference/runtime singleton bridge:** the inference engine now exposes an opt-out (`legacy_global_hparams_bridge: false`) for the process-global `hparams` bridge, but it still defaults to enabled for legacy compatibility. One local CLI process is fine; concurrent multi-instance library use still needs explicit opt-out plus validation that all downstream modules are local-hparams-safe.
 - **Streaming latency ceiling:** the current streaming path is still prefix-recompute based. Each chunk re-runs the acoustic model on the whole prefix and still round-trips mel chunks through CPU/NumPy before the vocoder, so production-grade low-latency throughput still needs a real incremental path.
 - **Non-canonical environment drift:** the current base Python `3.13` shell now reaches a structured `MAINLINE_TRAIN_PREP_NOT_READY` result instead of crashing on optional audio imports, but it still fails the canonical environment contract because the pinned training stack remains `torch/torchaudio 2.5.1`, `nltk 3.8.1`, and a compatible Python `3.10/3.11`-class runtime with working `g2p_en` resources.
 
@@ -155,7 +157,7 @@ This prep gate now also checks that style-profile defaults really control mainli
 When the environment is incomplete, the JSON summary now separates `code_contract_ready` from the stricter `ready` / `train_ready_now` flags so mainline code-contract failures are not conflated with missing staged data or missing runtime libraries.
 It also checks exact `requirements.txt` pins for `torch` / `torchaudio` / `torchdyn` / `textgrid` / `g2p_en` / `nltk`, plus Python-vs-pinned-`torchaudio` compatibility. That compatibility gate is now updated to the currently published wheel boundary: `torchaudio 2.3.x .. 2.5.x` are treated as Python `3.8 .. 3.11`, while `2.6.x` extends to Python `3.13`; out-of-range runtimes are no longer silently accepted just because a local import happens to work. The runtime side now explicitly checks `g2p_en` importability, the NLTK tagger + `cmudict` resources that `g2p_en` needs, `tasks.Conan.Conan` importability, and a **local** `Conan(0, hparams)` construction path using `set_hparams(..., global_hparams=False)`, so hidden singleton-config dependencies are surfaced instead of being silently masked by global state. On the data side, prep now also verifies that `*_lengths.npy`, `*_ref_indices.npy`, and `*_spk_ids.npy` remain aligned and that each reference index still points to a same-speaker item, reducing false-green prep results from stale binary sidecars.
 
-It now also checks that the shipped runtime dynamic-timbre budget contract matches the canonical mainline hparams, including the public budget ratio / margin plus the internal hparam-owned budget stabilization scalars:
+It now also checks that the shipped runtime dynamic-timbre budget contract matches the canonical mainline defaults, including the public budget ratio / margin plus the research-only stabilization scalars that are available on the opt-in advanced inference surface:
 
 - `runtime_dynamic_timbre_style_budget_ratio`
 - `runtime_dynamic_timbre_style_budget_margin`
@@ -230,6 +232,8 @@ Single-reference demo:
 python inference/run_voice_conversion.py   --pair_config inference/conan_single_reference_demo.example.json
 ```
 
+Research/ablation-only runtime overrides remain opt-in: pass `--allow_advanced_controls` on the CLI or set `allow_advanced_controls: true` in the request manifest before expecting explicit `dynamic_timbre_strength`, `allow_mainline_profile_research_overrides`, or advanced dynamic-timbre budget knobs to survive request normalization.
+
 Style-profile sweep:
 
 ```bash
@@ -282,6 +286,7 @@ python inference/run_streaming_latency_report.py
   - `modules/Conan/pitch_runtime.py` as the mixin layer for pitch generation + style-to-pitch runtime logic
   - `modules/Conan/common.py` as the single source of truth for lightweight mapping lookup helpers
   - `inference/conan_request.py` as the single source of truth for canonical inference request schema helpers
+- advanced request/runtime passthrough now also covers the two research-only budget stabilizers `runtime_dynamic_timbre_style_budget_slow_style_weight` / `runtime_dynamic_timbre_style_budget_epsilon`; they are observable in inference metadata when used, but they still are not public closed-mainline controls
 - these internal modules do not add new public knobs; they only reduce duplicated glue code and contract drift
 - streaming inference tail trimming has been aligned with offline decoding, so online/offline mel and wav lengths now match on parity checks
 - streaming runtime math / latency reporting is now centralized in `inference/streaming_runtime.py`

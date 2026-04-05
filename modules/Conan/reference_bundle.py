@@ -50,6 +50,8 @@ STYLE_RUNTIME_KEYS = (
     "runtime_dynamic_timbre_style_budget_enabled",
     "runtime_dynamic_timbre_style_budget_ratio",
     "runtime_dynamic_timbre_style_budget_margin",
+    "runtime_dynamic_timbre_style_budget_slow_style_weight",
+    "runtime_dynamic_timbre_style_budget_epsilon",
 )
 
 REFERENCE_CONTRACT_MODES = (
@@ -373,7 +375,10 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
     # state in Conan.__init__) must stay out of per-request/runtime kwargs.
     # A few runtime-consumed stabilizers are also intentionally excluded here
     # because closed-mainline owns them via shipped hparams rather than
-    # per-request/profile override surface.
+    # per-request/profile override surface. The research-only budget
+    # stabilizers below are the exception: they are forwarded only through the
+    # advanced request/runtime path and remain absent from the public mainline
+    # control surface.
     return {
         "style_profile": first_present(
             source,
@@ -499,6 +504,14 @@ def build_style_runtime_kwargs(source: Mapping[str, Any]):
         "runtime_dynamic_timbre_style_budget_margin": first_present(
             source,
             "runtime_dynamic_timbre_style_budget_margin",
+        ),
+        "runtime_dynamic_timbre_style_budget_slow_style_weight": first_present(
+            source,
+            "runtime_dynamic_timbre_style_budget_slow_style_weight",
+        ),
+        "runtime_dynamic_timbre_style_budget_epsilon": first_present(
+            source,
+            "runtime_dynamic_timbre_style_budget_epsilon",
         ),
     }
 

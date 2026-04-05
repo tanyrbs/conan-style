@@ -1,6 +1,6 @@
 # Conan-derived canonical mainline
 
-Updated: 2026-04-04
+Updated: 2026-04-05
 
 ## Audit update (2026-04-04)
 
@@ -50,8 +50,8 @@ This machine is still CPU-only, so that result should be read as **train-readine
 
 If you intend large-scale GPU training or Windows multi-GPU runs, there are still real blockers that are **not** caught by the current prep gate:
 
-- **DDP backend on Windows:** canonical config still pins `ddp_backend: nccl`, which is not the safe default on Windows. There is no platform guard in `mainline_train_prep.py`, so prep can report ready even though multi-GPU launch will fail.
-- **Inference config singleton pollution:** `inference/Conan.py` still writes the process-global `hparams` singleton during engine construction for legacy compatibility. Library-style multi-instance / concurrent inference is therefore still not isolation-safe.
+- **DDP backend on Windows:** canonical training config now uses `ddp_backend: auto`, and `Trainer` resolves that to a platform-safe backend (`gloo` on Windows, `nccl` only on CUDA-capable non-Windows runs). `mainline_train_prep.py` also surfaces this through `runtime_ddp_backend_windows_safe`. Older copied configs and explicit `ddp_backend: nccl` overrides can still be misleading on Windows.
+- **Inference config singleton pollution:** `inference/Conan.py` now makes the global `hparams` bridge optional via `legacy_global_hparams_bridge`, but it still defaults to enabled for legacy compatibility. Library-style multi-instance / concurrent inference is therefore still not isolation-safe unless that bridge is disabled and downstream dependencies are known to be local-hparams-safe.
 - **Streaming performance ceiling:** prefix-online inference still recomputes the full acoustic prefix per chunk and still performs per-chunk `Tensor -> CPU -> NumPy -> vocoder` transitions. Functional correctness is okay, but latency/throughput are still well below a truly incremental stack.
 - **Environment pin drift in non-canonical envs:** in the current base Python `3.13` shell, `mainline_train_prep.py` now finishes and emits structured JSON, but it still reports `MAINLINE_TRAIN_PREP_NOT_READY` because the runtime stack does not match the pinned training environment (`torch/torchaudio 2.5.1`, `nltk 3.8.1`, Python `3.10/3.11`-class runtime, plus working `g2p_en` resources).
 
@@ -70,10 +70,12 @@ Both are aligned to the same shipped surface:
 - `style_strength` is clamped to the shipped mainline range `0.50 .. 1.80`
 - `allow_item_style_strength_override: false` keeps the profile authoritative during training batches
 - `dynamic_timbre_strength` is intentionally derived from `style_strength` on the canonical path, so the two are not treated as orthogonal free knobs
+- shipped mainline is best described as **owner-first expressive VC** with strong prosodic variation / style-driven contour control, not as an explicit timing/planner rewrite system
 - `style_to_pitch_residual: true`
 - `style_to_pitch_residual_include_timbre: false`
 - `global_timbre_to_pitch: false`
-- post-rhythm pitch-canvas projection remains best-effort; when no rhythm frame-index canvas is emitted, shipped runtime falls back to source-aligned residual application and surfaces the realized canvas in metadata
+- decoder style runtime keeps timing/planner writeback closed (`planner_writeback_allowed: false`, `timing_writeback_allowed: false`)
+- post-rhythm pitch-canvas projection remains best-effort; in the shipped mainline this usually still resolves to source-aligned residual application unless runtime actually emits rhythm frame-index canvases, and the realized canvas / fallback reason is surfaced in metadata
 
 Training now opens the mainline upper-bound modules by curriculum:
 
@@ -172,7 +174,7 @@ Key audited properties in the checked-in code:
 - canonical mainline profile surface now only approves `style_strength` as a direct override; other profile-key deviations are treated as research overrides and coerced back unless explicitly allowed
 - resolved mainline controls now stay authoritative for TVT prior/runtime flags and pitch-residual scale / semitone / smoothing
 - style conditioning now consumes the resolved mainline `style_strength` instead of a hidden raw-kwargs alias
-- dynamic-timbre budget internals (`runtime_dynamic_timbre_style_budget_slow_style_weight` / `runtime_dynamic_timbre_style_budget_epsilon`) and upper-bound curriculum knobs are hparam-owned on closed mainline rather than per-request overrides
+- upper-bound curriculum knobs stay hparam-owned on the closed mainline path; the two dynamic-timbre budget stabilizers (`runtime_dynamic_timbre_style_budget_slow_style_weight` / `runtime_dynamic_timbre_style_budget_epsilon`) are now forwarded only on the advanced request/runtime surface for explicit research runs, not as public mainline controls
 - dynamic timbre is not allowed to leak into `style_to_pitch_residual` on the shipped mainline path
 - when no external speaker verifier is configured, the identity loss is evaluated in a frozen internal speaker space instead of a trainable one
 - decoder runtime now consumes `slow_style_trace` directly instead of keeping it as a log-only byproduct
@@ -333,6 +335,8 @@ Because `slow_style_trace` now really enters the decoder runtime bundle, old che
 ```bash
 python inference/run_voice_conversion.py --pair_config inference/conan_single_reference_demo.example.json
 ```
+
+For research/ablation-only runtime overrides, opt in with `--allow_advanced_controls` or `allow_advanced_controls: true` in the JSON manifest. That advanced path now forwards explicit `dynamic_timbre_strength`, `allow_mainline_profile_research_overrides`, and the runtime dynamic-timbre budget knobs, but the shipped mainline description should still stay conservative: strong style-driven contour control, not explicit timing/planner rewriting.
 
 ## Primary docs
 

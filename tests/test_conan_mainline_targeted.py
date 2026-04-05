@@ -13,6 +13,7 @@ import torch
 from torch import nn
 
 import inference.Conan as inference_conan
+from inference.conan_request import build_mainline_request_input
 from modules.Conan.Conan import Conan, ConanPostnet
 from modules.Conan.control.separation_metrics import resolve_dynamic_timbre_frame_weight
 from modules.Conan.control.style_success import (
@@ -26,12 +27,16 @@ from modules.Conan.control.style_success import (
 from modules.Conan.pitch_runtime import ConanPitchGenerationMixin
 from modules.Conan.prosody_util import ProsodyAligner
 from modules.Conan.prosody_util import VQEmbeddingEMA
+from modules.Conan.pitch_canvas_utils import project_source_sequence_to_pitch_canvas
+from modules.Conan.reference_bundle import build_style_runtime_kwargs as build_reference_style_runtime_kwargs
 from modules.Conan.style_realization_builder import _resolve_global_summary_runtime
 from modules.Conan.style_timbre_runtime import _resolve_style_owner_residual
 from modules.Conan.tvt_memory import ContentSynchronousTimbreFuser, expand_anchor_sequence
+import tasks.Conan.mainline_train_prep as mainline_prep
 from tasks.Conan.control_losses import add_style_timbre_regularization_losses
 from tasks.Conan.mainline_train_prep import (
     _check_binary_sidecar_consistency,
+    _resolve_effective_ddp_backend,
     _resolve_torchaudio_python_range,
     _style_success_supervision_summary,
     run_prep,
@@ -47,6 +52,7 @@ import utils.audio.pitch.utils as pitch_utils_modern
 import utils.audio.pitch_utils as pitch_utils_legacy
 import utils.audio.vad as vad_utils
 import utils.commons.base_task as base_task_module
+from utils.commons.hparams import hparams as global_hparams
 from utils.commons.weight_norm_compat import apply_weight_norm, remove_weight_norm_compat
 import utils.commons.trainer as trainer_module
 from utils.commons.trainer import Trainer
@@ -995,6 +1001,125 @@ class ConanMainlineTargetedTests(unittest.TestCase):
             module, error = audio_utils._optional_import("pyloudnorm")
         self.assertIsNone(module)
         self.assertIsInstance(error, RecursionError)
+
+    def test_trainer_resolve_ddp_backend_auto_is_platform_aware(self):
+        with TemporaryDirectory() as tmpdir:
+            trainer = Trainer(work_dir=tmpdir, val_check_interval=1000, num_sanity_val_steps=0)
+            with patch.dict(trainer_module.hparams, {"ddp_backend": "auto"}, clear=True):
+                with patch.object(trainer_module.os, "name", "nt"), \
+                     patch.object(trainer_module.torch.cuda, "is_available", return_value=True), \
+                     patch.object(trainer_module.dist, "is_nccl_available", return_value=True):
+                    self.assertEqual(trainer._resolve_ddp_backend(), "gloo")
+                with patch.object(trainer_module.os, "name", "posix"), \
+                     patch.object(trainer_module.torch.cuda, "is_available", return_value=True), \
+                     patch.object(trainer_module.dist, "is_nccl_available", return_value=True):
+                    self.assertEqual(trainer._resolve_ddp_backend(), "nccl")
+                with patch.object(trainer_module.os, "name", "posix"), \
+                     patch.object(trainer_module.torch.cuda, "is_available", return_value=False):
+                    self.assertEqual(trainer._resolve_ddp_backend(), "gloo")
+
+    def test_prep_resolves_effective_ddp_backend_for_windows(self):
+        with patch.object(mainline_prep.os, "name", "nt"):
+            self.assertEqual(_resolve_effective_ddp_backend("auto"), "gloo")
+            self.assertEqual(_resolve_effective_ddp_backend("nccl"), "gloo")
+        with patch.object(mainline_prep.os, "name", "posix"), \
+             patch.object(mainline_prep.torch.cuda, "is_available", return_value=True), \
+             patch.object(mainline_prep.torch.distributed, "is_nccl_available", return_value=True):
+            self.assertEqual(_resolve_effective_ddp_backend("auto"), "nccl")
+
+    def test_streaming_voice_conversion_can_disable_legacy_global_hparams_bridge(self):
+        fake_vocoder = SimpleNamespace(supports_native_streaming=lambda: False)
+        with patch.object(inference_conan, "resolve_vocoder_left_context_frames", return_value=(0, "unit_test")), \
+             patch.object(inference_conan, "resolve_streaming_layout", return_value={"chunk_frames": 4}), \
+             patch.object(inference_conan, "build_streaming_latency_report", return_value={"first_packet_algorithmic_latency_ms": 0.0}), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_validate_runtime_layout"), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_load_condition_maps", return_value={}), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_build_model", return_value=object()), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_build_vocoder", return_value=fake_vocoder), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_build_emformer", return_value=object()), \
+             patch.object(inference_conan.StreamingVoiceConversion, "_vocoder_warm_zero"), \
+             patch.object(inference_conan.torch.cuda, "is_available", return_value=False), \
+             patch.dict(global_hparams, {"sentinel": 1}, clear=True):
+            engine = inference_conan.StreamingVoiceConversion(
+                {
+                    "legacy_global_hparams_bridge": "false",
+                    "reference_mel_cache_max_entries": 2,
+                }
+            )
+            self.assertFalse(engine.legacy_global_hparams_bridge)
+            self.assertEqual(dict(global_hparams), {"sentinel": 1})
+
+    def test_request_helper_allows_budget_research_knobs_on_advanced_surface(self):
+        request, ignored = build_mainline_request_input(
+            {
+                "ref_wav": "ref.wav",
+                "src_wav": "src.wav",
+                "runtime_dynamic_timbre_style_budget_slow_style_weight": 0.75,
+                "runtime_dynamic_timbre_style_budget_epsilon": 1e-5,
+            },
+            allow_advanced_controls=True,
+        )
+        self.assertEqual(request["runtime_dynamic_timbre_style_budget_slow_style_weight"], 0.75)
+        self.assertEqual(request["runtime_dynamic_timbre_style_budget_epsilon"], 1e-5)
+        self.assertEqual(ignored, [])
+
+    def test_request_helper_still_ignores_budget_research_knobs_without_advanced_surface(self):
+        request, ignored = build_mainline_request_input(
+            {
+                "ref_wav": "ref.wav",
+                "src_wav": "src.wav",
+                "runtime_dynamic_timbre_style_budget_slow_style_weight": 0.75,
+                "runtime_dynamic_timbre_style_budget_epsilon": 1e-5,
+            },
+            allow_advanced_controls=False,
+        )
+        self.assertNotIn("runtime_dynamic_timbre_style_budget_slow_style_weight", request)
+        self.assertNotIn("runtime_dynamic_timbre_style_budget_epsilon", request)
+        self.assertEqual(
+            ignored,
+            [
+                "runtime_dynamic_timbre_style_budget_slow_style_weight",
+                "runtime_dynamic_timbre_style_budget_epsilon",
+            ],
+        )
+
+    def test_reference_bundle_runtime_kwargs_forward_budget_research_knobs(self):
+        runtime_kwargs = build_reference_style_runtime_kwargs(
+            {
+                "runtime_dynamic_timbre_style_budget_slow_style_weight": 0.5,
+                "runtime_dynamic_timbre_style_budget_epsilon": 1e-4,
+            }
+        )
+        self.assertEqual(runtime_kwargs["runtime_dynamic_timbre_style_budget_slow_style_weight"], 0.5)
+        self.assertEqual(runtime_kwargs["runtime_dynamic_timbre_style_budget_epsilon"], 1e-4)
+
+    def test_effective_runtime_metadata_surfaces_budget_research_knobs(self):
+        metadata = inference_conan.StreamingVoiceConversion._effective_runtime_metadata(
+            {
+                "runtime_dynamic_timbre_style_budget_slow_style_weight": 0.6,
+                "runtime_dynamic_timbre_style_budget_epsilon": 1e-5,
+            }
+        )
+        self.assertEqual(metadata["runtime_dynamic_timbre_style_budget_slow_style_weight"], 0.6)
+        self.assertEqual(metadata["runtime_dynamic_timbre_style_budget_epsilon"], 1e-5)
+
+    def test_post_rhythm_request_without_runtime_indices_reports_explicit_fallback(self):
+        sequence = torch.tensor([[0.1, 0.2, 0.3]], dtype=torch.float32)
+        projected, meta = project_source_sequence_to_pitch_canvas(
+            sequence,
+            {
+                "content": torch.tensor([[1, 2, 3]], dtype=torch.long),
+            },
+            content_padding_idx=999,
+            target_shape=(1, 5),
+            mode="post_rhythm",
+        )
+        self.assertTrue(torch.equal(projected, sequence))
+        self.assertEqual(meta["requested_mode"], "post_rhythm")
+        self.assertFalse(meta["post_rhythm_runtime_available"])
+        self.assertFalse(meta["post_rhythm_projection_used"])
+        self.assertEqual(meta["fallback_reason"], "post_rhythm_indices_missing")
+        self.assertEqual(meta["canvas"], "source_aligned")
 
     def test_utils_audio_reexports_trim_long_silences_for_wav_processors(self):
         code = textwrap.dedent(

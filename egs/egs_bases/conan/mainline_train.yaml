@@ -3,7 +3,7 @@ dataloader_pin_memory: true
 dataloader_persistent_workers: true
 dataloader_prefetch_factor: 2
 ddp_find_unused_parameters: true
-ddp_backend: nccl
+ddp_backend: auto
 ddp_master_port: 23456
 max_tokens: 36000
 max_sentences: 32

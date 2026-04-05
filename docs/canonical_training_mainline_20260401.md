@@ -46,6 +46,7 @@ Training / inference stay locked to:
 - decoder style runtime keeps timing/planner writeback closed (`planner_writeback_allowed: false`, `timing_writeback_allowed: false`)
 - post-rhythm pitch-canvas projection is still best-effort in the shipped path; in practice the shipped mainline usually remains source-aligned unless runtime actually emits rhythm frame-index canvases, and runtime reports the realized canvas/fallback reason
 - `allow_split_reference_inputs: false`
+- prepared inference-side reference caching is enabled by default; `reference_runtime_cache_max_entries` bounds how many resolved reference-runtime states are retained, and the cache is intentionally bypassed when an explicit `spk_embed` override changes the anchor contract
 
 Canonical training also keeps the aggressive upper-bound modules behind one shared curriculum:
 
@@ -103,6 +104,7 @@ The 2026-04-05 local performance pass improves that ceiling without overstating 
 - repeated inference requests that reuse the same reference bundle now also reuse the prepared `reference_cache`, not just the raw reference mel tensor
 - built-in HifiGAN wrappers now accept tensor mel input directly, so the shipped inference path no longer performs an unnecessary `Tensor -> CPU/NumPy -> GPU Tensor` conversion before vocoder inference
 - collapsed-reference training batches now reuse `ref_mels` as `ref_timbre_mels` when they are identical, avoiding one extra per-sample clone and one extra batch collation of the same data
+- the prepared-reference cache is bounded by `reference_runtime_cache_max_entries` (defaulting to the mel-cache budget), so repeated-prompt throughput improves without leaving an unbounded inference-memory cache behind
 
 These changes reduce avoidable overhead, but they do **not** change the larger architectural fact that streaming acoustic inference is still prefix-recompute based.
 

@@ -82,6 +82,7 @@ Both are aligned to the same shipped surface:
 - `global_timbre_to_pitch: false`
 - decoder style runtime keeps timing/planner writeback closed (`planner_writeback_allowed: false`, `timing_writeback_allowed: false`)
 - post-rhythm pitch-canvas projection remains best-effort; in the shipped mainline this usually still resolves to source-aligned residual application unless runtime actually emits rhythm frame-index canvases, and the realized canvas / fallback reason is surfaced in metadata
+- prepared inference-side reference caching is enabled by default; `reference_runtime_cache_max_entries` bounds how many resolved reference-runtime states are retained, and the cache is intentionally bypassed when an explicit `spk_embed` override changes the anchor contract
 
 Training now opens the mainline upper-bound modules by curriculum:
 
